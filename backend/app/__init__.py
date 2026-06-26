@@ -1,0 +1,2 @@
+"""OfferPilot backend application package."""
+

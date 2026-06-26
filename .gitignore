@@ -1,0 +1,23 @@
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+**/*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local env files
+.env
+.env.*
+!.env.example
+
+# Local runtime data
+backend/data/
+*.db
+*.sqlite
+*.sqlite3

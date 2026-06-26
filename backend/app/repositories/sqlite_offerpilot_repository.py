@@ -1,0 +1,291 @@
+import json
+import sqlite3
+from pathlib import Path
+from typing import Any, List, Optional
+
+from app.models.application import (
+    Application,
+    ApplicationStatus,
+    application_status_from_round,
+)
+from app.models.interview_review import InterviewReview, InterviewReviewStatus
+from app.models.task import Task, TaskPriority, TaskStatus, TaskType
+from app.repositories.offerpilot_repository import _default_tasks
+
+
+class SQLiteOfferPilotRepository:
+    def __init__(self, db_path: str) -> None:
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._initialize()
+
+    def list_today_tasks(self) -> List[Task]:
+        active_statuses = (
+            TaskStatus.PENDING.value,
+            TaskStatus.IN_PROGRESS.value,
+            TaskStatus.POSTPONED.value,
+        )
+        placeholders = ", ".join("?" for _ in active_statuses)
+        rows = self._fetch_all(
+            f"""
+            SELECT id, title, task_type, status, priority
+            FROM tasks
+            WHERE status IN ({placeholders})
+            ORDER BY id
+            """,
+            active_statuses,
+        )
+        return [self._task_from_row(row) for row in rows]
+
+    def create_application(
+        self,
+        company: str,
+        role: str,
+        interview_time: Optional[str] = None,
+        round_name: Optional[str] = None,
+        jd_keywords: Optional[List[str]] = None,
+    ) -> Application:
+        application = Application(
+            id=self._next_id("applications", "app"),
+            company=company,
+            role=role,
+            status=application_status_from_round(round_name),
+            interview_time=interview_time,
+            round=round_name,
+            jd_keywords=jd_keywords or [],
+        )
+        self._execute(
+            """
+            INSERT INTO applications (
+                id, company, role, status, interview_time, round, jd_keywords
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                application.id,
+                application.company,
+                application.role,
+                application.status.value,
+                application.interview_time,
+                application.round,
+                json.dumps(application.jd_keywords, ensure_ascii=False),
+            ),
+        )
+        return application
+
+    def complete_task(
+        self,
+        task_title: Optional[str] = None,
+        task_type: Optional[str] = None,
+    ) -> Optional[Task]:
+        return self._update_task_status(
+            task_title=task_title,
+            task_type=task_type,
+            status=TaskStatus.PASSED,
+        )
+
+    def postpone_task(
+        self,
+        task_title: Optional[str] = None,
+        task_type: Optional[str] = None,
+    ) -> Optional[Task]:
+        return self._update_task_status(
+            task_title=task_title,
+            task_type=task_type,
+            status=TaskStatus.POSTPONED,
+        )
+
+    def create_interview_review(
+        self,
+        company: Optional[str] = None,
+        round_name: Optional[str] = None,
+        topics: Optional[List[str]] = None,
+        raw_message: str = "",
+    ) -> InterviewReview:
+        review = InterviewReview(
+            id=self._next_id("interview_reviews", "review"),
+            company=company,
+            round=round_name,
+            topics=topics or [],
+            raw_message=raw_message,
+        )
+        self._execute(
+            """
+            INSERT INTO interview_reviews (
+                id, company, round, topics, raw_message, status
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                review.id,
+                review.company,
+                review.round,
+                json.dumps(review.topics, ensure_ascii=False),
+                review.raw_message,
+                review.status.value,
+            ),
+        )
+        return review
+
+    def _initialize(self) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    task_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    priority TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS applications (
+                    id TEXT PRIMARY KEY,
+                    company TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    interview_time TEXT,
+                    round TEXT,
+                    jd_keywords TEXT NOT NULL DEFAULT '[]'
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS interview_reviews (
+                    id TEXT PRIMARY KEY,
+                    company TEXT,
+                    round TEXT,
+                    topics TEXT NOT NULL DEFAULT '[]',
+                    raw_message TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL
+                )
+                """
+            )
+            connection.commit()
+
+        self._seed_default_tasks()
+
+    def _seed_default_tasks(self) -> None:
+        task_count = self._fetch_value("SELECT COUNT(*) FROM tasks")
+        if task_count:
+            return
+
+        for task in _default_tasks():
+            self._execute(
+                """
+                INSERT INTO tasks (id, title, task_type, status, priority)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    task.id,
+                    task.title,
+                    task.task_type.value,
+                    task.status.value,
+                    task.priority.value,
+                ),
+            )
+
+    def _update_task_status(
+        self,
+        task_title: Optional[str],
+        task_type: Optional[str],
+        status: TaskStatus,
+    ) -> Optional[Task]:
+        task = self._find_task(task_title=task_title, task_type=task_type)
+        if task is None:
+            return None
+
+        self._execute("UPDATE tasks SET status = ? WHERE id = ?", (status.value, task.id))
+        task.status = status
+        return task
+
+    def _find_task(
+        self,
+        task_title: Optional[str] = None,
+        task_type: Optional[str] = None,
+    ) -> Optional[Task]:
+        rows = self._fetch_all(
+            """
+            SELECT id, title, task_type, status, priority
+            FROM tasks
+            WHERE status != ?
+            ORDER BY id
+            """,
+            (TaskStatus.PASSED.value,),
+        )
+        tasks = [self._task_from_row(row) for row in rows]
+
+        for task in tasks:
+            if task_title and self._normalize(task_title) in self._normalize(task.title):
+                return task
+
+        if task_type:
+            for task in tasks:
+                if task.task_type.value == task_type:
+                    return task
+
+        return None
+
+    def _next_id(self, table: str, prefix: str) -> str:
+        count = self._fetch_value(f"SELECT COUNT(*) FROM {table}")
+        return f"{prefix}_{count + 1}"
+
+    def _fetch_value(self, query: str, parameters: tuple[Any, ...] = ()) -> Any:
+        with self._connect() as connection:
+            row = connection.execute(query, parameters).fetchone()
+        return row[0] if row is not None else None
+
+    def _fetch_all(self, query: str, parameters: tuple[Any, ...] = ()) -> List[sqlite3.Row]:
+        with self._connect() as connection:
+            return connection.execute(query, parameters).fetchall()
+
+    def _execute(self, query: str, parameters: tuple[Any, ...]) -> None:
+        with self._connect() as connection:
+            connection.execute(query, parameters)
+            connection.commit()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.db_path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    @staticmethod
+    def _task_from_row(row: sqlite3.Row) -> Task:
+        return Task(
+            id=row["id"],
+            title=row["title"],
+            task_type=TaskType(row["task_type"]),
+            status=TaskStatus(row["status"]),
+            priority=TaskPriority(row["priority"]),
+        )
+
+    @staticmethod
+    def _application_from_row(row: sqlite3.Row) -> Application:
+        return Application(
+            id=row["id"],
+            company=row["company"],
+            role=row["role"],
+            status=ApplicationStatus(row["status"]),
+            interview_time=row["interview_time"],
+            round=row["round"],
+            jd_keywords=json.loads(row["jd_keywords"] or "[]"),
+        )
+
+    @staticmethod
+    def _interview_review_from_row(row: sqlite3.Row) -> InterviewReview:
+        return InterviewReview(
+            id=row["id"],
+            company=row["company"],
+            round=row["round"],
+            topics=json.loads(row["topics"] or "[]"),
+            raw_message=row["raw_message"],
+            status=InterviewReviewStatus(row["status"]),
+        )
+
+    @staticmethod
+    def _normalize(value: str) -> str:
+        return value.replace(" ", "").lower()
