@@ -13,6 +13,14 @@ def test_repository_lists_default_today_tasks() -> None:
     assert tasks[0].to_dict()["task_type"] == "leetcode"
 
 
+def test_repository_saves_runtime_setting() -> None:
+    repository = InMemoryOfferPilotRepository()
+
+    repository.set_runtime_setting("feishu.offerpilot_calendar_id", "calendar_1")
+
+    assert repository.get_runtime_setting("feishu.offerpilot_calendar_id") == "calendar_1"
+
+
 def test_repository_creates_application_with_round_status() -> None:
     repository = InMemoryOfferPilotRepository()
 
@@ -28,6 +36,77 @@ def test_repository_creates_application_with_round_status() -> None:
     assert application.status == ApplicationStatus.INTERVIEW_1
     assert application.to_dict()["jd_keywords"] == ["Java", "Redis"]
     assert repository.applications == [application]
+
+
+def test_repository_lists_applications_by_company() -> None:
+    repository = InMemoryOfferPilotRepository()
+    repository.create_application(company="深信服", role="AI 应用开发", round_name="二面")
+    repository.create_application(company="美团", role="Java 后端")
+
+    all_applications = repository.list_applications()
+    filtered_applications = repository.list_applications(company="深信服")
+
+    assert len(all_applications) == 2
+    assert len(filtered_applications) == 1
+    assert filtered_applications[0].company == "深信服"
+
+
+def test_repository_updates_application_status() -> None:
+    repository = InMemoryOfferPilotRepository()
+    repository.create_application(company="深信服", role="AI 应用开发")
+
+    application = repository.update_application(
+        company="深信服",
+        status=ApplicationStatus.INTERVIEW_1,
+        interview_time="明天早上八点",
+        round_name="一面",
+    )
+
+    assert application is not None
+    assert application.status == ApplicationStatus.INTERVIEW_1
+    assert application.interview_time == "明天早上八点"
+    assert repository.applications[0].round == "一面"
+
+
+def test_repository_creates_interview_schedule() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="深信服", role="AI 应用开发")
+
+    schedule = repository.create_interview_schedule(
+        application_id=application.id,
+        company="深信服",
+        role="AI 应用开发",
+        round_name="一面",
+        start_time="明天早上八点",
+        start_at="2026-06-30T08:00:00+08:00",
+        raw_message="明天早上八点，深信服约我一面",
+    )
+
+    assert schedule.id == "schedule_1"
+    assert schedule.application_id == "app_1"
+    assert schedule.start_time == "明天早上八点"
+    assert schedule.start_at == "2026-06-30T08:00:00+08:00"
+    assert schedule.reminder_minutes == 30
+    assert repository.list_interview_schedules(company="深信服") == [schedule]
+
+
+def test_repository_updates_interview_schedule_calendar_event() -> None:
+    repository = InMemoryOfferPilotRepository()
+    schedule = repository.create_interview_schedule(
+        company="深信服",
+        role="AI 应用开发",
+        round_name="一面",
+        start_time="明天早上八点",
+    )
+
+    updated_schedule = repository.update_interview_schedule_calendar_event(
+        schedule_id=schedule.id,
+        calendar_event_id="evt_test_1",
+    )
+
+    assert updated_schedule is not None
+    assert updated_schedule.calendar_event_id == "evt_test_1"
+    assert repository.interview_schedules[0].calendar_event_id == "evt_test_1"
 
 
 def test_repository_completes_task_by_title() -> None:

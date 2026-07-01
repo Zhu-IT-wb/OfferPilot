@@ -9,6 +9,7 @@ class IntentName(str, Enum):
     COMPLETE_TASK = "complete_task"
     POSTPONE_TASK = "postpone_task"
     ADD_APPLICATION = "add_application"
+    QUERY_APPLICATION = "query_application"
     UPDATE_APPLICATION = "update_application"
     ADD_INTERVIEW_REVIEW = "add_interview_review"
     START_MOCK_INTERVIEW = "start_mock_interview"

@@ -1,0 +1,39 @@
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, Optional
+
+
+class InterviewScheduleStatus(str, Enum):
+    SCHEDULED = "scheduled"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class InterviewSchedule:
+    id: str
+    company: str
+    round: str
+    application_id: Optional[str] = None
+    role: Optional[str] = None
+    start_time: Optional[str] = None
+    start_at: Optional[str] = None
+    reminder_minutes: int = 30
+    status: InterviewScheduleStatus = InterviewScheduleStatus.SCHEDULED
+    calendar_event_id: Optional[str] = None
+    raw_message: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "application_id": self.application_id,
+            "company": self.company,
+            "role": self.role,
+            "round": self.round,
+            "start_time": self.start_time,
+            "start_at": self.start_at,
+            "reminder_minutes": self.reminder_minutes,
+            "status": self.status.value,
+            "calendar_event_id": self.calendar_event_id,
+            "raw_message": self.raw_message,
+        }

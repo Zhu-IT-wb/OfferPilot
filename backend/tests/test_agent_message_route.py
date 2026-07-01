@@ -9,9 +9,11 @@ from app.schemas.intent import IntentName
 
 def test_agent_message_route_returns_orchestrated_response(monkeypatch) -> None:
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
             assert message == "今天任务是什么？"
             assert confirmed is False
+            assert user_id == "local_user"
+            assert source == "api"
             return AgentResponse(
                 intent=IntentName.GET_TODAY_TASKS,
                 confidence=0.9,
@@ -43,9 +45,11 @@ def test_agent_message_route_returns_orchestrated_response(monkeypatch) -> None:
 
 def test_agent_message_route_passes_confirmation(monkeypatch) -> None:
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
             assert message == "新增投递深信服开发实习"
             assert confirmed is True
+            assert user_id == "will"
+            assert source == "feishu"
             return AgentResponse(
                 intent=IntentName.ADD_APPLICATION,
                 confidence=0.86,
@@ -74,7 +78,7 @@ def test_agent_message_route_passes_confirmation(monkeypatch) -> None:
 
 def test_agent_message_route_stays_enabled_when_debug_routes_disabled(monkeypatch) -> None:
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
             return AgentResponse(
                 intent=IntentName.GET_TODAY_TASKS,
                 confidence=0.9,

@@ -15,6 +15,8 @@ async def handle_agent_message(request: AgentMessageRequest) -> AgentResponse:
         return await orchestrator.handle_message(
             message=request.message,
             confirmed=request.confirmed,
+            user_id=request.user_id,
+            source=request.source,
         )
     except LLMRequestError as exc:
         raise HTTPException(

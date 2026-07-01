@@ -9,6 +9,7 @@ from app.models.application import (
     application_status_from_round,
 )
 from app.models.interview_review import InterviewReview, InterviewReviewStatus
+from app.models.interview_schedule import InterviewSchedule, InterviewScheduleStatus
 from app.models.task import Task, TaskPriority, TaskStatus, TaskType
 from app.repositories.offerpilot_repository import _default_tasks
 
@@ -18,6 +19,23 @@ class SQLiteOfferPilotRepository:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+
+    def get_runtime_setting(self, key: str) -> Optional[str]:
+        value = self._fetch_value(
+            "SELECT value FROM runtime_settings WHERE key = ?",
+            (key,),
+        )
+        return value if isinstance(value, str) else None
+
+    def set_runtime_setting(self, key: str, value: str) -> None:
+        self._execute(
+            """
+            INSERT INTO runtime_settings (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
 
     def list_today_tasks(self) -> List[Task]:
         active_statuses = (
@@ -72,6 +90,153 @@ class SQLiteOfferPilotRepository:
             ),
         )
         return application
+
+    def list_applications(self, company: Optional[str] = None) -> List[Application]:
+        rows = self._fetch_all(
+            """
+            SELECT id, company, role, status, interview_time, round, jd_keywords
+            FROM applications
+            ORDER BY id
+            """
+        )
+        applications = [self._application_from_row(row) for row in rows]
+        if not company:
+            return applications
+
+        normalized_company = self._normalize(company)
+        return [
+            application
+            for application in applications
+            if normalized_company in self._normalize(application.company)
+        ]
+
+    def update_application(
+        self,
+        company: str,
+        status: Optional[ApplicationStatus] = None,
+        interview_time: Optional[str] = None,
+        round_name: Optional[str] = None,
+        role: Optional[str] = None,
+    ) -> Optional[Application]:
+        application = self._find_application(company)
+        if application is None:
+            return None
+
+        if status is not None:
+            application.status = status
+        if interview_time is not None:
+            application.interview_time = interview_time
+        if round_name is not None:
+            application.round = round_name
+        if role is not None:
+            application.role = role
+
+        self._execute(
+            """
+            UPDATE applications
+            SET role = ?, status = ?, interview_time = ?, round = ?
+            WHERE id = ?
+            """,
+            (
+                application.role,
+                application.status.value,
+                application.interview_time,
+                application.round,
+                application.id,
+            ),
+        )
+        return application
+
+    def create_interview_schedule(
+        self,
+        company: str,
+        round_name: str,
+        application_id: Optional[str] = None,
+        role: Optional[str] = None,
+        start_time: Optional[str] = None,
+        start_at: Optional[str] = None,
+        reminder_minutes: int = 30,
+        raw_message: str = "",
+    ) -> InterviewSchedule:
+        schedule = InterviewSchedule(
+            id=self._next_id("interview_schedules", "schedule"),
+            application_id=application_id,
+            company=company,
+            role=role,
+            round=round_name,
+            start_time=start_time,
+            start_at=start_at,
+            reminder_minutes=reminder_minutes,
+            raw_message=raw_message,
+        )
+        self._execute(
+            """
+            INSERT INTO interview_schedules (
+                id, application_id, company, role, round, start_time, start_at,
+                reminder_minutes, status, calendar_event_id, raw_message
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                schedule.id,
+                schedule.application_id,
+                schedule.company,
+                schedule.role,
+                schedule.round,
+                schedule.start_time,
+                schedule.start_at,
+                schedule.reminder_minutes,
+                schedule.status.value,
+                schedule.calendar_event_id,
+                schedule.raw_message,
+            ),
+        )
+        return schedule
+
+    def list_interview_schedules(self, company: Optional[str] = None) -> List[InterviewSchedule]:
+        rows = self._fetch_all(
+            """
+            SELECT id, application_id, company, role, round, start_time, start_at,
+                   reminder_minutes, status, calendar_event_id, raw_message
+            FROM interview_schedules
+            ORDER BY id
+            """
+        )
+        schedules = [self._interview_schedule_from_row(row) for row in rows]
+        if not company:
+            return schedules
+
+        normalized_company = self._normalize(company)
+        return [
+            schedule
+            for schedule in schedules
+            if normalized_company in self._normalize(schedule.company)
+        ]
+
+    def update_interview_schedule_calendar_event(
+        self,
+        schedule_id: str,
+        calendar_event_id: str,
+    ) -> Optional[InterviewSchedule]:
+        schedules = [
+            schedule
+            for schedule in self.list_interview_schedules()
+            if schedule.id == schedule_id
+        ]
+        if not schedules:
+            return None
+
+        schedule = schedules[0]
+        schedule.calendar_event_id = calendar_event_id
+        self._execute(
+            """
+            UPDATE interview_schedules
+            SET calendar_event_id = ?
+            WHERE id = ?
+            """,
+            (calendar_event_id, schedule_id),
+        )
+        return schedule
 
     def complete_task(
         self,
@@ -165,9 +330,43 @@ class SQLiteOfferPilotRepository:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS interview_schedules (
+                    id TEXT PRIMARY KEY,
+                    application_id TEXT,
+                    company TEXT NOT NULL,
+                    role TEXT,
+                    round TEXT NOT NULL,
+                    start_time TEXT,
+                    start_at TEXT,
+                    reminder_minutes INTEGER NOT NULL DEFAULT 30,
+                    status TEXT NOT NULL,
+                    calendar_event_id TEXT,
+                    raw_message TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS runtime_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
             connection.commit()
 
+        self._ensure_column("interview_schedules", "start_at", "TEXT")
         self._seed_default_tasks()
+
+    def _ensure_column(self, table: str, column: str, column_type: str) -> None:
+        rows = self._fetch_all(f"PRAGMA table_info({table})")
+        column_names = {row["name"] for row in rows}
+        if column in column_names:
+            return
+
+        self._execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}", ())
 
     def _seed_default_tasks(self) -> None:
         task_count = self._fetch_value("SELECT COUNT(*) FROM tasks")
@@ -230,6 +429,10 @@ class SQLiteOfferPilotRepository:
 
         return None
 
+    def _find_application(self, company: str) -> Optional[Application]:
+        matches = self.list_applications(company=company)
+        return matches[-1] if matches else None
+
     def _next_id(self, table: str, prefix: str) -> str:
         count = self._fetch_value(f"SELECT COUNT(*) FROM {table}")
         return f"{prefix}_{count + 1}"
@@ -284,6 +487,22 @@ class SQLiteOfferPilotRepository:
             topics=json.loads(row["topics"] or "[]"),
             raw_message=row["raw_message"],
             status=InterviewReviewStatus(row["status"]),
+        )
+
+    @staticmethod
+    def _interview_schedule_from_row(row: sqlite3.Row) -> InterviewSchedule:
+        return InterviewSchedule(
+            id=row["id"],
+            application_id=row["application_id"],
+            company=row["company"],
+            role=row["role"],
+            round=row["round"],
+            start_time=row["start_time"],
+            start_at=row["start_at"],
+            reminder_minutes=row["reminder_minutes"],
+            status=InterviewScheduleStatus(row["status"]),
+            calendar_event_id=row["calendar_event_id"],
+            raw_message=row["raw_message"],
         )
 
     @staticmethod

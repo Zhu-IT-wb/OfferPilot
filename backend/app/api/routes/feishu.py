@@ -1,4 +1,6 @@
 import json
+import logging
+from collections import OrderedDict
 from hmac import compare_digest
 from typing import Any, Dict, Optional
 
@@ -15,6 +17,9 @@ from app.services.feishu_service import (
 from app.services.llm_service import LLMRequestError
 
 router = APIRouter(prefix="/feishu")
+logger = logging.getLogger(__name__)
+_processed_event_ids: "OrderedDict[str, None]" = OrderedDict()
+_MAX_PROCESSED_EVENT_IDS = 500
 
 
 @router.post("/events")
@@ -26,10 +31,26 @@ async def handle_feishu_event(payload: Dict[str, Any]):
         return {"challenge": challenge}
 
     event_type = _extract_event_type(payload)
+    event_id = _extract_event_id(payload)
+    if event_id and _is_duplicate_event(event_id):
+        logger.info("Feishu duplicate event ignored: event_type=%s", event_type)
+        return _response(
+            FeishuEventProcessResponse(
+                handled=False,
+                event_type=event_type,
+                message="重复事件已忽略。",
+            )
+        )
+
     message = _extract_text_message(payload)
     user_id = _extract_user_id(payload)
 
     if not message:
+        logger.info(
+            "Feishu event ignored: event_type=%s user_id_present=%s reason=non_text_message",
+            event_type,
+            bool(user_id),
+        )
         return _response(
             FeishuEventProcessResponse(
                 handled=False,
@@ -44,6 +65,8 @@ async def handle_feishu_event(payload: Dict[str, Any]):
         agent_response = await orchestrator.handle_message(
             message=message,
             confirmed=False,
+            user_id=user_id or "unknown_feishu_user",
+            source="feishu",
         )
     except LLMRequestError as exc:
         raise HTTPException(
@@ -52,6 +75,20 @@ async def handle_feishu_event(payload: Dict[str, Any]):
         ) from exc
 
     reply_status = await _send_agent_reply(user_id=user_id, text=agent_response.reply)
+    if reply_status["sent"]:
+        logger.info(
+            "Feishu event handled: event_type=%s user_id_present=%s reply_sent=True reply_message_id_present=%s",
+            event_type,
+            bool(user_id),
+            bool(reply_status.get("message_id")),
+        )
+    else:
+        logger.warning(
+            "Feishu reply failed: event_type=%s user_id_present=%s error=%s",
+            event_type,
+            bool(user_id),
+            _summarize_reply_error(reply_status.get("error")),
+        )
     return _response(
         FeishuEventProcessResponse(
             handled=True,
@@ -98,6 +135,32 @@ async def _send_agent_reply(user_id: Optional[str], text: str) -> Dict[str, Any]
         "sent": True,
         "message_id": result.message_id,
     }
+
+
+def _summarize_reply_error(error: Optional[str]) -> str:
+    if not error:
+        return "unknown"
+
+    summary_parts = []
+    if "HTTP " in error:
+        http_status = error.split("HTTP ", 1)[1].split(":", 1)[0].strip()
+        if http_status:
+            summary_parts.append(f"http_status={http_status}")
+
+    json_start = error.find("{")
+    if json_start >= 0:
+        try:
+            payload = json.loads(error[json_start:])
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict) and payload.get("code") is not None:
+            summary_parts.append(f"feishu_code={payload['code']}")
+
+    if summary_parts:
+        return " ".join(summary_parts)
+
+    first_line = error.splitlines()[0].strip()
+    return first_line[:160]
 
 
 def _verify_event_token(payload: Dict[str, Any]) -> None:
@@ -151,6 +214,35 @@ def _extract_event_type(payload: Dict[str, Any]) -> Optional[str]:
         return event_type
 
     return None
+
+
+def _extract_event_id(payload: Dict[str, Any]) -> Optional[str]:
+    header = payload.get("header")
+    if isinstance(header, dict):
+        event_id = header.get("event_id")
+        if isinstance(event_id, str) and event_id:
+            return event_id
+
+    event = payload.get("event")
+    if isinstance(event, dict):
+        message = event.get("message")
+        if isinstance(message, dict):
+            message_id = message.get("message_id")
+            if isinstance(message_id, str) and message_id:
+                return message_id
+
+    return None
+
+
+def _is_duplicate_event(event_id: str) -> bool:
+    if event_id in _processed_event_ids:
+        _processed_event_ids.move_to_end(event_id)
+        return True
+
+    _processed_event_ids[event_id] = None
+    while len(_processed_event_ids) > _MAX_PROCESSED_EVENT_IDS:
+        _processed_event_ids.popitem(last=False)
+    return False
 
 
 def _extract_text_message(payload: Dict[str, Any]) -> Optional[str]:

@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 from pydantic import ValidationError
 
 from app.schemas.intent import IntentClassification, IntentName
-from app.services.llm_service import LLMConfigurationError, LLMService
+from app.services.llm_service import LLMConfigurationError, LLMRequestError, LLMService
 
 
 class IntentClassifier:
@@ -19,7 +19,9 @@ Allowed intents:
 - complete_task: user reports finishing a task, LeetCode problem, review item, or drill.
 - postpone_task: user wants to postpone, skip, or delay a task.
 - add_application: user wants to add a new job application or interview arrangement.
-- update_application: user wants to update an existing application status.
+- query_application: user wants to query job applications, company status, or upcoming interviews.
+- update_application: user wants to update an existing application status, such as
+  pass/fail, offer, or a newly scheduled interview for an existing application.
 - add_interview_review: user submits or starts an interview review.
 - start_mock_interview: user wants to start a mock interview.
 - answer_question: user is answering an interview question or task prompt.
@@ -40,6 +42,8 @@ Return strict JSON only, without markdown fences:
 
 Slot guidance:
 - Keep relative time expressions as written, such as "明天下午三点".
+- For update_application, use update_type when clear:
+  schedule_interview, pass_round, reject, offer, submitted, or status_update.
 - Use short scalar values or arrays only.
 - Do not invent missing user data.
 """.strip()
@@ -55,7 +59,7 @@ Slot guidance:
                 temperature=0.0,
                 max_tokens=512,
             )
-        except LLMConfigurationError:
+        except (LLMConfigurationError, LLMRequestError):
             return self._classify_by_rules(message)
 
         try:
@@ -92,18 +96,32 @@ Slot guidance:
         if self._is_today_task_query(compact):
             return self._result(IntentName.GET_TODAY_TASKS, 0.72)
 
-        if self._is_add_application(compact):
-            return self._result(
-                IntentName.ADD_APPLICATION,
-                0.76,
-                self._extract_application_slots(text),
-            )
-
         if self._is_interview_review(compact):
             return self._result(
                 IntentName.ADD_INTERVIEW_REVIEW,
                 0.72,
                 self._extract_interview_review_slots(text),
+            )
+
+        if self._is_query_application(compact):
+            return self._result(
+                IntentName.QUERY_APPLICATION,
+                0.74,
+                self._extract_application_query_slots(text),
+            )
+
+        if self._is_update_application(compact):
+            return self._result(
+                IntentName.UPDATE_APPLICATION,
+                0.72,
+                self._extract_application_update_slots(text),
+            )
+
+        if self._is_add_application(compact):
+            return self._result(
+                IntentName.ADD_APPLICATION,
+                0.76,
+                self._extract_application_slots(text),
             )
 
         if self._is_mock_interview(compact):
@@ -128,13 +146,6 @@ Slot guidance:
                 IntentName.POSTPONE_TASK,
                 0.68,
                 self._extract_task_slots(text),
-            )
-
-        if self._is_update_application(compact):
-            return self._result(
-                IntentName.UPDATE_APPLICATION,
-                0.65,
-                self._extract_application_slots(text),
             )
 
         if self._looks_like_answer(text, compact):
@@ -167,14 +178,47 @@ Slot guidance:
     def _is_add_application(compact: str) -> bool:
         return "新增投递" in compact or "添加投递" in compact or (
             "投递" in compact and any(word in compact for word in ("岗位", "实习", "一面", "二面", "笔试", "面试"))
+        ) or (
+            "面试" in compact and any(word in compact for word in ("今晚", "今天", "明天", "一面", "二面", "三面", "hr面"))
+        ) or (
+            "约我" in compact and any(word in compact for word in ("笔试", "一面", "二面", "三面", "hr面"))
         )
 
     @staticmethod
-    def _is_update_application(compact: str) -> bool:
-        status_words = ("offer", "挂了", "拒了", "通过", "约了", "收到面试", "进入二面", "hr面", "已投递")
-        return any(word in compact for word in status_words) and any(
-            word in compact for word in ("投递", "公司", "面试", "一面", "二面", "三面")
+    def _is_query_application(compact: str) -> bool:
+        if any(word in compact for word in ("投递列表", "投递记录", "投递进度", "投了哪些", "投过哪些")):
+            return True
+        if any(word in compact for word in ("哪些公司", "哪些岗位")) and any(
+            word in compact for word in ("投", "面试", "笔试")
+        ):
+            return True
+        has_time_word = any(word in compact for word in ("最近", "这周", "本周", "明天", "今天"))
+        has_interview_word = any(
+            word in compact for word in ("面试", "笔试")
         )
+        looks_like_new_arrangement = any(word in compact for word in ("约我", "有个", "安排了"))
+        if has_time_word and has_interview_word and not looks_like_new_arrangement:
+            return True
+        if any(word in compact for word in ("什么状态", "什么进度", "到哪", "到哪一步", "进展")):
+            return True
+        return False
+
+    @staticmethod
+    def _is_update_application(compact: str) -> bool:
+        round_words = ("笔试", "一面", "二面", "三面", "hr面", "hr")
+        has_round = any(word in compact for word in round_words)
+        has_schedule_word = any(
+            word in compact
+            for word in ("约我", "约了", "安排", "通知", "邀我", "邀请", "收到面试", "发来面试")
+        )
+        has_pass_word = any(word in compact for word in ("过了", "通过", "进了", "进入"))
+        has_terminal_word = any(word in compact for word in ("offer", "挂了", "拒了", "拒绝", "没过", "凉了"))
+
+        if has_schedule_word and (has_round or "面试" in compact or "笔试" in compact):
+            return True
+        if has_round and has_pass_word:
+            return True
+        return has_terminal_word
 
     @staticmethod
     def _is_interview_review(compact: str) -> bool:
@@ -232,6 +276,17 @@ Slot guidance:
             if separated_role:
                 slots["role"] = separated_role.group(2).strip()
 
+        company_round_match = re.search(
+            r"(?P<company>[\u4e00-\u9fa5A-Za-z0-9][\u4e00-\u9fa5A-Za-z0-9_-]{1,20}?)(?P<round>笔试|一面|二面|三面|hr\s*面|HR\s*面)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if company_round_match:
+            company = company_round_match.group("company").strip()
+            if company and (not slots.get("company") or slots["company"].startswith(("我", "今晚", "今天", "明天"))):
+                slots["company"] = company
+            slots["round"] = company_round_match.group("round")
+
         interview_time = self._extract_time_expression(text)
         if interview_time:
             slots["interview_time"] = interview_time
@@ -245,6 +300,149 @@ Slot guidance:
             slots["jd_keywords"] = keywords
 
         return slots
+
+    def _extract_application_query_slots(self, text: str) -> Dict[str, Any]:
+        slots: Dict[str, Any] = {}
+        compact = re.sub(r"\s+", "", text).lower()
+
+        if any(word in compact for word in ("最近", "这周", "本周", "明天", "今天")) and any(
+            word in compact for word in ("面试", "笔试")
+        ):
+            slots["query_type"] = "upcoming_interviews"
+        elif any(word in compact for word in ("什么状态", "什么进度", "到哪", "到哪一步", "进展")):
+            slots["query_type"] = "company_status"
+        else:
+            slots["query_type"] = "list"
+
+        company = self._extract_company_for_query(text)
+        if company:
+            slots["company"] = company
+            if slots["query_type"] == "list":
+                slots["query_type"] = "company_status"
+
+        return slots
+
+    def _extract_application_update_slots(self, text: str) -> Dict[str, Any]:
+        slots: Dict[str, Any] = {}
+        compact = re.sub(r"\s+", "", text).lower()
+
+        round_name = self._extract_round_name(text)
+        if round_name:
+            slots["round"] = round_name
+
+        interview_time = self._extract_time_expression(text)
+        if interview_time:
+            slots["interview_time"] = interview_time
+
+        role = self._extract_role(text)
+        if role:
+            slots["role"] = role
+
+        update_type = self._extract_update_type(compact)
+        slots["update_type"] = update_type
+
+        status = self._status_value_for_update(update_type, round_name)
+        if status:
+            slots["status"] = status
+
+        company = self._extract_company_for_update(text)
+        if company:
+            slots["company"] = company
+
+        return slots
+
+    @staticmethod
+    def _extract_update_type(compact: str) -> str:
+        if "offer" in compact:
+            return "offer"
+        if any(word in compact for word in ("挂了", "拒了", "拒绝", "没过", "凉了")):
+            return "reject"
+        if any(word in compact for word in ("约我", "约了", "安排", "通知", "邀我", "邀请", "收到面试", "发来面试")):
+            return "schedule_interview"
+        if any(word in compact for word in ("过了", "通过", "进了", "进入")):
+            return "pass_round"
+        if "已投递" in compact:
+            return "submitted"
+        return "status_update"
+
+    @staticmethod
+    def _status_value_for_update(update_type: str, round_name: Optional[str]) -> Optional[str]:
+        round_key = round_name.replace(" ", "").lower() if round_name else None
+        scheduled_by_round = {
+            "笔试": "written_test",
+            "一面": "interview_1",
+            "二面": "interview_2",
+            "三面": "interview_3",
+            "hr": "hr",
+            "hr面": "hr",
+        }
+        passed_by_round = {
+            "笔试": "written_test_passed",
+            "一面": "interview_1_passed",
+            "二面": "interview_2_passed",
+            "三面": "interview_3_passed",
+            "hr": "offer",
+            "hr面": "offer",
+        }
+        if update_type == "offer":
+            return "offer"
+        if update_type == "reject":
+            return "rejected"
+        if update_type == "submitted":
+            return "submitted"
+        if update_type == "pass_round" and round_key:
+            return passed_by_round.get(round_key)
+        if update_type == "schedule_interview" and round_key:
+            return scheduled_by_round.get(round_key, "interview_scheduled")
+        return None
+
+    def _extract_company_for_update(self, text: str) -> Optional[str]:
+        text_without_time = self._remove_time_expression(text)
+        round_pattern = r"(?:笔试|一面|二面|三面|hr\s*面|HR\s*面)"
+        patterns = [
+            rf"(?P<company>.+?)(?:约我|约了|安排(?:了)?|通知|邀我|邀请|收到面试|发来面试).*?(?:{round_pattern}|面试|笔试)",
+            rf"(?P<company>.+?){round_pattern}(?:过了|通过|没过|挂了|拒了|拒绝|凉了)",
+            r"(?P<company>.+?)(?:给我|给|发了|发|拿到|收到|收到了)?\s*offer",
+            r"(?P<company>.+?)(?:挂了|拒了|拒绝|没过|凉了)",
+            rf"(?:进入|进了)(?P<company>.+?){round_pattern}",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text_without_time, flags=re.IGNORECASE)
+            if match:
+                company = self._clean_company_name(match.group("company"))
+                if company:
+                    return company
+
+        return None
+
+    def _remove_time_expression(self, text: str) -> str:
+        time_expression = self._extract_time_expression(text)
+        if not time_expression:
+            return text
+        return text.replace(time_expression, "", 1)
+
+    @staticmethod
+    def _clean_company_name(value: str) -> str:
+        company = value.strip(" ，,。；;：:的")
+        company = re.split(r"[，,。；;]", company)[-1]
+        company = re.sub(r"^(我|我这边|刚刚|刚才|今天|明天|后天|今晚|上午|下午|晚上|早上|有个|有场)+", "", company)
+        company = company.strip(" ，,。；;：:的")
+        return company
+
+    @staticmethod
+    def _extract_company_for_query(text: str) -> Optional[str]:
+        patterns = [
+            r"(.+?)(?:现在|目前)?(?:什么状态|什么进度|到哪(?:一步)?|进展)",
+            r"(.+?)(?:的)?(?:投递记录|投递进度|状态)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                company = match.group(1).strip(" ，,。？?的")
+                if company and company not in {"我", "最近", "今天", "明天", "本周", "这周"}:
+                    return company
+
+        return None
 
     def _extract_interview_review_slots(self, text: str) -> Dict[str, Any]:
         slots: Dict[str, Any] = {}
@@ -280,6 +478,29 @@ Slot guidance:
 
         return slots
 
+    @staticmethod
+    def _extract_role(text: str) -> Optional[str]:
+        role_match = re.search(
+            r"(java\s*后端|java\s*开发|python\s*后端|ai\s*应用开发|agent\s*开发|后端开发|开发实习生?|开发实习|算法工程师?|实习生?)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if role_match:
+            return role_match.group(0).strip()
+
+        separated_role = re.search(r"(岗位|职位|方向)[是:：]?([^，,。；;]+)", text)
+        if separated_role:
+            return separated_role.group(2).strip()
+
+        return None
+
+    @staticmethod
+    def _extract_round_name(text: str) -> Optional[str]:
+        round_match = re.search(r"(笔试|一面|二面|三面|hr\s*面|HR\s*面)", text, flags=re.IGNORECASE)
+        if round_match:
+            return round_match.group(1)
+        return None
+
     def _extract_task_slots(self, text: str) -> Dict[str, Any]:
         slots: Dict[str, Any] = {}
         compact = re.sub(r"\s+", "", text).lower()
@@ -307,6 +528,9 @@ Slot guidance:
             text,
         )
         if not match:
+            for word in ("今晚", "今天", "明天", "后天"):
+                if word in text:
+                    return word
             return None
         return match.group(1)
 

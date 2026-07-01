@@ -58,6 +58,17 @@ def _get_bool_env(name: str, default: bool) -> bool:
     return raw_value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _get_int_env(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    try:
+        return int(raw_value)
+    except ValueError:
+        return default
+
+
 def _debug_routes_default() -> bool:
     environment = os.getenv("OFFERPILOT_ENV", "local").strip().lower()
     return environment in {"local", "dev", "development", "test"}
@@ -106,6 +117,29 @@ class Settings:
         "https://open.feishu.cn/open-apis",
     )
     feishu_timeout_seconds: float = float(os.getenv("FEISHU_TIMEOUT_SECONDS", "15"))
+    feishu_calendar_sync_enabled: bool = _get_bool_env("FEISHU_CALENDAR_SYNC_ENABLED", False)
+    feishu_calendar_id: str = os.getenv("FEISHU_CALENDAR_ID", "primary")
+    feishu_calendar_auto_create_enabled: bool = _get_bool_env(
+        "FEISHU_CALENDAR_AUTO_CREATE_ENABLED",
+        True,
+    )
+    feishu_offerpilot_calendar_summary: str = os.getenv(
+        "FEISHU_OFFERPILOT_CALENDAR_SUMMARY",
+        "OfferPilot 秋招日历",
+    )
+    feishu_offerpilot_calendar_description: str = os.getenv(
+        "FEISHU_OFFERPILOT_CALENDAR_DESCRIPTION",
+        "OfferPilot 自动创建，用于记录秋招投递、笔试和面试提醒。",
+    )
+    feishu_offerpilot_calendar_permissions: str = os.getenv(
+        "FEISHU_OFFERPILOT_CALENDAR_PERMISSIONS",
+        "private",
+    )
+    feishu_calendar_timezone: str = os.getenv("FEISHU_CALENDAR_TIMEZONE", "Asia/Shanghai")
+    feishu_interview_event_duration_minutes: int = _get_int_env(
+        "FEISHU_INTERVIEW_EVENT_DURATION_MINUTES",
+        60,
+    )
 
 
 settings = Settings()

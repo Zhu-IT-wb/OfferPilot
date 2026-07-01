@@ -37,9 +37,11 @@ def test_feishu_event_extracts_text_and_calls_agent(monkeypatch) -> None:
     _disable_feishu_token(monkeypatch)
 
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
             assert message == "今天任务是什么？"
             assert confirmed is False
+            assert user_id == "ou_test"
+            assert source == "feishu"
             return AgentResponse(
                 intent=IntentName.GET_TODAY_TASKS,
                 confidence=0.9,
@@ -100,6 +102,66 @@ def test_feishu_event_extracts_text_and_calls_agent(monkeypatch) -> None:
     }
 
 
+def test_feishu_event_ignores_duplicate_event_id(monkeypatch) -> None:
+    _disable_feishu_token(monkeypatch)
+    feishu._processed_event_ids.clear()
+    calls = {"agent": 0, "send": 0}
+
+    class FakeAgentOrchestrator:
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
+            calls["agent"] += 1
+            return AgentResponse(
+                intent=IntentName.GET_TODAY_TASKS,
+                confidence=0.9,
+                action=AgentActionName.LIST_TODAY_TASKS,
+                reply="ok",
+                slots={},
+            )
+
+    class FakeFeishuMessageService:
+        def is_configured(self):
+            return True
+
+        async def send_text_message(self, receive_id, text):
+            calls["send"] += 1
+            return FeishuMessageResult(
+                message_id="om_test",
+                raw_response={"code": 0, "data": {"message_id": "om_test"}},
+            )
+
+    monkeypatch.setattr(feishu, "AgentOrchestrator", FakeAgentOrchestrator)
+    monkeypatch.setattr(feishu, "FeishuMessageService", FakeFeishuMessageService)
+    app = create_app(Settings(debug_routes_enabled=False))
+    client = TestClient(app)
+    payload = {
+        "schema": "2.0",
+        "header": {
+            "event_type": "im.message.receive_v1",
+            "event_id": "event_test_1",
+        },
+        "event": {
+            "sender": {"sender_id": {"open_id": "ou_test"}},
+            "message": {
+                "message_type": "text",
+                "content": {"text": "今天任务是什么？"},
+            },
+        },
+    }
+
+    first = client.post("/api/feishu/events", json=payload)
+    second = client.post("/api/feishu/events", json=payload)
+
+    assert first.status_code == 200
+    assert first.json()["handled"] is True
+    assert second.status_code == 200
+    assert second.json() == {
+        "handled": False,
+        "event_type": "im.message.receive_v1",
+        "message": "重复事件已忽略。",
+    }
+    assert calls == {"agent": 1, "send": 1}
+
+
 def test_feishu_event_ignores_non_text_message(monkeypatch) -> None:
     _disable_feishu_token(monkeypatch)
     app = create_app(Settings(debug_routes_enabled=False))
@@ -132,7 +194,7 @@ def test_feishu_event_route_stays_enabled_when_debug_routes_disabled(monkeypatch
     _disable_feishu_token(monkeypatch)
 
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
             return AgentResponse(
                 intent=IntentName.GET_TODAY_TASKS,
                 confidence=0.9,
@@ -191,8 +253,10 @@ def test_feishu_event_accepts_valid_top_level_token(monkeypatch) -> None:
 
 def test_feishu_event_accepts_valid_header_token(monkeypatch) -> None:
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
             assert message == "今天任务是什么？"
+            assert user_id == "ou_test"
+            assert source == "feishu"
             return AgentResponse(
                 intent=IntentName.GET_TODAY_TASKS,
                 confidence=0.9,
@@ -290,7 +354,7 @@ def test_feishu_event_reports_unsent_reply_when_credentials_missing(monkeypatch)
     _disable_feishu_token(monkeypatch)
 
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
             return AgentResponse(
                 intent=IntentName.GET_TODAY_TASKS,
                 confidence=0.9,
@@ -330,7 +394,7 @@ def test_feishu_event_reports_reply_send_error(monkeypatch) -> None:
     _disable_feishu_token(monkeypatch)
 
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
             return AgentResponse(
                 intent=IntentName.GET_TODAY_TASKS,
                 confidence=0.9,

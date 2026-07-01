@@ -10,6 +10,7 @@ from app.schemas.tool import ToolResult
 class AgentActionName(str, Enum):
     LIST_TODAY_TASKS = "list_today_tasks"
     CREATE_APPLICATION = "create_application"
+    QUERY_APPLICATION = "query_application"
     UPDATE_APPLICATION = "update_application"
     COMPLETE_TASK = "complete_task"
     POSTPONE_TASK = "postpone_task"

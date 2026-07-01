@@ -65,6 +65,8 @@ async def debug_agent(request: DebugAgentRequest) -> AgentResponse:
         return await orchestrator.handle_message(
             message=request.message,
             confirmed=request.confirmed,
+            user_id=request.user_id,
+            source=request.source,
         )
     except LLMRequestError as exc:
         raise HTTPException(
