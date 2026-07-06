@@ -3,6 +3,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
+# 定义接口请求体的数据结构。
 class DebugLLMRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=4000)
     system_prompt: Optional[str] = Field(
@@ -14,6 +15,7 @@ class DebugLLMRequest(BaseModel):
     max_tokens: int = Field(default=512, ge=1, le=4096)
 
 
+# 定义接口响应体的数据结构。
 class DebugLLMResponse(BaseModel):
     provider: str
     model: str

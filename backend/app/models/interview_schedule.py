@@ -3,12 +3,14 @@ from enum import Enum
 from typing import Any, Dict, Optional
 
 
+# 枚举 InterviewScheduleStatus 的可选值。
 class InterviewScheduleStatus(str, Enum):
     SCHEDULED = "scheduled"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
 
 
+# 定义 InterviewSchedule 相关的数据结构或领域对象。
 @dataclass
 class InterviewSchedule:
     id: str
@@ -23,6 +25,7 @@ class InterviewSchedule:
     calendar_event_id: Optional[str] = None
     raw_message: str = ""
 
+    # 将当前领域对象转换为可序列化字典。
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,

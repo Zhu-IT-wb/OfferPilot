@@ -3,6 +3,10 @@ from zoneinfo import ZoneInfo
 
 from app.schemas.agent import AgentActionName
 from app.services.feishu_service import (
+    FeishuBitableAppResult,
+    FeishuBitableCollaboratorResult,
+    FeishuBitableRecordResult,
+    FeishuBitableTableResult,
     FeishuCalendarAttendeeResult,
     FeishuCalendarEventResult,
     FeishuCalendarResult,
@@ -49,7 +53,7 @@ def test_offerpilot_tools_create_and_list_application(monkeypatch) -> None:
         lambda text: datetime(2026, 7, 1, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
     repository = InMemoryOfferPilotRepository()
-    registry = build_offerpilot_tool_registry(repository)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
 
     result = registry.run(
         AgentActionName.CREATE_APPLICATION.value,
@@ -72,6 +76,271 @@ def test_offerpilot_tools_create_and_list_application(monkeypatch) -> None:
     assert repository.applications[0].company == "深信服"
 
 
+def test_offerpilot_tools_syncs_created_application_to_bitable() -> None:
+    class FakeBitableService:
+        app_token = ""
+        table_id = ""
+
+        def __init__(self):
+            self.create_app_calls = 0
+            self.create_table_calls = []
+            self.created_records = []
+            self.updated_records = []
+            self.collaborator_calls = []
+
+        def is_bitable_sync_enabled(self):
+            return True
+
+        def should_manage_offerpilot_bitable(self):
+            return True
+
+        def create_app(self):
+            self.create_app_calls += 1
+            return FeishuBitableAppResult(
+                app_token="bascn_offerpilot",
+                raw_response={"code": 0},
+            )
+
+        def create_application_table(self, app_token, table_name=None):
+            self.create_table_calls.append({"app_token": app_token, "table_name": table_name})
+            return FeishuBitableTableResult(
+                table_id="tbl_applications",
+                raw_response={"code": 0},
+            )
+
+        def create_record(self, app_token, table_id, fields):
+            self.created_records.append(
+                {
+                    "app_token": app_token,
+                    "table_id": table_id,
+                    "fields": fields,
+                }
+            )
+            return FeishuBitableRecordResult(
+                record_id="rec_app_1",
+                raw_response={"code": 0},
+            )
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated_records.append(
+                {
+                    "app_token": app_token,
+                    "table_id": table_id,
+                    "record_id": record_id,
+                    "fields": fields,
+                }
+            )
+            return FeishuBitableRecordResult(
+                record_id=record_id,
+                raw_response={"code": 0},
+            )
+
+        def add_bitable_collaborator(self, **kwargs):
+            self.collaborator_calls.append(kwargs)
+            return FeishuBitableCollaboratorResult(
+                member_id=kwargs["member_id"],
+                raw_response={"code": 0},
+            )
+
+    repository = InMemoryOfferPilotRepository()
+    bitable_service = FakeBitableService()
+    registry = build_offerpilot_tool_registry(
+        repository,
+        calendar_service=None,
+        bitable_service=bitable_service,
+    )
+
+    result = registry.run(
+        AgentActionName.CREATE_APPLICATION.value,
+        {
+            "company": "腾讯",
+            "role": "AI 应用开发",
+            "bitable_collaborator_user_id": "ou_test",
+            "bitable_collaborator_user_id_type": "open_id",
+        },
+    )
+
+    assert result.success is True
+    assert bitable_service.create_app_calls == 1
+    assert bitable_service.create_table_calls == [
+        {"app_token": "bascn_offerpilot", "table_name": "投递记录"}
+    ]
+    assert bitable_service.created_records[0]["app_token"] == "bascn_offerpilot"
+    assert bitable_service.created_records[0]["table_id"] == "tbl_applications"
+    assert bitable_service.created_records[0]["fields"]["OfferPilot记录ID"] == "app_1"
+    assert bitable_service.created_records[0]["fields"]["公司"] == "腾讯"
+    assert bitable_service.created_records[0]["fields"]["岗位"] == "AI 应用开发"
+    assert bitable_service.created_records[0]["fields"]["投递状态"] == "待投递/待确认"
+    assert bitable_service.created_records[0]["fields"]["优先级"] == "高"
+    assert bitable_service.created_records[0]["fields"]["来源"] == "飞书助手"
+    assert bitable_service.created_records[0]["fields"]["下一步"] == "确认投递信息，补充投递渠道或 JD 关键词"
+    assert repository.get_runtime_setting("feishu.offerpilot_bitable_app_token") == "bascn_offerpilot"
+    assert repository.get_runtime_setting("feishu.offerpilot_bitable_table_id") == "tbl_applications"
+    assert repository.get_runtime_setting("feishu.offerpilot_bitable_schema_version") == "v2"
+    assert repository.get_runtime_setting("feishu.offerpilot_bitable_record_id.tbl_applications.app_1") == "rec_app_1"
+    assert repository.get_runtime_setting("feishu.offerpilot_bitable_collaborator.bascn_offerpilot.ou_test") == "ou_test"
+    assert bitable_service.collaborator_calls == [
+        {
+            "app_token": "bascn_offerpilot",
+            "member_id": "ou_test",
+            "member_id_type": "open_id",
+            "perm": "edit",
+            "need_notification": False,
+        }
+    ]
+    assert result.data["bitable_sync"]["synced"] is True
+    assert result.data["bitable_sync"]["collaborator_sync"]["synced"] is True
+    assert result.data["bitable_sync"]["operation"] == "created"
+    assert result.data["bitable_sync"]["bitable_auto_created"] is True
+    assert result.data["bitable_sync"]["web_url"] == (
+        "https://feishu.cn/base/bascn_offerpilot?table=tbl_applications"
+    )
+    assert "已自动创建 OfferPilot 秋招投递多维表格" in result.message
+    assert "已同步到飞书多维表格" in result.message
+    assert "已授予你飞书多维表格编辑权限" in result.message
+    assert "打开多维表格：https://feishu.cn/base/bascn_offerpilot?table=tbl_applications" in result.message
+
+
+def test_offerpilot_tools_updates_existing_bitable_record_for_application_progress() -> None:
+    class FakeBitableService:
+        app_token = ""
+        table_id = ""
+
+        def __init__(self):
+            self.create_app_calls = 0
+            self.create_table_calls = 0
+            self.created_records = []
+            self.updated_records = []
+            self.collaborator_calls = []
+
+        def is_bitable_sync_enabled(self):
+            return True
+
+        def should_manage_offerpilot_bitable(self):
+            return True
+
+        def create_app(self):
+            self.create_app_calls += 1
+            return FeishuBitableAppResult(
+                app_token="bascn_offerpilot",
+                raw_response={"code": 0},
+            )
+
+        def create_application_table(self, app_token, table_name=None):
+            self.create_table_calls += 1
+            return FeishuBitableTableResult(
+                table_id="tbl_applications",
+                raw_response={"code": 0},
+            )
+
+        def create_record(self, app_token, table_id, fields):
+            self.created_records.append(fields)
+            return FeishuBitableRecordResult(
+                record_id="rec_app_1",
+                raw_response={"code": 0},
+            )
+
+        def update_record(self, app_token, table_id, record_id, fields):
+            self.updated_records.append(
+                {
+                    "app_token": app_token,
+                    "table_id": table_id,
+                    "record_id": record_id,
+                    "fields": fields,
+                }
+            )
+            return FeishuBitableRecordResult(
+                record_id=record_id,
+                raw_response={"code": 0},
+            )
+
+        def add_bitable_collaborator(self, **kwargs):
+            self.collaborator_calls.append(kwargs)
+            return FeishuBitableCollaboratorResult(
+                member_id=kwargs["member_id"],
+                raw_response={"code": 0},
+            )
+
+    repository = InMemoryOfferPilotRepository()
+    bitable_service = FakeBitableService()
+    registry = build_offerpilot_tool_registry(
+        repository,
+        calendar_service=None,
+        bitable_service=bitable_service,
+    )
+
+    create_result = registry.run(
+        AgentActionName.CREATE_APPLICATION.value,
+        {
+            "company": "腾讯",
+            "role": "AI 应用开发",
+            "bitable_collaborator_user_id": "ou_test",
+            "bitable_collaborator_user_id_type": "open_id",
+        },
+    )
+    update_result = registry.run(
+        AgentActionName.UPDATE_APPLICATION.value,
+        {
+            "company": "腾讯",
+            "round": "一面",
+            "interview_time": "后天下午三点",
+            "start_at": "2026-07-03T15:00:00+08:00",
+            "update_type": "schedule_interview",
+            "status": "interview_1",
+            "bitable_collaborator_user_id": "ou_test",
+            "bitable_collaborator_user_id_type": "open_id",
+        },
+    )
+
+    assert create_result.success is True
+    assert update_result.success is True
+    assert bitable_service.create_app_calls == 1
+    assert bitable_service.create_table_calls == 1
+    assert len(bitable_service.collaborator_calls) == 1
+    assert len(bitable_service.created_records) == 1
+    assert bitable_service.updated_records == [
+        {
+            "app_token": "bascn_offerpilot",
+            "table_id": "tbl_applications",
+            "record_id": "rec_app_1",
+            "fields": {
+                "OfferPilot记录ID": "app_1",
+                "公司": "腾讯",
+                "岗位": "AI 应用开发",
+                "投递状态": "一面阶段",
+                "状态值": "interview_1",
+                "优先级": "高",
+                "来源": "飞书助手",
+                "下一步": "准备 一面，时间：后天下午三点",
+                "最后同步时间": bitable_service.updated_records[0]["fields"]["最后同步时间"],
+                "面试轮次": "一面",
+                "面试时间文本": "后天下午三点",
+                "面试开始时间": 1783062000000,
+                "提醒分钟": 30,
+            },
+        }
+    ]
+    assert update_result.data["bitable_sync"]["operation"] == "updated"
+    assert update_result.data["bitable_sync"]["bitable_auto_created"] is False
+    assert update_result.data["bitable_sync"]["web_url"] == (
+        "https://feishu.cn/base/bascn_offerpilot?table=tbl_applications"
+    )
+    assert "已同步到飞书多维表格" in update_result.message
+
+
+def test_offerpilot_tools_summarizes_bitable_collaborator_permission_error() -> None:
+    raw_error = (
+        'Feishu OpenAPI returned HTTP 400: {"code":99991672,'
+        '"msg":"Access denied. One of the following scopes is required: '
+        '[drive:drive, drive:file, docs:doc, sheets:spreadsheet]."}'
+    )
+
+    summary = offerpilot_tools._summarize_bitable_collaborator_error(raw_error)
+
+    assert "缺少云文档协作者授权权限" in summary
+    assert "drive:drive 或 drive:file" in summary
+
+
 def test_offerpilot_tools_create_application_with_generic_interview_creates_schedule(monkeypatch) -> None:
     monkeypatch.setattr(
         offerpilot_tools,
@@ -79,7 +348,7 @@ def test_offerpilot_tools_create_application_with_generic_interview_creates_sche
         lambda text: datetime(2026, 7, 1, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
     repository = InMemoryOfferPilotRepository()
-    registry = build_offerpilot_tool_registry(repository)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
 
     result = registry.run(
         AgentActionName.CREATE_APPLICATION.value,
@@ -102,7 +371,7 @@ def test_offerpilot_tools_create_application_with_generic_interview_creates_sche
 
 def test_offerpilot_tools_query_company_application_status() -> None:
     repository = InMemoryOfferPilotRepository()
-    registry = build_offerpilot_tool_registry(repository)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
     repository.create_application(
         company="深信服",
         role="AI 应用开发",
@@ -124,7 +393,7 @@ def test_offerpilot_tools_query_company_application_status() -> None:
 
 def test_offerpilot_tools_query_upcoming_interviews() -> None:
     repository = InMemoryOfferPilotRepository()
-    registry = build_offerpilot_tool_registry(repository)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
     repository.create_application(
         company="深信服",
         role="AI 应用开发",
@@ -152,7 +421,7 @@ def test_offerpilot_tools_update_application_and_create_interview_schedule(monke
         lambda text: datetime(2026, 6, 30, 8, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
     repository = InMemoryOfferPilotRepository()
-    registry = build_offerpilot_tool_registry(repository)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
     repository.create_application(company="深信服", role="AI 应用开发")
 
     result = registry.run(
@@ -198,6 +467,7 @@ def test_offerpilot_tools_syncs_interview_schedule_to_calendar() -> None:
     registry = build_offerpilot_tool_registry(
         repository,
         calendar_service=FakeCalendarService(),
+        bitable_service=None,
     )
     repository.create_application(company="深信服", role="AI 应用开发")
 
@@ -255,6 +525,7 @@ def test_offerpilot_tools_auto_creates_managed_calendar_once() -> None:
     registry = build_offerpilot_tool_registry(
         repository,
         calendar_service=calendar_service,
+        bitable_service=None,
     )
     repository.create_application(company="深信服", role="AI 应用开发")
 
@@ -335,6 +606,7 @@ def test_offerpilot_tools_adds_feishu_user_as_event_attendee() -> None:
     registry = build_offerpilot_tool_registry(
         repository,
         calendar_service=calendar_service,
+        bitable_service=None,
     )
     repository.create_application(company="深信服", role="AI 应用开发")
 
@@ -372,7 +644,7 @@ def test_offerpilot_tools_adds_feishu_user_as_event_attendee() -> None:
 
 def test_offerpilot_tools_query_upcoming_interviews_uses_schedule_records() -> None:
     repository = InMemoryOfferPilotRepository()
-    registry = build_offerpilot_tool_registry(repository)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
     application = repository.create_application(company="深信服", role="AI 应用开发")
     repository.create_interview_schedule(
         application_id=application.id,
@@ -394,7 +666,7 @@ def test_offerpilot_tools_query_upcoming_interviews_uses_schedule_records() -> N
 
 def test_offerpilot_tools_update_application_passed_round() -> None:
     repository = InMemoryOfferPilotRepository()
-    registry = build_offerpilot_tool_registry(repository)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
     repository.create_application(company="深信服", role="AI 应用开发", round_name="一面")
 
     result = registry.run(
@@ -415,7 +687,7 @@ def test_offerpilot_tools_update_application_passed_round() -> None:
 
 def test_offerpilot_tools_complete_seed_task() -> None:
     repository = InMemoryOfferPilotRepository()
-    registry = build_offerpilot_tool_registry(repository)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
 
     result = registry.run(
         AgentActionName.COMPLETE_TASK.value,

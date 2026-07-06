@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Any, Dict
 
 
+# 枚举 TaskType 的可选值。
 class TaskType(str, Enum):
     LEETCODE = "leetcode"
     INTERVIEW_QUESTION = "interview_question"
@@ -12,6 +13,7 @@ class TaskType(str, Enum):
     CUSTOM = "custom"
 
 
+# 枚举 TaskStatus 的可选值。
 class TaskStatus(str, Enum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
@@ -21,12 +23,14 @@ class TaskStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+# 枚举 TaskPriority 的可选值。
 class TaskPriority(str, Enum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
 
 
+# 定义 Task 相关的数据结构或领域对象。
 @dataclass
 class Task:
     id: str
@@ -35,6 +39,7 @@ class Task:
     status: TaskStatus = TaskStatus.PENDING
     priority: TaskPriority = TaskPriority.MEDIUM
 
+    # 将当前领域对象转换为可序列化字典。
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,

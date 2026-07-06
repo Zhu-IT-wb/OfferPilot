@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 
+# 解析 env line。
 def _parse_env_line(line: str) -> Optional[Tuple[str, str]]:
     stripped = line.strip()
     if not stripped or stripped.startswith("#"):
@@ -27,6 +28,7 @@ def _parse_env_line(line: str) -> Optional[Tuple[str, str]]:
     return key, value
 
 
+# 处理 strip_inline_comment 相关逻辑。
 def _strip_inline_comment(value: str) -> str:
     quote: Optional[str] = None
     for index, char in enumerate(value):
@@ -37,6 +39,7 @@ def _strip_inline_comment(value: str) -> str:
     return value
 
 
+# 处理 load_env_file 相关逻辑。
 def _load_env_file(path: Path) -> None:
     if not path.exists():
         return
@@ -50,6 +53,7 @@ def _load_env_file(path: Path) -> None:
         os.environ.setdefault(key, value)
 
 
+# 获取 bool env。
 def _get_bool_env(name: str, default: bool) -> bool:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -58,6 +62,7 @@ def _get_bool_env(name: str, default: bool) -> bool:
     return raw_value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+# 获取 int env。
 def _get_int_env(name: str, default: int) -> int:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -69,11 +74,13 @@ def _get_int_env(name: str, default: int) -> int:
         return default
 
 
+# 处理 debug_routes_default 相关逻辑。
 def _debug_routes_default() -> bool:
     environment = os.getenv("OFFERPILOT_ENV", "local").strip().lower()
     return environment in {"local", "dev", "development", "test"}
 
 
+# 处理 default_env_file 相关逻辑。
 def _default_env_file() -> Path:
     configured_path = os.getenv("OFFERPILOT_ENV_FILE")
     if configured_path:
@@ -82,6 +89,7 @@ def _default_env_file() -> Path:
     return Path(__file__).resolve().parents[2] / ".env"
 
 
+# 处理 default_sqlite_path 相关逻辑。
 def _default_sqlite_path() -> str:
     return str(Path(__file__).resolve().parents[2] / "data" / "offerpilot.db")
 
@@ -89,6 +97,7 @@ def _default_sqlite_path() -> str:
 _load_env_file(_default_env_file())
 
 
+# 集中读取和保存 OfferPilot 后端运行配置。
 @dataclass(frozen=True)
 class Settings:
     app_name: str = os.getenv("OFFERPILOT_APP_NAME", "OfferPilot API")
@@ -103,6 +112,11 @@ class Settings:
     llm_base_url: str = os.getenv("OFFERPILOT_LLM_BASE_URL", "https://api.deepseek.com")
     llm_model: str = os.getenv("OFFERPILOT_LLM_MODEL", "deepseek-v4-flash")
     llm_timeout_seconds: float = float(os.getenv("OFFERPILOT_LLM_TIMEOUT_SECONDS", "30"))
+    llm_planner_enabled: bool = _get_bool_env("OFFERPILOT_LLM_PLANNER_ENABLED", True)
+    llm_planner_fallback_enabled: bool = _get_bool_env(
+        "OFFERPILOT_LLM_PLANNER_FALLBACK_ENABLED",
+        True,
+    )
     debug_routes_enabled: bool = _get_bool_env(
         "OFFERPILOT_ENABLE_DEBUG_ROUTES",
         _debug_routes_default(),
@@ -139,6 +153,37 @@ class Settings:
     feishu_interview_event_duration_minutes: int = _get_int_env(
         "FEISHU_INTERVIEW_EVENT_DURATION_MINUTES",
         60,
+    )
+    feishu_bitable_sync_enabled: bool = _get_bool_env("FEISHU_BITABLE_SYNC_ENABLED", False)
+    feishu_bitable_app_token: str = os.getenv("FEISHU_BITABLE_APP_TOKEN", "")
+    feishu_bitable_table_id: str = os.getenv("FEISHU_BITABLE_TABLE_ID", "")
+    feishu_bitable_auto_create_enabled: bool = _get_bool_env(
+        "FEISHU_BITABLE_AUTO_CREATE_ENABLED",
+        True,
+    )
+    feishu_offerpilot_bitable_name: str = os.getenv(
+        "FEISHU_OFFERPILOT_BITABLE_NAME",
+        "OfferPilot 秋招投递表",
+    )
+    feishu_offerpilot_bitable_table_name: str = os.getenv(
+        "FEISHU_OFFERPILOT_BITABLE_TABLE_NAME",
+        "投递记录",
+    )
+    feishu_bitable_web_base_url: str = os.getenv(
+        "FEISHU_BITABLE_WEB_BASE_URL",
+        "https://feishu.cn/base",
+    )
+    feishu_bitable_pull_sync_enabled: bool = _get_bool_env(
+        "FEISHU_BITABLE_PULL_SYNC_ENABLED",
+        False,
+    )
+    feishu_bitable_pull_sync_interval_seconds: int = _get_int_env(
+        "FEISHU_BITABLE_PULL_SYNC_INTERVAL_SECONDS",
+        30,
+    )
+    feishu_bitable_pull_sync_page_size: int = _get_int_env(
+        "FEISHU_BITABLE_PULL_SYNC_PAGE_SIZE",
+        100,
     )
 
 

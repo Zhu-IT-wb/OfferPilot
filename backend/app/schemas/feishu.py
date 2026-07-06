@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from app.schemas.agent import AgentResponse
 
 
+# 定义接口响应体的数据结构。
 class FeishuEventProcessResponse(BaseModel):
     handled: bool
     event_type: Optional[str] = None

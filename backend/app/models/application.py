@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
+# 枚举 ApplicationStatus 的可选值。
 class ApplicationStatus(str, Enum):
     PLANNED = "planned"
     SUBMITTED = "submitted"
@@ -55,6 +56,7 @@ INTERVIEW_APPLICATION_STATUSES = {
 }
 
 
+# 定义 Application 相关的数据结构或领域对象。
 @dataclass
 class Application:
     id: str
@@ -65,6 +67,7 @@ class Application:
     round: Optional[str] = None
     jd_keywords: List[str] = field(default_factory=list)
 
+    # 将当前领域对象转换为可序列化字典。
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
@@ -77,10 +80,12 @@ class Application:
         }
 
 
+# 将投递状态转换为用户可读的中文标签。
 def application_status_label(status: ApplicationStatus) -> str:
     return APPLICATION_STATUS_LABELS.get(status, status.value)
 
 
+# 根据面试轮次推断投递状态。
 def application_status_from_round(round_name: Optional[str]) -> ApplicationStatus:
     status_by_round = {
         "笔试": ApplicationStatus.WRITTEN_TEST,
@@ -95,6 +100,7 @@ def application_status_from_round(round_name: Optional[str]) -> ApplicationStatu
     return ApplicationStatus.PLANNED
 
 
+# 根据通过的面试轮次推断下一阶段状态。
 def application_passed_status_from_round(round_name: Optional[str]) -> Optional[ApplicationStatus]:
     status_by_round = {
         "笔试": ApplicationStatus.WRITTEN_TEST_PASSED,
@@ -109,5 +115,6 @@ def application_passed_status_from_round(round_name: Optional[str]) -> Optional[
     return status_by_round.get(_normalize_round(round_name))
 
 
+# 标准化 round。
 def _normalize_round(round_name: str) -> str:
     return round_name.replace(" ", "").lower()

@@ -96,7 +96,7 @@ def test_orchestrator_executes_application_query_without_confirmation() -> None:
 
     repository = InMemoryOfferPilotRepository()
     repository.create_application(company="深信服", role="AI 应用开发", round_name="二面")
-    registry = build_offerpilot_tool_registry(repository)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
     orchestrator = AgentOrchestrator(
         intent_classifier=FakeIntentClassifier(),
         tool_registry=registry,
@@ -121,7 +121,7 @@ def test_orchestrator_does_not_execute_mutating_action_without_confirmation() ->
             )
 
     repository = InMemoryOfferPilotRepository()
-    registry = build_offerpilot_tool_registry(repository)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
     orchestrator = AgentOrchestrator(
         intent_classifier=FakeIntentClassifier(),
         tool_registry=registry,
@@ -150,7 +150,7 @@ def test_orchestrator_executes_create_application_when_confirmed() -> None:
             )
 
     repository = InMemoryOfferPilotRepository()
-    registry = build_offerpilot_tool_registry(repository)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
     orchestrator = AgentOrchestrator(
         intent_classifier=FakeIntentClassifier(),
         tool_registry=registry,
@@ -190,7 +190,7 @@ def test_orchestrator_confirms_application_update_and_records_schedule() -> None
 
     repository = InMemoryOfferPilotRepository()
     repository.create_application(company="深信服", role="AI 应用开发")
-    registry = build_offerpilot_tool_registry(repository)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
     orchestrator = AgentOrchestrator(
         intent_classifier=FakeIntentClassifier(),
         tool_registry=registry,
@@ -221,6 +221,258 @@ def test_orchestrator_confirms_application_update_and_records_schedule() -> None
     assert repository.applications[0].status.value == "interview_1"
     assert repository.interview_schedules[0].company == "深信服"
     assert repository.interview_schedules[0].reminder_minutes == 30
+
+
+def test_orchestrator_asks_for_specific_interview_time_before_update() -> None:
+    class FakeIntentClassifier:
+        async def classify(self, message):
+            return IntentClassification(
+                intent=IntentName.UPDATE_APPLICATION,
+                confidence=0.82,
+                slots={
+                    "company": "美团",
+                    "round": "一面",
+                    "interview_time": "明天下午",
+                    "update_type": "schedule_interview",
+                    "status": "interview_1",
+                },
+            )
+
+    repository = InMemoryOfferPilotRepository()
+    repository.create_application(company="美团", role="Java 后端实习")
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
+    orchestrator = AgentOrchestrator(
+        intent_classifier=FakeIntentClassifier(),
+        tool_registry=registry,
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    result = asyncio.run(
+        orchestrator.handle_message(
+            "我之前投递的美团 Java 后端实习，明天下午邀请我一面",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+
+    assert result.action == AgentActionName.ASK_CLARIFICATION
+    assert result.need_confirmation is False
+    assert result.missing_slots == ["interview_time"]
+    assert "具体面试时间" in result.reply
+    assert repository.applications[0].status.value == "planned"
+    assert repository.interview_schedules == []
+
+
+def test_orchestrator_allows_skipping_calendar_reminder_before_confirmation() -> None:
+    class FakeIntentClassifier:
+        async def classify(self, message):
+            return IntentClassification(
+                intent=IntentName.UPDATE_APPLICATION,
+                confidence=0.82,
+                slots={
+                    "company": "美团",
+                    "round": "一面",
+                    "interview_time": "明天下午",
+                    "update_type": "schedule_interview",
+                    "status": "interview_1",
+                },
+            )
+
+    repository = InMemoryOfferPilotRepository()
+    repository.create_application(company="美团", role="Java 后端实习")
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
+    orchestrator = AgentOrchestrator(
+        intent_classifier=FakeIntentClassifier(),
+        tool_registry=registry,
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    first = asyncio.run(
+        orchestrator.handle_message(
+            "我之前投递的美团 Java 后端实习，明天下午邀请我一面",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+    assert first.missing_slots == ["interview_time"]
+
+    second = asyncio.run(
+        orchestrator.handle_message(
+            "明天下午三点",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+    assert second.action == AgentActionName.UPDATE_APPLICATION
+    assert second.need_confirmation is True
+    assert second.slots["interview_time"] == "明天下午三点"
+    assert "如果不需要" in second.reply
+
+    third = asyncio.run(
+        orchestrator.handle_message(
+            "不需要提醒",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+    assert third.need_confirmation is True
+    assert third.slots["calendar_reminder"] is False
+    assert "不需要同步飞书日历提醒" in third.reply
+
+    fourth = asyncio.run(
+        orchestrator.handle_message(
+            "确认",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+
+    assert fourth.tool_result is not None
+    assert fourth.tool_result.success is True
+    assert fourth.tool_result.data["calendar_sync"]["status"] == "skipped_by_user"
+    assert repository.applications[0].status.value == "interview_1"
+    assert repository.interview_schedules[0].start_at is not None
+    assert "未添加飞书日历提醒" in fourth.reply
+
+
+def test_orchestrator_fills_multiple_application_slots_from_labeled_reply() -> None:
+    class FakeIntentClassifier:
+        async def classify(self, message):
+            return IntentClassification(
+                intent=IntentName.UPDATE_APPLICATION,
+                confidence=0.82,
+                slots={
+                    "round": "一面",
+                    "role": "Java 后端",
+                    "interview_time": "明天",
+                    "update_type": "schedule_interview",
+                    "status": "interview_1",
+                },
+            )
+
+    repository = InMemoryOfferPilotRepository()
+    repository.create_application(company="测试修改推库", role="Java 后端实习")
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
+    orchestrator = AgentOrchestrator(
+        intent_classifier=FakeIntentClassifier(),
+        tool_registry=registry,
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    first = asyncio.run(
+        orchestrator.handle_message(
+            "我之前投 Java 后端实习，明天下午邀请我一面",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+    assert first.action == AgentActionName.ASK_CLARIFICATION
+    assert first.missing_slots == ["company", "interview_time"]
+
+    second = asyncio.run(
+        orchestrator.handle_message(
+            "公司是 测试修改推库  时间是明天下午5点。",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+    assert second.action == AgentActionName.UPDATE_APPLICATION
+    assert second.need_confirmation is True
+    assert second.slots["company"] == "测试修改推库"
+    assert second.slots["interview_time"] == "明天下午5点"
+    assert "公司是 测试修改推库" in second.reply
+
+    third = asyncio.run(
+        orchestrator.handle_message(
+            "确认",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+    assert third.tool_result is not None
+    assert third.tool_result.success is True
+    assert third.tool_result.data["application"]["company"] == "测试修改推库"
+    assert third.tool_result.data["interview_schedule"]["start_at"] is not None
+
+
+def test_orchestrator_answers_greeting_without_business_intent() -> None:
+    class FailingIntentClassifier:
+        async def classify(self, message):
+            raise AssertionError("smalltalk should not enter business intent classification")
+
+    orchestrator = AgentOrchestrator(
+        intent_classifier=FailingIntentClassifier(),
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    result = asyncio.run(orchestrator.handle_message("你好"))
+
+    assert result.intent == IntentName.ASK_HELP
+    assert result.action == AgentActionName.ANSWER_HELP
+    assert result.need_confirmation is False
+    assert result.tool_result is None
+    assert "OfferPilot" in result.reply
+    assert result.slots["message_route"] == "smalltalk"
+
+
+def test_orchestrator_answers_identity_question_without_business_intent() -> None:
+    class FailingIntentClassifier:
+        async def classify(self, message):
+            raise AssertionError("identity question should not enter business intent classification")
+
+    orchestrator = AgentOrchestrator(
+        intent_classifier=FailingIntentClassifier(),
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    result = asyncio.run(orchestrator.handle_message("你是谁？"))
+
+    assert result.action == AgentActionName.ANSWER_HELP
+    assert "个人助手" in result.reply
+    assert "记录投递" in result.reply
+    assert result.slots["message_route"] == "smalltalk"
+
+
+def test_orchestrator_answers_capability_help_without_business_intent() -> None:
+    class FailingIntentClassifier:
+        async def classify(self, message):
+            raise AssertionError("capability help should not enter business intent classification")
+
+    orchestrator = AgentOrchestrator(
+        intent_classifier=FailingIntentClassifier(),
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    result = asyncio.run(orchestrator.handle_message("你能做什么？"))
+
+    assert result.action == AgentActionName.ANSWER_HELP
+    assert "飞书多维表格" in result.reply
+    assert "飞书日历" in result.reply
+    assert result.slots["message_route"] == "capability_help"
+
+
+def test_orchestrator_routes_domain_question_to_general_responder() -> None:
+    class FailingIntentClassifier:
+        async def classify(self, message):
+            raise AssertionError("domain question should not enter business intent classification")
+
+    class FakeGeneralResponder:
+        async def respond(self, message, route):
+            assert message == "Java 后端秋招怎么准备？"
+            assert route.route.value == "domain_question"
+            return "先抓 Java 基础、数据库、缓存和项目深挖。"
+
+    orchestrator = AgentOrchestrator(
+        intent_classifier=FailingIntentClassifier(),
+        general_responder=FakeGeneralResponder(),
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    result = asyncio.run(orchestrator.handle_message("Java 后端秋招怎么准备？"))
+
+    assert result.action == AgentActionName.ANSWER_HELP
+    assert result.reply == "先抓 Java 基础、数据库、缓存和项目深挖。"
+    assert result.slots["message_route"] == "domain_question"
 
 
 def test_orchestrator_passes_feishu_user_to_calendar_attendee_sync() -> None:
@@ -272,7 +524,11 @@ def test_orchestrator_passes_feishu_user_to_calendar_attendee_sync() -> None:
     repository = InMemoryOfferPilotRepository()
     repository.create_application(company="深信服", role="AI 应用开发")
     calendar_service = FakeCalendarService()
-    registry = build_offerpilot_tool_registry(repository, calendar_service=calendar_service)
+    registry = build_offerpilot_tool_registry(
+        repository,
+        calendar_service=calendar_service,
+        bitable_service=None,
+    )
     orchestrator = AgentOrchestrator(
         intent_classifier=FakeIntentClassifier(),
         tool_registry=registry,
@@ -295,6 +551,7 @@ def test_orchestrator_passes_feishu_user_to_calendar_attendee_sync() -> None:
     )
 
     assert first.slots["attendee_user_id"] == "ou_test"
+    assert first.slots["bitable_collaborator_user_id"] == "ou_test"
     assert second.tool_result is not None
     assert second.tool_result.data["calendar_sync"]["attendee_sync"]["synced"] is True
     assert calendar_service.added_user_ids == ["ou_test"]
@@ -315,7 +572,7 @@ def test_orchestrator_fills_missing_slot_then_confirms_pending_action() -> None:
             )
 
     repository = InMemoryOfferPilotRepository()
-    registry = build_offerpilot_tool_registry(repository)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
     orchestrator = AgentOrchestrator(
         intent_classifier=FakeIntentClassifier(),
         tool_registry=registry,

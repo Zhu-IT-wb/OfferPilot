@@ -14,12 +14,15 @@ from app.models.task import Task, TaskPriority, TaskStatus, TaskType
 from app.repositories.offerpilot_repository import _default_tasks
 
 
+# 使用 SQLite 持久化 OfferPilot 业务数据。
 class SQLiteOfferPilotRepository:
+    # 初始化当前组件所需的依赖和配置。
     def __init__(self, db_path: str) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
+    # 获取 runtime setting。
     def get_runtime_setting(self, key: str) -> Optional[str]:
         value = self._fetch_value(
             "SELECT value FROM runtime_settings WHERE key = ?",
@@ -27,6 +30,7 @@ class SQLiteOfferPilotRepository:
         )
         return value if isinstance(value, str) else None
 
+    # 保存或更新 runtime setting。
     def set_runtime_setting(self, key: str, value: str) -> None:
         self._execute(
             """
@@ -37,6 +41,7 @@ class SQLiteOfferPilotRepository:
             (key, value),
         )
 
+    # 查询并格式化今天的秋招任务。
     def list_today_tasks(self) -> List[Task]:
         active_statuses = (
             TaskStatus.PENDING.value,
@@ -55,6 +60,7 @@ class SQLiteOfferPilotRepository:
         )
         return [self._task_from_row(row) for row in rows]
 
+    # 创建投递记录，并按需同步面试日程和飞书多维表格。
     def create_application(
         self,
         company: str,
@@ -91,6 +97,7 @@ class SQLiteOfferPilotRepository:
         )
         return application
 
+    # 查询 applications 列表。
     def list_applications(self, company: Optional[str] = None) -> List[Application]:
         rows = self._fetch_all(
             """
@@ -110,6 +117,7 @@ class SQLiteOfferPilotRepository:
             if normalized_company in self._normalize(application.company)
         ]
 
+    # 更新投递进度，并按需同步日历和多维表格。
     def update_application(
         self,
         company: str,
@@ -147,6 +155,53 @@ class SQLiteOfferPilotRepository:
         )
         return application
 
+    # 更新 application by id。
+    def update_application_by_id(
+        self,
+        application_id: str,
+        company: Optional[str] = None,
+        role: Optional[str] = None,
+        status: Optional[ApplicationStatus] = None,
+        interview_time: Optional[str] = None,
+        round_name: Optional[str] = None,
+        jd_keywords: Optional[List[str]] = None,
+    ) -> Optional[Application]:
+        application = self._find_application_by_id(application_id)
+        if application is None:
+            return None
+
+        if company is not None:
+            application.company = company
+        if role is not None:
+            application.role = role
+        if status is not None:
+            application.status = status
+        if interview_time is not None:
+            application.interview_time = interview_time
+        if round_name is not None:
+            application.round = round_name
+        if jd_keywords is not None:
+            application.jd_keywords = list(jd_keywords)
+
+        self._execute(
+            """
+            UPDATE applications
+            SET company = ?, role = ?, status = ?, interview_time = ?, round = ?, jd_keywords = ?
+            WHERE id = ?
+            """,
+            (
+                application.company,
+                application.role,
+                application.status.value,
+                application.interview_time,
+                application.round,
+                json.dumps(application.jd_keywords, ensure_ascii=False),
+                application.id,
+            ),
+        )
+        return application
+
+    # 创建 interview schedule。
     def create_interview_schedule(
         self,
         company: str,
@@ -193,6 +248,7 @@ class SQLiteOfferPilotRepository:
         )
         return schedule
 
+    # 查询 interview schedules 列表。
     def list_interview_schedules(self, company: Optional[str] = None) -> List[InterviewSchedule]:
         rows = self._fetch_all(
             """
@@ -213,6 +269,7 @@ class SQLiteOfferPilotRepository:
             if normalized_company in self._normalize(schedule.company)
         ]
 
+    # 更新 interview schedule calendar event。
     def update_interview_schedule_calendar_event(
         self,
         schedule_id: str,
@@ -238,6 +295,7 @@ class SQLiteOfferPilotRepository:
         )
         return schedule
 
+    # 将指定任务标记为已完成。
     def complete_task(
         self,
         task_title: Optional[str] = None,
@@ -249,6 +307,7 @@ class SQLiteOfferPilotRepository:
             status=TaskStatus.PASSED,
         )
 
+    # 将指定任务延期处理。
     def postpone_task(
         self,
         task_title: Optional[str] = None,
@@ -260,6 +319,7 @@ class SQLiteOfferPilotRepository:
             status=TaskStatus.POSTPONED,
         )
 
+    # 记录一次面试复盘。
     def create_interview_review(
         self,
         company: Optional[str] = None,
@@ -292,6 +352,7 @@ class SQLiteOfferPilotRepository:
         )
         return review
 
+    # 处理 initialize 相关逻辑。
     def _initialize(self) -> None:
         with self._connect() as connection:
             connection.execute(
@@ -360,6 +421,7 @@ class SQLiteOfferPilotRepository:
         self._ensure_column("interview_schedules", "start_at", "TEXT")
         self._seed_default_tasks()
 
+    # 确保 column 存在或已配置。
     def _ensure_column(self, table: str, column: str, column_type: str) -> None:
         rows = self._fetch_all(f"PRAGMA table_info({table})")
         column_names = {row["name"] for row in rows}
@@ -368,6 +430,7 @@ class SQLiteOfferPilotRepository:
 
         self._execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}", ())
 
+    # 处理 seed_default_tasks 相关逻辑。
     def _seed_default_tasks(self) -> None:
         task_count = self._fetch_value("SELECT COUNT(*) FROM tasks")
         if task_count:
@@ -388,6 +451,7 @@ class SQLiteOfferPilotRepository:
                 ),
             )
 
+    # 更新 task status。
     def _update_task_status(
         self,
         task_title: Optional[str],
@@ -402,6 +466,7 @@ class SQLiteOfferPilotRepository:
         task.status = status
         return task
 
+    # 查找 task。
     def _find_task(
         self,
         task_title: Optional[str] = None,
@@ -429,33 +494,54 @@ class SQLiteOfferPilotRepository:
 
         return None
 
+    # 查找 application。
     def _find_application(self, company: str) -> Optional[Application]:
         matches = self.list_applications(company=company)
         return matches[-1] if matches else None
 
+    # 查找 application by id。
+    def _find_application_by_id(self, application_id: str) -> Optional[Application]:
+        rows = self._fetch_all(
+            """
+            SELECT id, company, role, status, interview_time, round, jd_keywords
+            FROM applications
+            WHERE id = ?
+            """,
+            (application_id,),
+        )
+        if not rows:
+            return None
+        return self._application_from_row(rows[0])
+
+    # 处理 next_id 相关逻辑。
     def _next_id(self, table: str, prefix: str) -> str:
         count = self._fetch_value(f"SELECT COUNT(*) FROM {table}")
         return f"{prefix}_{count + 1}"
 
+    # 处理 fetch_value 相关逻辑。
     def _fetch_value(self, query: str, parameters: tuple[Any, ...] = ()) -> Any:
         with self._connect() as connection:
             row = connection.execute(query, parameters).fetchone()
         return row[0] if row is not None else None
 
+    # 处理 fetch_all 相关逻辑。
     def _fetch_all(self, query: str, parameters: tuple[Any, ...] = ()) -> List[sqlite3.Row]:
         with self._connect() as connection:
             return connection.execute(query, parameters).fetchall()
 
+    # 处理 execute 相关逻辑。
     def _execute(self, query: str, parameters: tuple[Any, ...]) -> None:
         with self._connect() as connection:
             connection.execute(query, parameters)
             connection.commit()
 
+    # 处理 connect 相关逻辑。
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
         return connection
 
+    # 处理 task_from_row 相关逻辑。
     @staticmethod
     def _task_from_row(row: sqlite3.Row) -> Task:
         return Task(
@@ -466,6 +552,7 @@ class SQLiteOfferPilotRepository:
             priority=TaskPriority(row["priority"]),
         )
 
+    # 处理 application_from_row 相关逻辑。
     @staticmethod
     def _application_from_row(row: sqlite3.Row) -> Application:
         return Application(
@@ -478,6 +565,7 @@ class SQLiteOfferPilotRepository:
             jd_keywords=json.loads(row["jd_keywords"] or "[]"),
         )
 
+    # 处理 interview_review_from_row 相关逻辑。
     @staticmethod
     def _interview_review_from_row(row: sqlite3.Row) -> InterviewReview:
         return InterviewReview(
@@ -489,6 +577,7 @@ class SQLiteOfferPilotRepository:
             status=InterviewReviewStatus(row["status"]),
         )
 
+    # 处理 interview_schedule_from_row 相关逻辑。
     @staticmethod
     def _interview_schedule_from_row(row: sqlite3.Row) -> InterviewSchedule:
         return InterviewSchedule(
@@ -505,6 +594,7 @@ class SQLiteOfferPilotRepository:
             raw_message=row["raw_message"],
         )
 
+    # 处理 normalize 相关逻辑。
     @staticmethod
     def _normalize(value: str) -> str:
         return value.replace(" ", "").lower()

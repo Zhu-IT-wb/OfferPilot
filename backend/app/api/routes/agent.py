@@ -7,6 +7,7 @@ from app.services.llm_service import LLMRequestError
 router = APIRouter(prefix="/agent")
 
 
+# 处理外部直接调用 Agent 的消息请求。
 @router.post("/message", response_model=AgentResponse, response_model_exclude_none=True)
 async def handle_agent_message(request: AgentMessageRequest) -> AgentResponse:
     orchestrator = AgentOrchestrator()

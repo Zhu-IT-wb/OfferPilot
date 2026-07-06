@@ -10,39 +10,92 @@ import httpx
 from app.core.config import settings
 
 
+# 表示当前模块抛出的业务异常。
 class FeishuConfigurationError(RuntimeError):
     """Raised when Feishu app credentials are not configured."""
 
 
+# 表示当前模块抛出的业务异常。
 class FeishuRequestError(RuntimeError):
     """Raised when Feishu OpenAPI returns or causes an error."""
 
 
+# 承载外部服务调用后的结构化结果。
 @dataclass(frozen=True)
 class FeishuMessageResult:
     message_id: Optional[str]
     raw_response: Dict[str, Any]
 
 
+# 承载外部服务调用后的结构化结果。
 @dataclass(frozen=True)
 class FeishuCalendarEventResult:
     event_id: Optional[str]
     raw_response: Dict[str, Any]
 
 
+# 承载外部服务调用后的结构化结果。
 @dataclass(frozen=True)
 class FeishuCalendarResult:
     calendar_id: Optional[str]
     raw_response: Dict[str, Any]
 
 
+# 承载外部服务调用后的结构化结果。
 @dataclass(frozen=True)
 class FeishuCalendarAttendeeResult:
     attendee_ids: List[str]
     raw_response: Dict[str, Any]
 
 
+# 承载外部服务调用后的结构化结果。
+@dataclass(frozen=True)
+class FeishuBitableAppResult:
+    app_token: Optional[str]
+    raw_response: Dict[str, Any]
+
+
+# 承载外部服务调用后的结构化结果。
+@dataclass(frozen=True)
+class FeishuBitableTableResult:
+    table_id: Optional[str]
+    raw_response: Dict[str, Any]
+
+
+# 承载外部服务调用后的结构化结果。
+@dataclass(frozen=True)
+class FeishuBitableRecordResult:
+    record_id: Optional[str]
+    raw_response: Dict[str, Any]
+    fields: Optional[Dict[str, Any]] = None
+
+
+# 承载外部服务调用后的结构化结果。
+@dataclass(frozen=True)
+class FeishuBitableRecordListResult:
+    records: List[FeishuBitableRecordResult]
+    has_more: bool
+    page_token: Optional[str]
+    raw_response: Dict[str, Any]
+
+
+# 承载外部服务调用后的结构化结果。
+@dataclass(frozen=True)
+class FeishuBitableCollaboratorResult:
+    member_id: Optional[str]
+    raw_response: Dict[str, Any]
+
+
+# 承载外部服务调用后的结构化结果。
+@dataclass(frozen=True)
+class FeishuFileSubscriptionResult:
+    file_token: str
+    raw_response: Dict[str, Any]
+
+
+# 封装飞书消息发送和基础 OpenAPI 调用。
 class FeishuMessageService:
+    # 初始化当前组件所需的依赖和配置。
     def __init__(
         self,
         app_id: Optional[str] = None,
@@ -57,9 +110,11 @@ class FeishuMessageService:
         self._tenant_access_token: Optional[str] = None
         self._tenant_access_token_expires_at = 0.0
 
+    # 判断飞书服务必要配置是否完整。
     def is_configured(self) -> bool:
         return bool(self.app_id and self.app_secret)
 
+    # 调用飞书接口发送文本消息。
     async def send_text_message(
         self,
         receive_id: str,
@@ -87,6 +142,7 @@ class FeishuMessageService:
             raw_response=response_data,
         )
 
+    # 异步获取飞书 tenant_access_token。
     async def get_tenant_access_token(self) -> str:
         if not self.is_configured():
             raise FeishuConfigurationError(
@@ -118,6 +174,7 @@ class FeishuMessageService:
         self._tenant_access_token_expires_at = now + max(expire_seconds - 60, 60)
         return token
 
+    # 同步获取飞书 tenant_access_token。
     def get_tenant_access_token_sync(self) -> str:
         if not self.is_configured():
             raise FeishuConfigurationError(
@@ -149,6 +206,7 @@ class FeishuMessageService:
         self._tenant_access_token_expires_at = now + max(expire_seconds - 60, 60)
         return token
 
+    # 发送 POST 请求处理 json。
     async def _post_json(
         self,
         path: str,
@@ -185,6 +243,7 @@ class FeishuMessageService:
 
         return response_data
 
+    # 发送 POST 请求处理 json sync。
     def _post_json_sync(
         self,
         path: str,
@@ -221,6 +280,79 @@ class FeishuMessageService:
 
         return response_data
 
+    # 发送 PUT 请求处理 json sync。
+    def _put_json_sync(
+        self,
+        path: str,
+        payload: Dict[str, Any],
+        headers: Optional[Dict[str, str]] = None,
+        params: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        url = f"{self.base_url}{path}"
+        request_headers = {"Content-Type": "application/json"}
+        if headers:
+            request_headers.update(headers)
+
+        try:
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                response = client.put(
+                    url,
+                    json=payload,
+                    headers=request_headers,
+                    params=params,
+                )
+                response.raise_for_status()
+                response_data = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise FeishuRequestError(
+                f"Feishu OpenAPI returned HTTP {exc.response.status_code}: {exc.response.text}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise FeishuRequestError(f"Feishu OpenAPI request failed: {exc}") from exc
+        except ValueError as exc:
+            raise FeishuRequestError("Feishu OpenAPI response is not valid JSON.") from exc
+
+        if not isinstance(response_data, dict):
+            raise FeishuRequestError("Feishu OpenAPI response must be a JSON object.")
+
+        return response_data
+
+    # 获取 json sync。
+    def _get_json_sync(
+        self,
+        path: str,
+        headers: Optional[Dict[str, str]] = None,
+        params: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        url = f"{self.base_url}{path}"
+        request_headers: Dict[str, str] = {}
+        if headers:
+            request_headers.update(headers)
+
+        try:
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                response = client.get(
+                    url,
+                    headers=request_headers,
+                    params=params,
+                )
+                response.raise_for_status()
+                response_data = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise FeishuRequestError(
+                f"Feishu OpenAPI returned HTTP {exc.response.status_code}: {exc.response.text}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise FeishuRequestError(f"Feishu OpenAPI request failed: {exc}") from exc
+        except ValueError as exc:
+            raise FeishuRequestError("Feishu OpenAPI response is not valid JSON.") from exc
+
+        if not isinstance(response_data, dict):
+            raise FeishuRequestError("Feishu OpenAPI response must be a JSON object.")
+
+        return response_data
+
+    # 处理 raise_for_feishu_code 相关逻辑。
     @staticmethod
     def _raise_for_feishu_code(response_data: Dict[str, Any]) -> None:
         code = response_data.get("code", 0)
@@ -229,7 +361,9 @@ class FeishuMessageService:
             raise FeishuRequestError(f"Feishu OpenAPI returned code {code}: {message}")
 
 
+# 封装飞书日历创建、日程创建和参与人同步。
 class FeishuCalendarService(FeishuMessageService):
+    # 初始化当前组件所需的依赖和配置。
     def __init__(
         self,
         app_id: Optional[str] = None,
@@ -284,14 +418,17 @@ class FeishuCalendarService(FeishuMessageService):
             else settings.feishu_offerpilot_calendar_permissions
         )
 
+    # 判断飞书日历同步是否开启。
     def is_calendar_sync_enabled(self) -> bool:
         return self.sync_enabled and self.is_configured() and bool(
             self.calendar_id or self.auto_create_enabled
         )
 
+    # 判断是否由 OfferPilot 自动管理共享日历。
     def should_manage_offerpilot_calendar(self) -> bool:
         return self.auto_create_enabled and self.calendar_id.strip().lower() in {"", "primary"}
 
+    # 创建 OfferPilot 专用共享日历。
     def create_shared_calendar(
         self,
         summary: Optional[str] = None,
@@ -319,6 +456,7 @@ class FeishuCalendarService(FeishuMessageService):
             raw_response=response_data,
         )
 
+    # 在飞书日历中创建面试日程。
     def create_interview_event(
         self,
         company: str,
@@ -382,6 +520,7 @@ class FeishuCalendarService(FeishuMessageService):
             raw_response=response_data,
         )
 
+    # 把用户加入飞书日程参与人。
     def add_event_attendee(
         self,
         calendar_id: str,
@@ -422,6 +561,7 @@ class FeishuCalendarService(FeishuMessageService):
         )
 
 
+# 将输入转换为 event start at。
 def _coerce_event_start_at(start_at: Optional[Any], timezone: str) -> Optional[datetime]:
     if start_at is None:
         return None
@@ -440,6 +580,7 @@ def _coerce_event_start_at(start_at: Optional[Any], timezone: str) -> Optional[d
     return None
 
 
+# 把中文相对时间解析为具体日期时间。
 def parse_chinese_datetime(
     text: Optional[str],
     timezone: str = "Asia/Shanghai",
@@ -484,6 +625,7 @@ def parse_chinese_datetime(
         tzinfo=tz,
     )
 
+# 解析 weekday date。
 def _parse_weekday_date(text: str, current: datetime) -> Optional[Any]:
     weekday_index = _extract_weekday_index(text)
     if weekday_index is None:
@@ -495,6 +637,7 @@ def _parse_weekday_date(text: str, current: datetime) -> Optional[Any]:
     return (current + timedelta(days=days_ahead)).date()
 
 
+# 从输入数据中提取 weekday index。
 def _extract_weekday_index(text: str) -> Optional[int]:
     weekday_by_char = {
         "一": 0,
@@ -516,6 +659,7 @@ def _extract_weekday_index(text: str) -> Optional[int]:
     return None
 
 
+# 解析 clock time。
 def _parse_clock_time(text: str) -> tuple[Optional[int], int]:
     import re
 
@@ -540,6 +684,7 @@ def _parse_clock_time(text: str) -> tuple[Optional[int], int]:
     return hour, minute
 
 
+# 解析 chinese number。
 def _parse_chinese_number(text: str) -> Optional[int]:
     if text.isdigit():
         return int(text)
@@ -573,15 +718,18 @@ def _parse_chinese_number(text: str) -> Optional[int]:
     return None
 
 
+# 处理 contains_any 相关逻辑。
 def _contains_any(text: str, words: tuple[str, ...]) -> bool:
     return any(word in text for word in words)
 
 
+# 构造 interview event summary。
 def _build_interview_event_summary(company: str, role: Optional[str], round_name: str) -> str:
     role_text = f" - {role}" if role else ""
     return f"OfferPilot 面试：{company}{role_text}（{round_name}）"
 
 
+# 从输入数据中提取 calendar event id。
 def _extract_calendar_event_id(response_data: Dict[str, Any]) -> Optional[str]:
     data = response_data.get("data")
     if isinstance(data, dict):
@@ -593,6 +741,7 @@ def _extract_calendar_event_id(response_data: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+# 从输入数据中提取 calendar id。
 def _extract_calendar_id(response_data: Dict[str, Any]) -> Optional[str]:
     data = response_data.get("data")
     if isinstance(data, dict):
@@ -604,6 +753,7 @@ def _extract_calendar_id(response_data: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+# 从输入数据中提取 attendee ids。
 def _extract_attendee_ids(response_data: Dict[str, Any]) -> List[str]:
     data = response_data.get("data")
     if not isinstance(data, dict):
@@ -618,3 +768,480 @@ def _extract_attendee_ids(response_data: Dict[str, Any]) -> List[str]:
         if isinstance(attendee, dict) and isinstance(attendee.get("attendee_id"), str):
             attendee_ids.append(attendee["attendee_id"])
     return attendee_ids
+
+
+_BITABLE_APPLICATION_STATUS_OPTIONS = [
+    "待投递/待确认",
+    "已投递",
+    "笔试阶段",
+    "笔试通过",
+    "一面阶段",
+    "一面通过",
+    "二面阶段",
+    "二面通过",
+    "三面阶段",
+    "三面通过",
+    "HR 面阶段",
+    "面试已安排",
+    "Offer",
+    "已拒绝",
+    "暂无反馈",
+    "已放弃",
+]
+_BITABLE_INTERVIEW_ROUND_OPTIONS = ["待确认", "笔试", "一面", "二面", "三面", "HR 面", "面试"]
+_BITABLE_PRIORITY_OPTIONS = ["高", "中", "低"]
+_BITABLE_SOURCE_OPTIONS = ["飞书助手", "官网", "内推", "Boss直聘", "牛客", "拉勾", "猎聘", "其他"]
+
+
+# 构造 bitable select options。
+def _build_bitable_select_options(names: List[str]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "name": name,
+            "color": index % 54,
+        }
+        for index, name in enumerate(names)
+    ]
+
+
+# 封装飞书多维表格创建、记录读写和权限同步。
+class FeishuBitableService(FeishuMessageService):
+    TEXT_FIELD_TYPE = 1
+    NUMBER_FIELD_TYPE = 2
+    SINGLE_SELECT_FIELD_TYPE = 3
+    MULTI_SELECT_FIELD_TYPE = 4
+    DATETIME_FIELD_TYPE = 5
+
+    APPLICATION_TABLE_FIELDS = [
+        {"field_name": "OfferPilot记录ID", "type": TEXT_FIELD_TYPE},
+        {"field_name": "公司", "type": TEXT_FIELD_TYPE},
+        {"field_name": "岗位", "type": TEXT_FIELD_TYPE},
+        {
+            "field_name": "投递状态",
+            "type": SINGLE_SELECT_FIELD_TYPE,
+            "property": {"options": _build_bitable_select_options(_BITABLE_APPLICATION_STATUS_OPTIONS)},
+        },
+        {"field_name": "状态值", "type": TEXT_FIELD_TYPE},
+        {
+            "field_name": "面试轮次",
+            "type": SINGLE_SELECT_FIELD_TYPE,
+            "property": {"options": _build_bitable_select_options(_BITABLE_INTERVIEW_ROUND_OPTIONS)},
+        },
+        {"field_name": "面试时间文本", "type": TEXT_FIELD_TYPE},
+        {"field_name": "面试开始时间", "type": DATETIME_FIELD_TYPE},
+        {"field_name": "提醒分钟", "type": NUMBER_FIELD_TYPE},
+        {
+            "field_name": "优先级",
+            "type": SINGLE_SELECT_FIELD_TYPE,
+            "property": {"options": _build_bitable_select_options(_BITABLE_PRIORITY_OPTIONS)},
+        },
+        {
+            "field_name": "来源",
+            "type": SINGLE_SELECT_FIELD_TYPE,
+            "property": {"options": _build_bitable_select_options(_BITABLE_SOURCE_OPTIONS)},
+        },
+        {"field_name": "JD关键词", "type": MULTI_SELECT_FIELD_TYPE},
+        {"field_name": "下一步", "type": TEXT_FIELD_TYPE},
+        {"field_name": "备注", "type": TEXT_FIELD_TYPE},
+        {"field_name": "日历事件ID", "type": TEXT_FIELD_TYPE},
+        {"field_name": "最后同步时间", "type": DATETIME_FIELD_TYPE},
+    ]
+
+    # 初始化当前组件所需的依赖和配置。
+    def __init__(
+        self,
+        app_id: Optional[str] = None,
+        app_secret: Optional[str] = None,
+        base_url: Optional[str] = None,
+        timeout_seconds: Optional[float] = None,
+        app_token: Optional[str] = None,
+        table_id: Optional[str] = None,
+        sync_enabled: Optional[bool] = None,
+        auto_create_enabled: Optional[bool] = None,
+        bitable_name: Optional[str] = None,
+        table_name: Optional[str] = None,
+    ) -> None:
+        super().__init__(
+            app_id=app_id,
+            app_secret=app_secret,
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+        )
+        self.app_token = app_token if app_token is not None else settings.feishu_bitable_app_token
+        self.table_id = table_id if table_id is not None else settings.feishu_bitable_table_id
+        self.sync_enabled = (
+            sync_enabled
+            if sync_enabled is not None
+            else settings.feishu_bitable_sync_enabled
+        )
+        self.auto_create_enabled = (
+            auto_create_enabled
+            if auto_create_enabled is not None
+            else settings.feishu_bitable_auto_create_enabled
+        )
+        self.bitable_name = (
+            bitable_name
+            if bitable_name is not None
+            else settings.feishu_offerpilot_bitable_name
+        )
+        self.table_name = (
+            table_name
+            if table_name is not None
+            else settings.feishu_offerpilot_bitable_table_name
+        )
+
+    # 判断飞书多维表格同步是否开启。
+    def is_bitable_sync_enabled(self) -> bool:
+        has_existing_table = bool(self.app_token and self.table_id)
+        return self.sync_enabled and self.is_configured() and (
+            has_existing_table or self.auto_create_enabled
+        )
+
+    # 判断是否由 OfferPilot 自动管理多维表格。
+    def should_manage_offerpilot_bitable(self) -> bool:
+        return self.auto_create_enabled and not (self.app_token and self.table_id)
+
+    # 创建飞书多维表格应用。
+    def create_app(self, name: Optional[str] = None) -> FeishuBitableAppResult:
+        if not self.sync_enabled:
+            raise FeishuConfigurationError("Feishu bitable sync is not enabled.")
+
+        token = self.get_tenant_access_token_sync()
+        response_data = self._post_json_sync(
+            path="/bitable/v1/apps",
+            payload={"name": name or self.bitable_name},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self._raise_for_feishu_code(response_data)
+
+        return FeishuBitableAppResult(
+            app_token=_extract_bitable_app_token(response_data),
+            raw_response=response_data,
+        )
+
+    # 创建 OfferPilot 投递记录表。
+    def create_application_table(
+        self,
+        app_token: str,
+        table_name: Optional[str] = None,
+    ) -> FeishuBitableTableResult:
+        if not self.sync_enabled:
+            raise FeishuConfigurationError("Feishu bitable sync is not enabled.")
+        if not app_token:
+            raise FeishuConfigurationError("Feishu bitable app token is missing.")
+
+        token = self.get_tenant_access_token_sync()
+        response_data = self._post_json_sync(
+            path=f"/bitable/v1/apps/{app_token}/tables",
+            payload={
+                "table": {
+                    "name": table_name or self.table_name,
+                    "default_view_name": "全部投递",
+                    "fields": self.APPLICATION_TABLE_FIELDS,
+                }
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self._raise_for_feishu_code(response_data)
+
+        return FeishuBitableTableResult(
+            table_id=_extract_bitable_table_id(response_data),
+            raw_response=response_data,
+        )
+
+    # 在飞书多维表格中创建记录。
+    def create_record(
+        self,
+        app_token: str,
+        table_id: str,
+        fields: Dict[str, Any],
+    ) -> FeishuBitableRecordResult:
+        if not self.is_bitable_sync_enabled():
+            raise FeishuConfigurationError("Feishu bitable sync is not enabled.")
+        if not app_token:
+            raise FeishuConfigurationError("Feishu bitable app token is missing.")
+        if not table_id:
+            raise FeishuConfigurationError("Feishu bitable table id is missing.")
+
+        token = self.get_tenant_access_token_sync()
+        response_data = self._post_json_sync(
+            path=f"/bitable/v1/apps/{app_token}/tables/{table_id}/records",
+            payload={"fields": fields},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self._raise_for_feishu_code(response_data)
+
+        return FeishuBitableRecordResult(
+            record_id=_extract_bitable_record_id(response_data),
+            raw_response=response_data,
+        )
+
+    # 更新飞书多维表格中的记录。
+    def update_record(
+        self,
+        app_token: str,
+        table_id: str,
+        record_id: str,
+        fields: Dict[str, Any],
+    ) -> FeishuBitableRecordResult:
+        if not self.is_bitable_sync_enabled():
+            raise FeishuConfigurationError("Feishu bitable sync is not enabled.")
+        if not app_token:
+            raise FeishuConfigurationError("Feishu bitable app token is missing.")
+        if not table_id:
+            raise FeishuConfigurationError("Feishu bitable table id is missing.")
+        if not record_id:
+            raise FeishuConfigurationError("Feishu bitable record id is missing.")
+
+        token = self.get_tenant_access_token_sync()
+        response_data = self._put_json_sync(
+            path=f"/bitable/v1/apps/{app_token}/tables/{table_id}/records/{record_id}",
+            payload={"fields": fields},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self._raise_for_feishu_code(response_data)
+
+        return FeishuBitableRecordResult(
+            record_id=_extract_bitable_record_id(response_data) or record_id,
+            raw_response=response_data,
+        )
+
+    # 读取飞书多维表格中的单条记录。
+    def get_record(
+        self,
+        app_token: str,
+        table_id: str,
+        record_id: str,
+    ) -> FeishuBitableRecordResult:
+        if not self.is_bitable_sync_enabled():
+            raise FeishuConfigurationError("Feishu bitable sync is not enabled.")
+        if not app_token:
+            raise FeishuConfigurationError("Feishu bitable app token is missing.")
+        if not table_id:
+            raise FeishuConfigurationError("Feishu bitable table id is missing.")
+        if not record_id:
+            raise FeishuConfigurationError("Feishu bitable record id is missing.")
+
+        token = self.get_tenant_access_token_sync()
+        response_data = self._get_json_sync(
+            path=f"/bitable/v1/apps/{app_token}/tables/{table_id}/records/{record_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self._raise_for_feishu_code(response_data)
+
+        return FeishuBitableRecordResult(
+            record_id=_extract_bitable_record_id(response_data) or record_id,
+            raw_response=response_data,
+            fields=_extract_bitable_record_fields(response_data),
+        )
+
+    # 分页读取飞书多维表格记录。
+    def list_records(
+        self,
+        app_token: str,
+        table_id: str,
+        page_size: int = 100,
+        page_token: Optional[str] = None,
+    ) -> FeishuBitableRecordListResult:
+        if not self.is_bitable_sync_enabled():
+            raise FeishuConfigurationError("Feishu bitable sync is not enabled.")
+        if not app_token:
+            raise FeishuConfigurationError("Feishu bitable app token is missing.")
+        if not table_id:
+            raise FeishuConfigurationError("Feishu bitable table id is missing.")
+
+        token = self.get_tenant_access_token_sync()
+        params = {"page_size": str(max(min(page_size, 500), 1))}
+        if page_token:
+            params["page_token"] = page_token
+        response_data = self._get_json_sync(
+            path=f"/bitable/v1/apps/{app_token}/tables/{table_id}/records",
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+        )
+        self._raise_for_feishu_code(response_data)
+
+        return FeishuBitableRecordListResult(
+            records=_extract_bitable_record_items(response_data),
+            has_more=_extract_bitable_has_more(response_data),
+            page_token=_extract_bitable_page_token(response_data),
+            raw_response=response_data,
+        )
+
+    # 给用户授予多维表格协作者权限。
+    def add_bitable_collaborator(
+        self,
+        app_token: str,
+        member_id: str,
+        member_id_type: str = "open_id",
+        perm: str = "edit",
+        need_notification: bool = True,
+    ) -> FeishuBitableCollaboratorResult:
+        if not self.is_bitable_sync_enabled():
+            raise FeishuConfigurationError("Feishu bitable sync is not enabled.")
+        if not app_token:
+            raise FeishuConfigurationError("Feishu bitable app token is missing.")
+        if not member_id:
+            raise FeishuConfigurationError("Feishu permission member id is missing.")
+
+        token = self.get_tenant_access_token_sync()
+        response_data = self._post_json_sync(
+            path=f"/drive/v1/permissions/{app_token}/members",
+            payload={
+                "member_type": _normalize_drive_permission_member_type(member_id_type),
+                "member_id": member_id,
+                "perm": perm,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+            params={
+                "type": "bitable",
+                "need_notification": str(need_notification).lower(),
+            },
+        )
+        self._raise_for_feishu_code(response_data)
+
+        return FeishuBitableCollaboratorResult(
+            member_id=_extract_drive_permission_member_id(response_data) or member_id,
+            raw_response=response_data,
+        )
+
+    # 订阅多维表格文件变更事件。
+    def subscribe_bitable_file(self, app_token: str) -> FeishuFileSubscriptionResult:
+        if not self.sync_enabled:
+            raise FeishuConfigurationError("Feishu bitable sync is not enabled.")
+        if not app_token:
+            raise FeishuConfigurationError("Feishu bitable app token is missing.")
+
+        token = self.get_tenant_access_token_sync()
+        response_data = self._post_json_sync(
+            path=f"/drive/v1/files/{app_token}/subscribe",
+            payload={},
+            headers={"Authorization": f"Bearer {token}"},
+            params={"file_type": "bitable"},
+        )
+        self._raise_for_feishu_code(response_data)
+
+        return FeishuFileSubscriptionResult(
+            file_token=app_token,
+            raw_response=response_data,
+        )
+
+
+# 从输入数据中提取 bitable app token。
+def _extract_bitable_app_token(response_data: Dict[str, Any]) -> Optional[str]:
+    data = response_data.get("data")
+    if isinstance(data, dict):
+        app = data.get("app")
+        if isinstance(app, dict) and isinstance(app.get("app_token"), str):
+            return app["app_token"]
+        if isinstance(data.get("app_token"), str):
+            return data["app_token"]
+    return None
+
+
+# 从输入数据中提取 bitable table id。
+def _extract_bitable_table_id(response_data: Dict[str, Any]) -> Optional[str]:
+    data = response_data.get("data")
+    if isinstance(data, dict):
+        table = data.get("table")
+        if isinstance(table, dict) and isinstance(table.get("table_id"), str):
+            return table["table_id"]
+        if isinstance(data.get("table_id"), str):
+            return data["table_id"]
+    return None
+
+
+# 从输入数据中提取 bitable record id。
+def _extract_bitable_record_id(response_data: Dict[str, Any]) -> Optional[str]:
+    data = response_data.get("data")
+    if isinstance(data, dict):
+        record = data.get("record")
+        if isinstance(record, dict) and isinstance(record.get("record_id"), str):
+            return record["record_id"]
+        if isinstance(data.get("record_id"), str):
+            return data["record_id"]
+    return None
+
+
+# 从输入数据中提取 bitable record fields。
+def _extract_bitable_record_fields(response_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    data = response_data.get("data")
+    if isinstance(data, dict):
+        record = data.get("record")
+        if isinstance(record, dict) and isinstance(record.get("fields"), dict):
+            return record["fields"]
+        if isinstance(data.get("fields"), dict):
+            return data["fields"]
+    return None
+
+
+# 从输入数据中提取 bitable record items。
+def _extract_bitable_record_items(response_data: Dict[str, Any]) -> List[FeishuBitableRecordResult]:
+    data = response_data.get("data")
+    if not isinstance(data, dict):
+        return []
+
+    items = data.get("items")
+    if not isinstance(items, list):
+        items = data.get("records")
+    if not isinstance(items, list):
+        return []
+
+    records = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        record_id = item.get("record_id")
+        if not isinstance(record_id, str) or not record_id:
+            continue
+        fields = item.get("fields")
+        records.append(
+            FeishuBitableRecordResult(
+                record_id=record_id,
+                raw_response=item,
+                fields=fields if isinstance(fields, dict) else None,
+            )
+        )
+    return records
+
+
+# 从输入数据中提取 bitable has more。
+def _extract_bitable_has_more(response_data: Dict[str, Any]) -> bool:
+    data = response_data.get("data")
+    if not isinstance(data, dict):
+        return False
+    return bool(data.get("has_more"))
+
+
+# 从输入数据中提取 bitable page token。
+def _extract_bitable_page_token(response_data: Dict[str, Any]) -> Optional[str]:
+    data = response_data.get("data")
+    if isinstance(data, dict) and isinstance(data.get("page_token"), str):
+        return data["page_token"]
+    return None
+
+
+# 标准化 drive permission member type。
+def _normalize_drive_permission_member_type(member_id_type: str) -> str:
+    normalized = (member_id_type or "open_id").strip().lower()
+    mapping = {
+        "open_id": "openid",
+        "openid": "openid",
+        "user_id": "userid",
+        "userid": "userid",
+        "union_id": "unionid",
+        "unionid": "unionid",
+    }
+    return mapping.get(normalized, normalized)
+
+
+# 从输入数据中提取 drive permission member id。
+def _extract_drive_permission_member_id(response_data: Dict[str, Any]) -> Optional[str]:
+    data = response_data.get("data")
+    if isinstance(data, dict):
+        member = data.get("member")
+        if isinstance(member, dict) and isinstance(member.get("member_id"), str):
+            return member["member_id"]
+        if isinstance(data.get("member_id"), str):
+            return data["member_id"]
+    return None

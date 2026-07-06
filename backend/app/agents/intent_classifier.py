@@ -8,6 +8,7 @@ from app.schemas.intent import IntentClassification, IntentName
 from app.services.llm_service import LLMConfigurationError, LLMRequestError, LLMService
 
 
+# 将用户自然语言识别为秋招业务意图。
 class IntentClassifier:
     SYSTEM_PROMPT = """
 You are the intent classifier for OfferPilot, a personal job-search execution agent
@@ -44,13 +45,18 @@ Slot guidance:
 - Keep relative time expressions as written, such as "明天下午三点".
 - For update_application, use update_type when clear:
   schedule_interview, pass_round, reject, offer, submitted, or status_update.
+- For schedule_interview, use calendar_reminder when the user clearly says whether
+  Feishu calendar reminder is needed. Use true for "需要提醒/同步日历", false for
+  "不用提醒/不同步日历". Omit it when unclear.
 - Use short scalar values or arrays only.
 - Do not invent missing user data.
 """.strip()
 
+    # 初始化当前组件所需的依赖和配置。
     def __init__(self, llm_service: Optional[LLMService] = None) -> None:
         self.llm_service = llm_service or LLMService()
 
+    # 执行自然语言意图识别。
     async def classify(self, message: str) -> IntentClassification:
         try:
             result = await self.llm_service.generate_text(
@@ -68,10 +74,12 @@ Slot guidance:
         except (json.JSONDecodeError, TypeError, ValidationError):
             return self._classify_by_rules(message)
 
+    # 构造 prompt。
     @staticmethod
     def _build_prompt(message: str) -> str:
         return f"User message:\n{message.strip()}"
 
+    # 解析 json object。
     @staticmethod
     def _parse_json_object(content: str) -> Dict[str, Any]:
         text = content.strip()
@@ -89,6 +97,7 @@ Slot guidance:
 
         return parsed
 
+    # 处理 classify_by_rules 相关逻辑。
     def _classify_by_rules(self, message: str) -> IntentClassification:
         text = message.strip()
         compact = re.sub(r"\s+", "", text).lower()
@@ -156,6 +165,7 @@ Slot guidance:
 
         return self._result(IntentName.UNKNOWN, 0.35)
 
+    # 处理 result 相关逻辑。
     @staticmethod
     def _result(
         intent: IntentName,
@@ -168,12 +178,14 @@ Slot guidance:
             slots=slots or {},
         )
 
+    # 判断 today task query 是否成立。
     @staticmethod
     def _is_today_task_query(compact: str) -> bool:
         return compact in {"/today", "today"} or (
             ("今天" in compact or "今日" in compact) and any(word in compact for word in ("任务", "安排", "计划"))
         )
 
+    # 判断 add application 是否成立。
     @staticmethod
     def _is_add_application(compact: str) -> bool:
         return "新增投递" in compact or "添加投递" in compact or (
@@ -184,6 +196,7 @@ Slot guidance:
             "约我" in compact and any(word in compact for word in ("笔试", "一面", "二面", "三面", "hr面"))
         )
 
+    # 判断 query application 是否成立。
     @staticmethod
     def _is_query_application(compact: str) -> bool:
         if any(word in compact for word in ("投递列表", "投递记录", "投递进度", "投了哪些", "投过哪些")):
@@ -203,6 +216,7 @@ Slot guidance:
             return True
         return False
 
+    # 判断 update application 是否成立。
     @staticmethod
     def _is_update_application(compact: str) -> bool:
         round_words = ("笔试", "一面", "二面", "三面", "hr面", "hr")
@@ -220,26 +234,32 @@ Slot guidance:
             return True
         return has_terminal_word
 
+    # 判断 interview review 是否成立。
     @staticmethod
     def _is_interview_review(compact: str) -> bool:
         return "复盘" in compact and any(word in compact for word in ("面试", "一面", "二面", "三面", "hr", "笔试"))
 
+    # 判断 mock interview 是否成立。
     @staticmethod
     def _is_mock_interview(compact: str) -> bool:
         return "模拟面试" in compact or "mockinterview" in compact
 
+    # 判断 weekly summary 是否成立。
     @staticmethod
     def _is_weekly_summary(compact: str) -> bool:
         return any(word in compact for word in ("周复盘", "本周复盘", "这周复盘", "周总结", "本周总结"))
 
+    # 判断 complete task 是否成立。
     @staticmethod
     def _is_complete_task(compact: str) -> bool:
         return any(word in compact for word in ("完成", "做完", "刷完", "打卡", "/done"))
 
+    # 判断 postpone task 是否成立。
     @staticmethod
     def _is_postpone_task(compact: str) -> bool:
         return any(word in compact for word in ("延期", "推迟", "改到明天", "明天再做", "跳过"))
 
+    # 判断输入是否像 answer。
     @staticmethod
     def _looks_like_answer(text: str, compact: str) -> bool:
         technical_words = ("hashmap", "redis", "mysql", "spring", "jvm", "链表", "复杂度", "缓存", "线程池")
@@ -248,10 +268,12 @@ Slot guidance:
             any(word in compact for word in answer_words) or any(word in compact for word in technical_words)
         )
 
+    # 判断 help request 是否成立。
     @staticmethod
     def _is_help_request(compact: str) -> bool:
         return any(word in compact for word in ("怎么", "如何", "帮我", "解释", "为什么", "建议"))
 
+    # 从输入数据中提取 application slots。
     def _extract_application_slots(self, text: str) -> Dict[str, Any]:
         slots: Dict[str, Any] = {}
         normalized = re.sub(r"^(新增|添加|记录)?投递[:：]?", "", text.strip())
@@ -301,6 +323,7 @@ Slot guidance:
 
         return slots
 
+    # 从输入数据中提取 application query slots。
     def _extract_application_query_slots(self, text: str) -> Dict[str, Any]:
         slots: Dict[str, Any] = {}
         compact = re.sub(r"\s+", "", text).lower()
@@ -322,6 +345,7 @@ Slot guidance:
 
         return slots
 
+    # 从输入数据中提取 application update slots。
     def _extract_application_update_slots(self, text: str) -> Dict[str, Any]:
         slots: Dict[str, Any] = {}
         compact = re.sub(r"\s+", "", text).lower()
@@ -333,6 +357,10 @@ Slot guidance:
         interview_time = self._extract_time_expression(text)
         if interview_time:
             slots["interview_time"] = interview_time
+
+        calendar_reminder = self._extract_calendar_reminder_preference(compact)
+        if calendar_reminder is not None:
+            slots["calendar_reminder"] = calendar_reminder
 
         role = self._extract_role(text)
         if role:
@@ -351,6 +379,7 @@ Slot guidance:
 
         return slots
 
+    # 从输入数据中提取 update type。
     @staticmethod
     def _extract_update_type(compact: str) -> str:
         if "offer" in compact:
@@ -365,6 +394,7 @@ Slot guidance:
             return "submitted"
         return "status_update"
 
+    # 处理 status_value_for_update 相关逻辑。
     @staticmethod
     def _status_value_for_update(update_type: str, round_name: Optional[str]) -> Optional[str]:
         round_key = round_name.replace(" ", "").lower() if round_name else None
@@ -396,10 +426,21 @@ Slot guidance:
             return scheduled_by_round.get(round_key, "interview_scheduled")
         return None
 
+    # 从输入数据中提取 calendar reminder preference。
+    @staticmethod
+    def _extract_calendar_reminder_preference(compact: str) -> Optional[bool]:
+        if any(word in compact for word in ("不需要提醒", "不用提醒", "不要提醒", "不加日历", "不同步日历", "不用日历")):
+            return False
+        if any(word in compact for word in ("需要提醒", "要提醒", "加日历", "同步日历", "日历提醒", "需要日历")):
+            return True
+        return None
+
+    # 从输入数据中提取 company for update。
     def _extract_company_for_update(self, text: str) -> Optional[str]:
         text_without_time = self._remove_time_expression(text)
         round_pattern = r"(?:笔试|一面|二面|三面|hr\s*面|HR\s*面)"
         patterns = [
+            r"(?:之前)?投递[了的]?(?P<company>[\u4e00-\u9fa5A-Za-z0-9_-]{2,20}?)(?:java|ai|agent|后端|前端|算法|开发|实习|岗位|职位|，|,).*?(?:约我|约了|安排(?:了)?|通知|邀我|邀请|收到面试|发来面试)",
             rf"(?P<company>.+?)(?:约我|约了|安排(?:了)?|通知|邀我|邀请|收到面试|发来面试).*?(?:{round_pattern}|面试|笔试)",
             rf"(?P<company>.+?){round_pattern}(?:过了|通过|没过|挂了|拒了|拒绝|凉了)",
             r"(?P<company>.+?)(?:给我|给|发了|发|拿到|收到|收到了)?\s*offer",
@@ -415,12 +456,14 @@ Slot guidance:
 
         return None
 
+    # 移除 time expression。
     def _remove_time_expression(self, text: str) -> str:
         time_expression = self._extract_time_expression(text)
         if not time_expression:
             return text
         return text.replace(time_expression, "", 1)
 
+    # 清洗 company name。
     @staticmethod
     def _clean_company_name(value: str) -> str:
         company = value.strip(" ，,。；;：:的")
@@ -429,6 +472,7 @@ Slot guidance:
         company = company.strip(" ，,。；;：:的")
         return company
 
+    # 从输入数据中提取 company for query。
     @staticmethod
     def _extract_company_for_query(text: str) -> Optional[str]:
         patterns = [
@@ -444,6 +488,7 @@ Slot guidance:
 
         return None
 
+    # 从输入数据中提取 interview review slots。
     def _extract_interview_review_slots(self, text: str) -> Dict[str, Any]:
         slots: Dict[str, Any] = {}
         company_match = re.search(
@@ -466,6 +511,7 @@ Slot guidance:
 
         return slots
 
+    # 从输入数据中提取 mock interview slots。
     def _extract_mock_interview_slots(self, text: str) -> Dict[str, Any]:
         slots: Dict[str, Any] = {}
         role_match = re.search(r"(岗位|职位)[是:：]?([^，,。；;]+)", text)
@@ -478,6 +524,7 @@ Slot guidance:
 
         return slots
 
+    # 从输入数据中提取 role。
     @staticmethod
     def _extract_role(text: str) -> Optional[str]:
         role_match = re.search(
@@ -494,6 +541,7 @@ Slot guidance:
 
         return None
 
+    # 从输入数据中提取 round name。
     @staticmethod
     def _extract_round_name(text: str) -> Optional[str]:
         round_match = re.search(r"(笔试|一面|二面|三面|hr\s*面|HR\s*面)", text, flags=re.IGNORECASE)
@@ -501,6 +549,7 @@ Slot guidance:
             return round_match.group(1)
         return None
 
+    # 从输入数据中提取 task slots。
     def _extract_task_slots(self, text: str) -> Dict[str, Any]:
         slots: Dict[str, Any] = {}
         compact = re.sub(r"\s+", "", text).lower()
@@ -519,6 +568,7 @@ Slot guidance:
 
         return slots
 
+    # 从输入数据中提取 time expression。
     @staticmethod
     def _extract_time_expression(text: str) -> Optional[str]:
         match = re.search(
@@ -534,6 +584,7 @@ Slot guidance:
             return None
         return match.group(1)
 
+    # 从输入数据中提取 keywords。
     @staticmethod
     def _extract_keywords(text: str) -> list[str]:
         keyword_patterns = {

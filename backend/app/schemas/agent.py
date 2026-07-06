@@ -7,6 +7,7 @@ from app.schemas.intent import IntentName
 from app.schemas.tool import ToolResult
 
 
+# 枚举 AgentActionName 的可选值。
 class AgentActionName(str, Enum):
     LIST_TODAY_TASKS = "list_today_tasks"
     CREATE_APPLICATION = "create_application"
@@ -23,6 +24,7 @@ class AgentActionName(str, Enum):
     NO_OP = "no_op"
 
 
+# 定义接口请求体的数据结构。
 class AgentMessageRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     confirmed: bool = False
@@ -30,10 +32,12 @@ class AgentMessageRequest(BaseModel):
     source: str = Field(default="api", min_length=1, max_length=64)
 
 
+# 定义接口请求体的数据结构。
 class DebugAgentRequest(AgentMessageRequest):
     pass
 
 
+# 定义接口响应体的数据结构。
 class AgentResponse(BaseModel):
     intent: IntentName
     confidence: float = Field(..., ge=0.0, le=1.0)

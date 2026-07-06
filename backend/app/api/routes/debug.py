@@ -14,6 +14,7 @@ from app.services.llm_service import (
 router = APIRouter(prefix="/debug")
 
 
+# 调试大模型调用链路。
 @router.post("/llm", response_model=DebugLLMResponse)
 async def debug_llm(request: DebugLLMRequest) -> DebugLLMResponse:
     service = LLMService()
@@ -44,6 +45,7 @@ async def debug_llm(request: DebugLLMRequest) -> DebugLLMResponse:
     )
 
 
+# 调试自然语言意图识别结果。
 @router.post("/intent", response_model=IntentClassification)
 async def debug_intent(request: DebugIntentRequest) -> IntentClassification:
     classifier = IntentClassifier()
@@ -57,6 +59,7 @@ async def debug_intent(request: DebugIntentRequest) -> IntentClassification:
         ) from exc
 
 
+# 调试 Agent 编排后的响应。
 @router.post("/agent", response_model=AgentResponse, response_model_exclude_none=True)
 async def debug_agent(request: DebugAgentRequest) -> AgentResponse:
     orchestrator = AgentOrchestrator()

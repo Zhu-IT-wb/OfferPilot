@@ -7,16 +7,21 @@ from app.models.interview_schedule import InterviewSchedule
 from app.models.task import Task, TaskPriority, TaskStatus, TaskType
 
 
+# 定义 OfferPilot 数据读写边界。
 class OfferPilotRepository(Protocol):
+    # 获取 runtime setting。
     def get_runtime_setting(self, key: str) -> Optional[str]:
         ...
 
+    # 保存或更新 runtime setting。
     def set_runtime_setting(self, key: str, value: str) -> None:
         ...
 
+    # 查询并格式化今天的秋招任务。
     def list_today_tasks(self) -> List[Task]:
         ...
 
+    # 创建投递记录，并按需同步面试日程和飞书多维表格。
     def create_application(
         self,
         company: str,
@@ -27,9 +32,11 @@ class OfferPilotRepository(Protocol):
     ) -> Application:
         ...
 
+    # 查询 applications 列表。
     def list_applications(self, company: Optional[str] = None) -> List[Application]:
         ...
 
+    # 更新投递进度，并按需同步日历和多维表格。
     def update_application(
         self,
         company: str,
@@ -40,6 +47,20 @@ class OfferPilotRepository(Protocol):
     ) -> Optional[Application]:
         ...
 
+    # 更新 application by id。
+    def update_application_by_id(
+        self,
+        application_id: str,
+        company: Optional[str] = None,
+        role: Optional[str] = None,
+        status: Optional[ApplicationStatus] = None,
+        interview_time: Optional[str] = None,
+        round_name: Optional[str] = None,
+        jd_keywords: Optional[List[str]] = None,
+    ) -> Optional[Application]:
+        ...
+
+    # 创建 interview schedule。
     def create_interview_schedule(
         self,
         company: str,
@@ -53,9 +74,11 @@ class OfferPilotRepository(Protocol):
     ) -> InterviewSchedule:
         ...
 
+    # 查询 interview schedules 列表。
     def list_interview_schedules(self, company: Optional[str] = None) -> List[InterviewSchedule]:
         ...
 
+    # 更新 interview schedule calendar event。
     def update_interview_schedule_calendar_event(
         self,
         schedule_id: str,
@@ -63,6 +86,7 @@ class OfferPilotRepository(Protocol):
     ) -> Optional[InterviewSchedule]:
         ...
 
+    # 将指定任务标记为已完成。
     def complete_task(
         self,
         task_title: Optional[str] = None,
@@ -70,6 +94,7 @@ class OfferPilotRepository(Protocol):
     ) -> Optional[Task]:
         ...
 
+    # 将指定任务延期处理。
     def postpone_task(
         self,
         task_title: Optional[str] = None,
@@ -77,6 +102,7 @@ class OfferPilotRepository(Protocol):
     ) -> Optional[Task]:
         ...
 
+    # 记录一次面试复盘。
     def create_interview_review(
         self,
         company: Optional[str] = None,
@@ -87,6 +113,7 @@ class OfferPilotRepository(Protocol):
         ...
 
 
+# 处理 default_tasks 相关逻辑。
 def _default_tasks() -> List[Task]:
     return [
         Task(
@@ -113,6 +140,7 @@ def _default_tasks() -> List[Task]:
     ]
 
 
+# 提供用于测试和本地调试的内存数据仓库。
 @dataclass
 class InMemoryOfferPilotRepository:
     tasks: List[Task] = field(default_factory=_default_tasks)
@@ -121,12 +149,15 @@ class InMemoryOfferPilotRepository:
     interview_schedules: List[InterviewSchedule] = field(default_factory=list)
     runtime_settings: dict[str, str] = field(default_factory=dict)
 
+    # 获取 runtime setting。
     def get_runtime_setting(self, key: str) -> Optional[str]:
         return self.runtime_settings.get(key)
 
+    # 保存或更新 runtime setting。
     def set_runtime_setting(self, key: str, value: str) -> None:
         self.runtime_settings[key] = value
 
+    # 查询并格式化今天的秋招任务。
     def list_today_tasks(self) -> List[Task]:
         active_statuses = {
             TaskStatus.PENDING,
@@ -135,6 +166,7 @@ class InMemoryOfferPilotRepository:
         }
         return [task for task in self.tasks if task.status in active_statuses]
 
+    # 创建投递记录，并按需同步面试日程和飞书多维表格。
     def create_application(
         self,
         company: str,
@@ -155,6 +187,7 @@ class InMemoryOfferPilotRepository:
         self.applications.append(application)
         return application
 
+    # 查询 applications 列表。
     def list_applications(self, company: Optional[str] = None) -> List[Application]:
         if not company:
             return list(self.applications)
@@ -166,6 +199,7 @@ class InMemoryOfferPilotRepository:
             if normalized_company in self._normalize(application.company)
         ]
 
+    # 更新投递进度，并按需同步日历和多维表格。
     def update_application(
         self,
         company: str,
@@ -188,6 +222,36 @@ class InMemoryOfferPilotRepository:
             application.role = role
         return application
 
+    # 更新 application by id。
+    def update_application_by_id(
+        self,
+        application_id: str,
+        company: Optional[str] = None,
+        role: Optional[str] = None,
+        status: Optional[ApplicationStatus] = None,
+        interview_time: Optional[str] = None,
+        round_name: Optional[str] = None,
+        jd_keywords: Optional[List[str]] = None,
+    ) -> Optional[Application]:
+        application = self._find_application_by_id(application_id)
+        if application is None:
+            return None
+
+        if company is not None:
+            application.company = company
+        if role is not None:
+            application.role = role
+        if status is not None:
+            application.status = status
+        if interview_time is not None:
+            application.interview_time = interview_time
+        if round_name is not None:
+            application.round = round_name
+        if jd_keywords is not None:
+            application.jd_keywords = list(jd_keywords)
+        return application
+
+    # 创建 interview schedule。
     def create_interview_schedule(
         self,
         company: str,
@@ -213,6 +277,7 @@ class InMemoryOfferPilotRepository:
         self.interview_schedules.append(schedule)
         return schedule
 
+    # 查询 interview schedules 列表。
     def list_interview_schedules(self, company: Optional[str] = None) -> List[InterviewSchedule]:
         if not company:
             return list(self.interview_schedules)
@@ -224,6 +289,7 @@ class InMemoryOfferPilotRepository:
             if normalized_company in self._normalize(schedule.company)
         ]
 
+    # 更新 interview schedule calendar event。
     def update_interview_schedule_calendar_event(
         self,
         schedule_id: str,
@@ -235,6 +301,7 @@ class InMemoryOfferPilotRepository:
                 return schedule
         return None
 
+    # 将指定任务标记为已完成。
     def complete_task(
         self,
         task_title: Optional[str] = None,
@@ -247,6 +314,7 @@ class InMemoryOfferPilotRepository:
         task.status = TaskStatus.PASSED
         return task
 
+    # 将指定任务延期处理。
     def postpone_task(
         self,
         task_title: Optional[str] = None,
@@ -259,6 +327,7 @@ class InMemoryOfferPilotRepository:
         task.status = TaskStatus.POSTPONED
         return task
 
+    # 记录一次面试复盘。
     def create_interview_review(
         self,
         company: Optional[str] = None,
@@ -276,6 +345,7 @@ class InMemoryOfferPilotRepository:
         self.interview_reviews.append(review)
         return review
 
+    # 查找 task。
     def _find_task(
         self,
         task_title: Optional[str] = None,
@@ -294,10 +364,19 @@ class InMemoryOfferPilotRepository:
 
         return None
 
+    # 查找 application。
     def _find_application(self, company: str) -> Optional[Application]:
         matches = self.list_applications(company=company)
         return matches[-1] if matches else None
 
+    # 查找 application by id。
+    def _find_application_by_id(self, application_id: str) -> Optional[Application]:
+        for application in self.applications:
+            if application.id == application_id:
+                return application
+        return None
+
+    # 处理 normalize 相关逻辑。
     @staticmethod
     def _normalize(value: str) -> str:
         return value.replace(" ", "").lower()

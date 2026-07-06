@@ -3,8 +3,10 @@ from fastapi.testclient import TestClient
 from app.api.routes import feishu
 from app.core.config import Settings
 from app.main import create_app
+from app.repositories.offerpilot_repository import InMemoryOfferPilotRepository
 from app.schemas.agent import AgentActionName, AgentResponse
 from app.schemas.intent import IntentName
+from app.services.feishu_service import FeishuBitableRecordResult
 from app.services.feishu_service import FeishuMessageResult, FeishuRequestError
 
 
@@ -188,6 +190,132 @@ def test_feishu_event_ignores_non_text_message(monkeypatch) -> None:
         "message": "当前只处理文本消息事件。",
         "user_id": "ou_test",
     }
+
+
+def test_feishu_event_syncs_bitable_record_change(monkeypatch) -> None:
+    _disable_feishu_token(monkeypatch)
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="腾讯", role="Java 后端实习")
+    repository.set_runtime_setting("feishu.offerpilot_bitable_app_token", "bascn_offerpilot")
+    repository.set_runtime_setting("feishu.offerpilot_bitable_table_id", "tbl_applications")
+
+    class FakeBitableService:
+        app_token = ""
+        table_id = ""
+
+        def is_bitable_sync_enabled(self):
+            return True
+
+        def get_record(self, app_token, table_id, record_id):
+            assert app_token == "bascn_offerpilot"
+            assert table_id == "tbl_applications"
+            assert record_id == "rec_app_1"
+            return FeishuBitableRecordResult(
+                record_id="rec_app_1",
+                raw_response={"code": 0},
+                fields={
+                    "OfferPilot记录ID": application.id,
+                    "公司": "腾讯",
+                    "岗位": "AI 应用开发",
+                    "投递状态": "二面阶段",
+                    "面试轮次": "二面",
+                },
+            )
+
+    monkeypatch.setattr(feishu, "get_default_offerpilot_repository", lambda: repository)
+    monkeypatch.setattr(feishu, "FeishuBitableService", FakeBitableService)
+    app = create_app(Settings(debug_routes_enabled=False))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/feishu/events",
+        json={
+            "schema": "2.0",
+            "header": {
+                "event_type": "drive.file.bitable_record_changed_v1",
+                "event_id": "event_bitable_1",
+            },
+            "event": {
+                "app_token": "bascn_offerpilot",
+                "table_id": "tbl_applications",
+                "record_id": "rec_app_1",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "handled": True,
+        "event_type": "drive.file.bitable_record_changed_v1",
+        "message": "多维表格记录已回写数据库：app_1",
+    }
+    assert repository.applications[0].role == "AI 应用开发"
+    assert repository.applications[0].status.value == "interview_2"
+    assert repository.applications[0].round == "二面"
+
+
+def test_feishu_event_syncs_bitable_record_change_with_camel_case_payload(monkeypatch) -> None:
+    _disable_feishu_token(monkeypatch)
+    repository = InMemoryOfferPilotRepository()
+    repository.create_application(company="小红书", role="Java 后端实习")
+    repository.set_runtime_setting("feishu.offerpilot_bitable_app_token", "bascn_offerpilot")
+    repository.set_runtime_setting("feishu.offerpilot_bitable_table_id", "tbl_applications")
+    repository.set_runtime_setting(
+        "feishu.offerpilot_bitable_record_id.tbl_applications.app_1",
+        "recvoblCdubyrv",
+    )
+
+    class FakeBitableService:
+        app_token = ""
+        table_id = ""
+
+        def is_bitable_sync_enabled(self):
+            return True
+
+        def get_record(self, app_token, table_id, record_id):
+            assert app_token == "bascn_offerpilot"
+            assert table_id == "tbl_applications"
+            assert record_id == "recvoblCdubyrv"
+            return FeishuBitableRecordResult(
+                record_id="recvoblCdubyrv",
+                raw_response={"code": 0},
+                fields={
+                    "公司": "小红书",
+                    "岗位": "Java 后端开发实习",
+                    "投递状态": "已投递",
+                },
+            )
+
+    monkeypatch.setattr(feishu, "get_default_offerpilot_repository", lambda: repository)
+    monkeypatch.setattr(feishu, "FeishuBitableService", FakeBitableService)
+    app = create_app(Settings(debug_routes_enabled=False))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/feishu/events",
+        json={
+            "schema": "2.0",
+            "header": {
+                "event_type": "drive.file.bitable_record_changed_v1",
+                "event_id": "event_bitable_2",
+            },
+            "event": {
+                "file_token": "bascn_offerpilot",
+                "tableId": "tbl_applications",
+                "actionList": [
+                    {
+                        "recordId": "recvoblCdubyrv",
+                        "action": "record_updated",
+                    }
+                ],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["handled"] is True
+    assert repository.applications[0].role == "Java 后端开发实习"
+    assert repository.applications[0].status.value == "submitted"
 
 
 def test_feishu_event_route_stays_enabled_when_debug_routes_disabled(monkeypatch) -> None:

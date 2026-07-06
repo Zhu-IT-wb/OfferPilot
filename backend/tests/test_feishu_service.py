@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.services.feishu_service import (
+    FeishuBitableService,
     FeishuCalendarService,
     FeishuConfigurationError,
     FeishuMessageService,
@@ -343,4 +344,254 @@ def test_feishu_calendar_service_adds_event_attendee(monkeypatch) -> None:
         },
         "headers": {"Authorization": "Bearer tenant_token"},
         "params": {"user_id_type": "open_id"},
+    }
+
+
+def test_feishu_bitable_service_creates_app_table_record_and_updates_record(monkeypatch) -> None:
+    calls = []
+    service = FeishuBitableService(
+        app_id="app_id",
+        app_secret="app_secret",
+        sync_enabled=True,
+        auto_create_enabled=True,
+        bitable_name="OfferPilot 秋招投递表",
+        table_name="投递记录",
+    )
+
+    def fake_post_json_sync(path, payload, headers=None, params=None):
+        calls.append(
+            {
+                "method": "POST",
+                "path": path,
+                "payload": payload,
+                "headers": headers,
+                "params": params,
+            }
+        )
+        if path == "/auth/v3/tenant_access_token/internal":
+            return {
+                "code": 0,
+                "tenant_access_token": "tenant_token",
+                "expire": 7200,
+            }
+        if path == "/bitable/v1/apps":
+            return {
+                "code": 0,
+                "data": {"app": {"app_token": "bascn_test"}},
+            }
+        if path == "/bitable/v1/apps/bascn_test/tables":
+            return {
+                "code": 0,
+                "data": {"table": {"table_id": "tbl_test"}},
+            }
+        return {
+            "code": 0,
+            "data": {"record": {"record_id": "rec_test"}},
+        }
+
+    def fake_put_json_sync(path, payload, headers=None, params=None):
+        calls.append(
+            {
+                "method": "PUT",
+                "path": path,
+                "payload": payload,
+                "headers": headers,
+                "params": params,
+            }
+        )
+        return {
+            "code": 0,
+            "data": {"record": {"record_id": "rec_test"}},
+        }
+
+    monkeypatch.setattr(service, "_post_json_sync", fake_post_json_sync)
+    monkeypatch.setattr(service, "_put_json_sync", fake_put_json_sync)
+
+    app_result = service.create_app()
+    table_result = service.create_application_table(app_token=app_result.app_token)
+    record_result = service.create_record(
+        app_token=app_result.app_token,
+        table_id=table_result.table_id,
+        fields={"公司": "腾讯", "岗位": "AI 应用开发"},
+    )
+    updated_result = service.update_record(
+        app_token=app_result.app_token,
+        table_id=table_result.table_id,
+        record_id=record_result.record_id,
+        fields={"投递状态": "一面阶段"},
+    )
+
+    assert app_result.app_token == "bascn_test"
+    assert table_result.table_id == "tbl_test"
+    assert record_result.record_id == "rec_test"
+    assert updated_result.record_id == "rec_test"
+    assert calls[1] == {
+        "method": "POST",
+        "path": "/bitable/v1/apps",
+        "payload": {"name": "OfferPilot 秋招投递表"},
+        "headers": {"Authorization": "Bearer tenant_token"},
+        "params": None,
+    }
+    assert calls[2]["path"] == "/bitable/v1/apps/bascn_test/tables"
+    assert calls[2]["payload"]["table"]["name"] == "投递记录"
+    assert calls[2]["payload"]["table"]["default_view_name"] == "全部投递"
+    assert calls[2]["payload"]["table"]["fields"][0] == {
+        "field_name": "OfferPilot记录ID",
+        "type": 1,
+    }
+    status_field = calls[2]["payload"]["table"]["fields"][3]
+    assert status_field["field_name"] == "投递状态"
+    assert status_field["type"] == 3
+    assert [option["name"] for option in status_field["property"]["options"][:4]] == [
+        "待投递/待确认",
+        "已投递",
+        "笔试阶段",
+        "笔试通过",
+    ]
+    assert all("color" in option for option in status_field["property"]["options"])
+    assert calls[2]["payload"]["table"]["fields"][7] == {
+        "field_name": "面试开始时间",
+        "type": 5,
+    }
+    assert calls[3] == {
+        "method": "POST",
+        "path": "/bitable/v1/apps/bascn_test/tables/tbl_test/records",
+        "payload": {"fields": {"公司": "腾讯", "岗位": "AI 应用开发"}},
+        "headers": {"Authorization": "Bearer tenant_token"},
+        "params": None,
+    }
+    assert calls[4] == {
+        "method": "PUT",
+        "path": "/bitable/v1/apps/bascn_test/tables/tbl_test/records/rec_test",
+        "payload": {"fields": {"投递状态": "一面阶段"}},
+        "headers": {"Authorization": "Bearer tenant_token"},
+        "params": None,
+    }
+
+
+def test_feishu_bitable_service_gets_record(monkeypatch) -> None:
+    calls = []
+    service = FeishuBitableService(
+        app_id="app_id",
+        app_secret="app_secret",
+        sync_enabled=True,
+        auto_create_enabled=True,
+    )
+
+    def fake_post_json_sync(path, payload, headers=None, params=None):
+        calls.append(
+            {
+                "method": "POST",
+                "path": path,
+                "payload": payload,
+                "headers": headers,
+                "params": params,
+            }
+        )
+        return {
+            "code": 0,
+            "tenant_access_token": "tenant_token",
+            "expire": 7200,
+        }
+
+    def fake_get_json_sync(path, headers=None, params=None):
+        calls.append(
+            {
+                "method": "GET",
+                "path": path,
+                "headers": headers,
+                "params": params,
+            }
+        )
+        return {
+            "code": 0,
+            "data": {
+                "record": {
+                    "record_id": "rec_test",
+                    "fields": {
+                        "OfferPilot记录ID": "app_1",
+                        "公司": "腾讯",
+                        "岗位": "Java 后端实习",
+                    },
+                }
+            },
+        }
+
+    monkeypatch.setattr(service, "_post_json_sync", fake_post_json_sync)
+    monkeypatch.setattr(service, "_get_json_sync", fake_get_json_sync)
+
+    result = service.get_record(
+        app_token="bascn_test",
+        table_id="tbl_test",
+        record_id="rec_test",
+    )
+
+    assert result.record_id == "rec_test"
+    assert result.fields == {
+        "OfferPilot记录ID": "app_1",
+        "公司": "腾讯",
+        "岗位": "Java 后端实习",
+    }
+    assert calls[1] == {
+        "method": "GET",
+        "path": "/bitable/v1/apps/bascn_test/tables/tbl_test/records/rec_test",
+        "headers": {"Authorization": "Bearer tenant_token"},
+        "params": None,
+    }
+
+
+def test_feishu_bitable_service_adds_collaborator(monkeypatch) -> None:
+    calls = []
+    service = FeishuBitableService(
+        app_id="app_id",
+        app_secret="app_secret",
+        sync_enabled=True,
+        auto_create_enabled=True,
+    )
+
+    def fake_post_json_sync(path, payload, headers=None, params=None):
+        calls.append(
+            {
+                "path": path,
+                "payload": payload,
+                "headers": headers,
+                "params": params,
+            }
+        )
+        if path == "/auth/v3/tenant_access_token/internal":
+            return {
+                "code": 0,
+                "tenant_access_token": "tenant_token",
+                "expire": 7200,
+            }
+        return {
+            "code": 0,
+            "data": {
+                "member": {
+                    "member_id": "ou_test",
+                }
+            },
+        }
+
+    monkeypatch.setattr(service, "_post_json_sync", fake_post_json_sync)
+
+    result = service.add_bitable_collaborator(
+        app_token="bascn_offerpilot",
+        member_id="ou_test",
+        member_id_type="open_id",
+    )
+
+    assert result.member_id == "ou_test"
+    assert calls[1] == {
+        "path": "/drive/v1/permissions/bascn_offerpilot/members",
+        "payload": {
+            "member_type": "openid",
+            "member_id": "ou_test",
+            "perm": "edit",
+        },
+        "headers": {"Authorization": "Bearer tenant_token"},
+        "params": {
+            "type": "bitable",
+            "need_notification": "true",
+        },
     }
