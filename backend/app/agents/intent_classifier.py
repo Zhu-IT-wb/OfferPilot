@@ -226,7 +226,10 @@ Slot guidance:
             for word in ("约我", "约了", "安排", "通知", "邀我", "邀请", "收到面试", "发来面试")
         )
         has_pass_word = any(word in compact for word in ("过了", "通过", "进了", "进入"))
-        has_terminal_word = any(word in compact for word in ("offer", "挂了", "拒了", "拒绝", "没过", "凉了"))
+        has_terminal_word = any(
+            word in compact
+            for word in ("offer", "挂了", "拒了", "拒绝", "没过", "凉了", "取消投递", "撤回投递", "不想去", "放弃")
+        )
 
         if has_schedule_word and (has_round or "面试" in compact or "笔试" in compact):
             return True
@@ -276,7 +279,7 @@ Slot guidance:
     # 从输入数据中提取 application slots。
     def _extract_application_slots(self, text: str) -> Dict[str, Any]:
         slots: Dict[str, Any] = {}
-        normalized = re.sub(r"^(新增|添加|记录)?投递[:：]?", "", text.strip())
+        normalized = self._normalize_application_message(text)
         first_part = re.split(r"[，,。；;]", normalized, maxsplit=1)[0].strip()
 
         role_match = re.search(
@@ -285,18 +288,18 @@ Slot guidance:
             flags=re.IGNORECASE,
         )
         if role_match:
-            company = first_part[: role_match.start()].strip(" ：:,，")
+            company = self._clean_application_company(first_part[: role_match.start()])
             role = role_match.group(0).strip()
             if company:
                 slots["company"] = company
-            slots["role"] = role
+            slots["role"] = self._clean_application_role(role)
         elif first_part:
-            slots["company"] = first_part
+            slots["company"] = self._clean_application_company(first_part)
 
         if "role" not in slots:
             separated_role = re.search(r"(岗位|职位|方向)[是:：]?([^，,。；;]+)", text)
             if separated_role:
-                slots["role"] = separated_role.group(2).strip()
+                slots["role"] = self._clean_application_role(separated_role.group(2))
 
         company_round_match = re.search(
             r"(?P<company>[\u4e00-\u9fa5A-Za-z0-9][\u4e00-\u9fa5A-Za-z0-9_-]{1,20}?)(?P<round>笔试|一面|二面|三面|hr\s*面|HR\s*面)",
@@ -309,9 +312,10 @@ Slot guidance:
                 slots["company"] = company
             slots["round"] = company_round_match.group("round")
 
-        interview_time = self._extract_time_expression(text)
-        if interview_time:
-            slots["interview_time"] = interview_time
+        if self._has_interview_timing_context(text):
+            interview_time = self._extract_time_expression(text)
+            if interview_time:
+                slots["interview_time"] = interview_time
 
         round_match = re.search(r"(笔试|一面|二面|三面|hr\s*面|HR\s*面)", text, flags=re.IGNORECASE)
         if round_match:
@@ -322,6 +326,42 @@ Slot guidance:
             slots["jd_keywords"] = keywords
 
         return slots
+
+    # 标准化自然投递语句，去掉称呼和“我今天投递了”等叙述前缀。
+    @staticmethod
+    def _normalize_application_message(text: str) -> str:
+        normalized = text.strip()
+        greeting_split = re.match(r"^[^，,。；;]{1,12}[，,]\s*(?P<body>.+)$", normalized)
+        if greeting_split and "投递" in greeting_split.group("body"):
+            normalized = greeting_split.group("body")
+
+        normalized = re.sub(r"^(新增|添加|记录)?投递[:：]?", "", normalized.strip())
+        normalized = re.sub(
+            r"^(?:我)?(?:今天|今日|昨天|刚刚|已经|现在)?\s*(?:新增|添加|记录)?\s*投递(?:了|过)?\s*",
+            "",
+            normalized,
+        )
+        return normalized.strip()
+
+    # 清洗投递公司名。
+    @staticmethod
+    def _clean_application_company(value: str) -> str:
+        cleaned = re.sub(r"\s+", "", value).strip(" ：:,，。；;的")
+        cleaned = re.sub(r"(?:公司|企业|厂)?的$", "", cleaned).strip(" ：:,，。；;的")
+        if len(cleaned) > 2 and cleaned.endswith("公司"):
+            cleaned = cleaned[:-2]
+        return cleaned
+
+    # 清洗投递岗位名。
+    @staticmethod
+    def _clean_application_role(value: str) -> str:
+        return re.sub(r"\s+", " ", value).strip(" ：:,，。；;的岗位职位方向")
+
+    # 判断新增投递语句里的时间是否真的在描述笔试/面试安排。
+    @staticmethod
+    def _has_interview_timing_context(text: str) -> bool:
+        compact = re.sub(r"\s+", "", text).lower()
+        return any(word in compact for word in ("面试", "笔试", "一面", "二面", "三面", "hr面", "约我", "安排"))
 
     # 从输入数据中提取 application query slots。
     def _extract_application_query_slots(self, text: str) -> Dict[str, Any]:
@@ -368,6 +408,8 @@ Slot guidance:
 
         update_type = self._extract_update_type(compact)
         slots["update_type"] = update_type
+        if update_type == "withdraw" and any(word in compact for word in ("所有岗位", "全部岗位", "所有投递", "全部投递")):
+            slots["apply_to_all"] = True
 
         status = self._status_value_for_update(update_type, round_name)
         if status:
@@ -384,6 +426,8 @@ Slot guidance:
     def _extract_update_type(compact: str) -> str:
         if "offer" in compact:
             return "offer"
+        if any(word in compact for word in ("取消投递", "撤回投递", "不想去", "放弃")):
+            return "withdraw"
         if any(word in compact for word in ("挂了", "拒了", "拒绝", "没过", "凉了")):
             return "reject"
         if any(word in compact for word in ("约我", "约了", "安排", "通知", "邀我", "邀请", "收到面试", "发来面试")):
@@ -418,6 +462,8 @@ Slot guidance:
             return "offer"
         if update_type == "reject":
             return "rejected"
+        if update_type == "withdraw":
+            return "withdrawn"
         if update_type == "submitted":
             return "submitted"
         if update_type == "pass_round" and round_key:
@@ -440,6 +486,8 @@ Slot guidance:
         text_without_time = self._remove_time_expression(text)
         round_pattern = r"(?:笔试|一面|二面|三面|hr\s*面|HR\s*面)"
         patterns = [
+            r"(?:取消|撤回|放弃)(?:投递)?(?:了)?\s*(?P<company>[\u4e00-\u9fa5A-Za-z0-9_-]{2,20})(?:的)?(?:所有岗位|全部岗位|所有投递|全部投递|岗位|职位)?",
+            r"不想去\s*(?P<company>[\u4e00-\u9fa5A-Za-z0-9_-]{2,20})(?:了)?",
             r"(?:之前)?投递[了的]?(?P<company>[\u4e00-\u9fa5A-Za-z0-9_-]{2,20}?)(?:java|ai|agent|后端|前端|算法|开发|实习|岗位|职位|，|,).*?(?:约我|约了|安排(?:了)?|通知|邀我|邀请|收到面试|发来面试)",
             rf"(?P<company>.+?)(?:约我|约了|安排(?:了)?|通知|邀我|邀请|收到面试|发来面试).*?(?:{round_pattern}|面试|笔试)",
             rf"(?P<company>.+?){round_pattern}(?:过了|通过|没过|挂了|拒了|拒绝|凉了)",

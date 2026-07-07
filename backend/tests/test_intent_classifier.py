@@ -83,6 +83,21 @@ def test_intent_classifier_rule_extracts_application_slots() -> None:
     assert result.slots["round"] == "一面"
 
 
+def test_intent_classifier_rule_extracts_application_slots_from_natural_feishu_message() -> None:
+    class FakeLLMService:
+        async def generate_text(self, **kwargs):
+            raise LLMConfigurationError("missing api key")
+
+    classifier = IntentClassifier(llm_service=FakeLLMService())
+
+    result = asyncio.run(classifier.classify("小猪，我今天投递了 农夫山泉公司的 ai应用开发岗位"))
+
+    assert result.intent == IntentName.ADD_APPLICATION
+    assert result.slots["company"] == "农夫山泉"
+    assert result.slots["role"] == "ai应用开发"
+    assert "interview_time" not in result.slots
+
+
 def test_intent_classifier_rule_extracts_interview_arrangement_without_application_keyword() -> None:
     class FakeLLMService:
         async def generate_text(self, **kwargs):
@@ -170,6 +185,22 @@ def test_intent_classifier_rule_extracts_application_round_passed() -> None:
     assert result.slots["round"] == "一面"
     assert result.slots["update_type"] == "pass_round"
     assert result.slots["status"] == "interview_1_passed"
+
+
+def test_intent_classifier_rule_extracts_withdrawn_application_status() -> None:
+    class FakeLLMService:
+        async def generate_text(self, **kwargs):
+            raise LLMConfigurationError("missing api key")
+
+    classifier = IntentClassifier(llm_service=FakeLLMService())
+
+    result = asyncio.run(classifier.classify("我取消投递了 vivo 的所有岗位，我不想去 vivo 了"))
+
+    assert result.intent == IntentName.UPDATE_APPLICATION
+    assert result.slots["company"] == "vivo"
+    assert result.slots["update_type"] == "withdraw"
+    assert result.slots["status"] == "withdrawn"
+    assert result.slots["apply_to_all"] is True
 
 
 def test_intent_classifier_rule_extracts_application_offer() -> None:

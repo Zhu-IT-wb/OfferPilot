@@ -236,13 +236,27 @@ class ApplicationDialogueManager:
         label_pattern = "|".join(re.escape(label) for label in labels)
         stop_pattern = "|".join(re.escape(label) for label in stop_labels)
         pattern = (
-            rf"(?:{label_pattern})\s*(?:是|为|叫|名称)?\s*[:：]?\s*"
+            rf"(?:{label_pattern})\s*(?P<connector>是|为|叫|名称|[:：])?\s*"
             rf"(?P<value>.+?)(?=\s*(?:{stop_pattern})\s*(?:是|为|叫|[:：])|[，,。；;]|\n|$)"
         )
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if not match:
-            return None
-        return cls._clean_scalar(match.group("value"))
+        candidates = [
+            (
+                bool(match.group("connector")),
+                cls._clean_scalar(match.group("value")),
+            )
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE)
+        ]
+        valid_candidates = [
+            (has_connector, value)
+            for has_connector, value in candidates
+            if value and not cls._is_correction_marker(value)
+        ]
+        explicit_candidates = [value for has_connector, value in valid_candidates if has_connector]
+        if explicit_candidates:
+            return explicit_candidates[0]
+        if valid_candidates:
+            return valid_candidates[0][1]
+        return None
 
     # 从输入数据中提取 time expression。
     @staticmethod
@@ -290,6 +304,11 @@ class ApplicationDialogueManager:
     @staticmethod
     def _is_invalid_company(value: str) -> bool:
         return not value or value in {"是", "为", "叫", "公司", "公司名称", "企业", "厂"}
+
+    # 判断输入是否只是纠错提示词，不应作为槽位值。
+    @staticmethod
+    def _is_correction_marker(value: str) -> bool:
+        return value in {"错", "错了", "不对", "不是", "错误", "搞错了", "识别错了"}
 
     # 判断 specific interview time 是否成立。
     @staticmethod
@@ -377,6 +396,10 @@ class ApplicationDialogueManager:
             return f"我识别到你拿到了 {company} 的 Offer。下一步会更新投递进度，执行前需要你确认。"
         if update_type == "reject" and company:
             return f"我识别到 {company} 这条投递已结束或未通过。下一步会更新投递进度，执行前需要你确认。"
+        if update_type == "withdraw" and company:
+            if slots.get("apply_to_all"):
+                return f"我识别到你要放弃 {company} 的所有投递岗位。下一步会把匹配投递标记为已放弃，执行前需要你确认。"
+            return f"我识别到你要放弃 {company} 这条投递。下一步会把投递状态标记为已放弃，执行前需要你确认。"
         if company:
             return f"我识别到你想更新 {company} 的投递状态。下一步会定位投递记录并更新状态，执行前需要你确认。"
         return "我识别到你想更新投递状态。下一步需要先定位对应公司或岗位，执行前需要你确认。"

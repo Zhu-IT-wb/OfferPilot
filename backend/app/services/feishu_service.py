@@ -845,6 +845,7 @@ class FeishuBitableService(FeishuMessageService):
         {"field_name": "备注", "type": TEXT_FIELD_TYPE},
         {"field_name": "日历事件ID", "type": TEXT_FIELD_TYPE},
         {"field_name": "最后同步时间", "type": DATETIME_FIELD_TYPE},
+        {"field_name": "OfferPilot用户ID", "type": TEXT_FIELD_TYPE},
     ]
 
     # 初始化当前组件所需的依赖和配置。

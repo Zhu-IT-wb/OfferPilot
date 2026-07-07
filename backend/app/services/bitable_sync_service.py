@@ -18,6 +18,7 @@ from app.services.feishu_service import (
 _OFFERPILOT_BITABLE_APP_TOKEN_SETTING = "feishu.offerpilot_bitable_app_token"
 _OFFERPILOT_BITABLE_TABLE_ID_SETTING = "feishu.offerpilot_bitable_table_id"
 _OFFERPILOT_BITABLE_RECORD_ID_PREFIX = "feishu.offerpilot_bitable_record_id."
+_DEFAULT_OWNER_ID = "local_user"
 
 
 # 承载外部服务调用后的结构化结果。
@@ -103,15 +104,17 @@ def sync_bitable_record_fields_to_repository(
     app_token: str,
     table_id: str,
 ) -> BitableRecordSyncResult:
+    owner_id = _owner_id_from_bitable_fields(fields)
     application_id = (
         _field_to_text(fields.get("OfferPilot记录ID")).strip()
-        or _find_application_id_by_record_id(repository, table_id, record_id)
+        or _find_application_id_by_record_id(repository, table_id, record_id, owner_id=owner_id)
     )
     values = _application_values_from_bitable_fields(fields)
 
     if application_id:
         application = repository.update_application_by_id(
             application_id=application_id,
+            owner_id=owner_id,
             **values,
         )
         if application is None:
@@ -122,6 +125,7 @@ def sync_bitable_record_fields_to_repository(
                 fields=fields,
                 values=values,
                 app_token=app_token,
+                owner_id=owner_id,
             )
 
         repository.set_runtime_setting(
@@ -145,6 +149,7 @@ def sync_bitable_record_fields_to_repository(
         fields=fields,
         values=values,
         app_token=app_token,
+        owner_id=owner_id,
     )
 
 
@@ -156,6 +161,7 @@ def _create_application_from_fields(
     fields: Dict[str, Any],
     values: Dict[str, Any],
     app_token: str,
+    owner_id: str,
 ) -> BitableRecordSyncResult:
     company = values.get("company") or _field_to_text(fields.get("公司")).strip()
     role = values.get("role") or _field_to_text(fields.get("岗位")).strip()
@@ -174,10 +180,11 @@ def _create_application_from_fields(
         interview_time=values.get("interview_time"),
         round_name=values.get("round_name"),
         jd_keywords=values.get("jd_keywords") or [],
+        owner_id=owner_id,
     )
     status = values.get("status")
     if status is not None:
-        repository.update_application_by_id(application.id, status=status)
+        repository.update_application_by_id(application.id, status=status, owner_id=owner_id)
         application.status = status
 
     repository.set_runtime_setting(
@@ -222,6 +229,12 @@ def _application_values_from_bitable_fields(fields: Dict[str, Any]) -> Dict[str,
     if "JD关键词" in fields:
         values["jd_keywords"] = _field_to_text_list(fields.get("JD关键词"))
     return values
+
+
+# 从多维表格字段中提取数据归属人。
+def _owner_id_from_bitable_fields(fields: Dict[str, Any]) -> str:
+    owner_id = _field_to_text(fields.get("OfferPilot用户ID")).strip()
+    return owner_id or _DEFAULT_OWNER_ID
 
 
 # 处理 status_from_fields 相关逻辑。
@@ -302,8 +315,9 @@ def _find_application_id_by_record_id(
     repository: OfferPilotRepository,
     table_id: str,
     record_id: str,
+    owner_id: str = _DEFAULT_OWNER_ID,
 ) -> Optional[str]:
-    for application in repository.list_applications():
+    for application in repository.list_applications(owner_id=owner_id):
         stored_record_id = repository.get_runtime_setting(
             _bitable_record_setting_key(table_id, application.id)
         )

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from app.agents.application_dialogue import ApplicationDialogueManager
 from app.agents.conversation import PendingAgentAction, RecentAgentContext
+from app.agents.intent_classifier import IntentClassifier
 from app.core.config import settings
 from app.schemas.agent import AgentActionName, AgentResponse
 from app.schemas.agent_plan import AgentPlan, AgentPlanStep
@@ -335,6 +336,10 @@ class RuleBasedAgentPlanner:
             return f"我识别到你拿到了 {company} 的 Offer。下一步会更新投递进度，执行前需要你确认。"
         if update_type == "reject" and company:
             return f"我识别到 {company} 这条投递已结束或未通过。下一步会更新投递进度，执行前需要你确认。"
+        if update_type == "withdraw" and company:
+            if slots.get("apply_to_all"):
+                return f"我识别到你要放弃 {company} 的所有投递岗位。下一步会把匹配投递标记为已放弃，执行前需要你确认。"
+            return f"我识别到你要放弃 {company} 这条投递。下一步会把投递状态标记为已放弃，执行前需要你确认。"
         if company:
             return f"我识别到你想更新 {company} 的投递状态。下一步会定位投递记录并更新状态，执行前需要你确认。"
         return "我识别到你想更新投递状态。下一步需要先定位对应公司或岗位，执行前需要你确认。"
@@ -579,8 +584,11 @@ AgentPlan JSON 字段：
         if action == AgentActionName.QUERY_APPLICATION:
             slots = self._normalize_query_slots(message=message, slots=slots)
 
+        if action == AgentActionName.CREATE_APPLICATION:
+            slots = self._normalize_create_application_slots(message=message, slots=slots)
+
         if action == AgentActionName.UPDATE_APPLICATION:
-            slots = self._normalize_update_slots(slots)
+            slots = self._normalize_update_slots(message=message, slots=slots)
 
         required_slots = self._required_slots_for_action(action=action, slots=slots, tool_map=tool_map)
         missing_slots.extend(
@@ -607,7 +615,9 @@ AgentPlan JSON 字段：
             need_confirmation = True
 
         steps = self._validated_steps(plan=plan, slots=slots, tool_map=tool_map)
-        reply = plan.reply.strip() or self._default_reply_for_action(action, slots)
+        reply = self._confirmation_reply_for_action(action=action, slots=slots) if need_confirmation else ""
+        if not reply:
+            reply = plan.reply.strip() or self._default_reply_for_action(action, slots)
         return AgentPlan(
             intent=plan.intent,
             confidence=plan.confidence,
@@ -619,6 +629,24 @@ AgentPlan JSON 字段：
             steps=steps,
             reason=plan.reason,
         )
+
+    # 写操作进入待确认状态时，使用后端固定文案，避免 LLM 说成“已经执行”。
+    def _confirmation_reply_for_action(
+        self,
+        action: AgentActionName,
+        slots: Dict[str, Any],
+    ) -> str:
+        if action == AgentActionName.CREATE_APPLICATION:
+            return self.rule_planner._build_create_application_reply(slots)
+        if action == AgentActionName.UPDATE_APPLICATION:
+            return self.rule_planner._build_update_application_reply(slots)
+        if action == AgentActionName.COMPLETE_TASK:
+            return self.rule_planner._build_task_reply("完成", slots)
+        if action == AgentActionName.POSTPONE_TASK:
+            return self.rule_planner._build_task_reply("延期", slots)
+        if action == AgentActionName.CREATE_INTERVIEW_REVIEW:
+            return self.rule_planner._build_interview_review_reply(slots)
+        return ""
 
     # 根据用户原话补齐查询类默认参数。
     @staticmethod
@@ -636,13 +664,46 @@ AgentPlan JSON 字段：
                 normalized["query_type"] = "list"
         return normalized
 
+    # 标准化新增投递类参数，修正 LLM 偶发的公司/岗位错槽位。
+    @staticmethod
+    def _normalize_create_application_slots(message: str, slots: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = slots.copy()
+        rule_slots = IntentClassifier()._extract_application_slots(message)
+        rule_company = rule_slots.get("company")
+        rule_role = rule_slots.get("role")
+
+        company = str(normalized.get("company") or "").strip()
+        role = str(normalized.get("role") or "").strip()
+        if rule_company and (
+            not company
+            or AgentPlanner._looks_like_role_value(company)
+            or (role and company.replace(" ", "").startswith(role.replace(" ", "")))
+        ):
+            normalized["company"] = rule_company
+
+        if rule_role and not role:
+            normalized["role"] = rule_role
+
+        if "interview_time" in normalized and not AgentPlanner._has_interview_timing_context(message):
+            normalized.pop("interview_time", None)
+            normalized.pop("round", None)
+
+        return normalized
+
     # 标准化更新投递类参数。
     @staticmethod
-    def _normalize_update_slots(slots: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_update_slots(message: str, slots: Dict[str, Any]) -> Dict[str, Any]:
         normalized = slots.copy()
+        rule_slots = IntentClassifier()._extract_application_update_slots(message)
+        for key in ("company", "role", "round", "interview_time", "update_type", "status", "apply_to_all"):
+            if key not in normalized and key in rule_slots:
+                normalized[key] = rule_slots[key]
+
         update_type = normalized.get("update_type")
         if update_type is None and (normalized.get("interview_time") or normalized.get("round")):
             normalized["update_type"] = "schedule_interview"
+        if normalized.get("update_type") == "withdraw" and "status" not in normalized:
+            normalized["status"] = "withdrawn"
         if normalized.get("update_type") == "schedule_interview" and "status" not in normalized:
             round_name = str(normalized.get("round", ""))
             if "二面" in round_name:
@@ -701,6 +762,34 @@ AgentPlan JSON 字段：
     @staticmethod
     def _requires_specific_interview_time(action: AgentActionName, slots: Dict[str, Any]) -> bool:
         return action == AgentActionName.UPDATE_APPLICATION and slots.get("update_type") == "schedule_interview"
+
+    # 判断槽位值是否更像岗位而不是公司。
+    @staticmethod
+    def _looks_like_role_value(value: str) -> bool:
+        compact = re.sub(r"\s+", "", value).lower()
+        return any(
+            word in compact
+            for word in (
+                "岗位",
+                "职位",
+                "方向",
+                "java后端",
+                "java开发",
+                "python后端",
+                "ai应用开发",
+                "agent开发",
+                "后端开发",
+                "开发实习",
+                "算法工程师",
+                "实习生",
+            )
+        )
+
+    # 判断新增投递语句里的时间是否真的在描述笔试/面试安排。
+    @staticmethod
+    def _has_interview_timing_context(message: str) -> bool:
+        compact = re.sub(r"\s+", "", message).lower()
+        return any(word in compact for word in ("面试", "笔试", "一面", "二面", "三面", "hr面", "约我", "安排"))
 
     # 判断用户是否在追问上一轮面试列表的优先级。
     @staticmethod

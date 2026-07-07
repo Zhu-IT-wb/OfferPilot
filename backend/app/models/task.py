@@ -36,6 +36,7 @@ class Task:
     id: str
     title: str
     task_type: TaskType
+    owner_id: str = "local_user"
     status: TaskStatus = TaskStatus.PENDING
     priority: TaskPriority = TaskPriority.MEDIUM
 
@@ -43,6 +44,7 @@ class Task:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
+            "owner_id": self.owner_id,
             "title": self.title,
             "task_type": self.task_type.value,
             "status": self.status.value,

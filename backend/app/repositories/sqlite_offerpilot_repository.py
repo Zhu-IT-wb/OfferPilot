@@ -42,7 +42,9 @@ class SQLiteOfferPilotRepository:
         )
 
     # 查询并格式化今天的秋招任务。
-    def list_today_tasks(self) -> List[Task]:
+    def list_today_tasks(self, owner_id: str = "local_user") -> List[Task]:
+        owner_id = self._normalize_owner_id(owner_id)
+        self._ensure_default_tasks_for_owner(owner_id)
         active_statuses = (
             TaskStatus.PENDING.value,
             TaskStatus.IN_PROGRESS.value,
@@ -51,12 +53,12 @@ class SQLiteOfferPilotRepository:
         placeholders = ", ".join("?" for _ in active_statuses)
         rows = self._fetch_all(
             f"""
-            SELECT id, title, task_type, status, priority
+            SELECT id, title, task_type, status, priority, owner_id
             FROM tasks
-            WHERE status IN ({placeholders})
+            WHERE owner_id = ? AND status IN ({placeholders})
             ORDER BY id
             """,
-            active_statuses,
+            (owner_id, *active_statuses),
         )
         return [self._task_from_row(row) for row in rows]
 
@@ -68,11 +70,14 @@ class SQLiteOfferPilotRepository:
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         jd_keywords: Optional[List[str]] = None,
+        owner_id: str = "local_user",
     ) -> Application:
+        owner_id = self._normalize_owner_id(owner_id)
         application = Application(
             id=self._next_id("applications", "app"),
             company=company,
             role=role,
+            owner_id=owner_id,
             status=application_status_from_round(round_name),
             interview_time=interview_time,
             round=round_name,
@@ -81,12 +86,13 @@ class SQLiteOfferPilotRepository:
         self._execute(
             """
             INSERT INTO applications (
-                id, company, role, status, interview_time, round, jd_keywords
+                id, owner_id, company, role, status, interview_time, round, jd_keywords
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 application.id,
+                application.owner_id,
                 application.company,
                 application.role,
                 application.status.value,
@@ -98,13 +104,21 @@ class SQLiteOfferPilotRepository:
         return application
 
     # 查询 applications 列表。
-    def list_applications(self, company: Optional[str] = None) -> List[Application]:
+    def list_applications(
+        self,
+        company: Optional[str] = None,
+        owner_id: str = "local_user",
+    ) -> List[Application]:
+        owner_id = self._normalize_owner_id(owner_id)
+        self._claim_legacy_rows_for_owner("applications", owner_id)
         rows = self._fetch_all(
             """
-            SELECT id, company, role, status, interview_time, round, jd_keywords
+            SELECT id, owner_id, company, role, status, interview_time, round, jd_keywords
             FROM applications
+            WHERE owner_id = ?
             ORDER BY id
-            """
+            """,
+            (owner_id,),
         )
         applications = [self._application_from_row(row) for row in rows]
         if not company:
@@ -125,8 +139,10 @@ class SQLiteOfferPilotRepository:
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         role: Optional[str] = None,
+        owner_id: str = "local_user",
     ) -> Optional[Application]:
-        application = self._find_application(company)
+        owner_id = self._normalize_owner_id(owner_id)
+        application = self._find_application(company, owner_id=owner_id)
         if application is None:
             return None
 
@@ -143,7 +159,7 @@ class SQLiteOfferPilotRepository:
             """
             UPDATE applications
             SET role = ?, status = ?, interview_time = ?, round = ?
-            WHERE id = ?
+            WHERE id = ? AND owner_id = ?
             """,
             (
                 application.role,
@@ -151,6 +167,7 @@ class SQLiteOfferPilotRepository:
                 application.interview_time,
                 application.round,
                 application.id,
+                owner_id,
             ),
         )
         return application
@@ -165,8 +182,10 @@ class SQLiteOfferPilotRepository:
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         jd_keywords: Optional[List[str]] = None,
+        owner_id: str = "local_user",
     ) -> Optional[Application]:
-        application = self._find_application_by_id(application_id)
+        owner_id = self._normalize_owner_id(owner_id)
+        application = self._find_application_by_id(application_id, owner_id=owner_id)
         if application is None:
             return None
 
@@ -187,7 +206,7 @@ class SQLiteOfferPilotRepository:
             """
             UPDATE applications
             SET company = ?, role = ?, status = ?, interview_time = ?, round = ?, jd_keywords = ?
-            WHERE id = ?
+            WHERE id = ? AND owner_id = ?
             """,
             (
                 application.company,
@@ -197,6 +216,7 @@ class SQLiteOfferPilotRepository:
                 application.round,
                 json.dumps(application.jd_keywords, ensure_ascii=False),
                 application.id,
+                owner_id,
             ),
         )
         return application
@@ -212,9 +232,12 @@ class SQLiteOfferPilotRepository:
         start_at: Optional[str] = None,
         reminder_minutes: int = 30,
         raw_message: str = "",
+        owner_id: str = "local_user",
     ) -> InterviewSchedule:
+        owner_id = self._normalize_owner_id(owner_id)
         schedule = InterviewSchedule(
             id=self._next_id("interview_schedules", "schedule"),
+            owner_id=owner_id,
             application_id=application_id,
             company=company,
             role=role,
@@ -227,13 +250,14 @@ class SQLiteOfferPilotRepository:
         self._execute(
             """
             INSERT INTO interview_schedules (
-                id, application_id, company, role, round, start_time, start_at,
+                id, owner_id, application_id, company, role, round, start_time, start_at,
                 reminder_minutes, status, calendar_event_id, raw_message
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 schedule.id,
+                schedule.owner_id,
                 schedule.application_id,
                 schedule.company,
                 schedule.role,
@@ -249,14 +273,22 @@ class SQLiteOfferPilotRepository:
         return schedule
 
     # 查询 interview schedules 列表。
-    def list_interview_schedules(self, company: Optional[str] = None) -> List[InterviewSchedule]:
+    def list_interview_schedules(
+        self,
+        company: Optional[str] = None,
+        owner_id: str = "local_user",
+    ) -> List[InterviewSchedule]:
+        owner_id = self._normalize_owner_id(owner_id)
+        self._claim_legacy_rows_for_owner("interview_schedules", owner_id)
         rows = self._fetch_all(
             """
-            SELECT id, application_id, company, role, round, start_time, start_at,
+            SELECT id, owner_id, application_id, company, role, round, start_time, start_at,
                    reminder_minutes, status, calendar_event_id, raw_message
             FROM interview_schedules
+            WHERE owner_id = ?
             ORDER BY id
-            """
+            """,
+            (owner_id,),
         )
         schedules = [self._interview_schedule_from_row(row) for row in rows]
         if not company:
@@ -274,10 +306,12 @@ class SQLiteOfferPilotRepository:
         self,
         schedule_id: str,
         calendar_event_id: str,
+        owner_id: str = "local_user",
     ) -> Optional[InterviewSchedule]:
+        owner_id = self._normalize_owner_id(owner_id)
         schedules = [
             schedule
-            for schedule in self.list_interview_schedules()
+            for schedule in self.list_interview_schedules(owner_id=owner_id)
             if schedule.id == schedule_id
         ]
         if not schedules:
@@ -289,9 +323,9 @@ class SQLiteOfferPilotRepository:
             """
             UPDATE interview_schedules
             SET calendar_event_id = ?
-            WHERE id = ?
+            WHERE id = ? AND owner_id = ?
             """,
-            (calendar_event_id, schedule_id),
+            (calendar_event_id, schedule_id, owner_id),
         )
         return schedule
 
@@ -300,10 +334,12 @@ class SQLiteOfferPilotRepository:
         self,
         task_title: Optional[str] = None,
         task_type: Optional[str] = None,
+        owner_id: str = "local_user",
     ) -> Optional[Task]:
         return self._update_task_status(
             task_title=task_title,
             task_type=task_type,
+            owner_id=owner_id,
             status=TaskStatus.PASSED,
         )
 
@@ -312,10 +348,12 @@ class SQLiteOfferPilotRepository:
         self,
         task_title: Optional[str] = None,
         task_type: Optional[str] = None,
+        owner_id: str = "local_user",
     ) -> Optional[Task]:
         return self._update_task_status(
             task_title=task_title,
             task_type=task_type,
+            owner_id=owner_id,
             status=TaskStatus.POSTPONED,
         )
 
@@ -326,9 +364,12 @@ class SQLiteOfferPilotRepository:
         round_name: Optional[str] = None,
         topics: Optional[List[str]] = None,
         raw_message: str = "",
+        owner_id: str = "local_user",
     ) -> InterviewReview:
+        owner_id = self._normalize_owner_id(owner_id)
         review = InterviewReview(
             id=self._next_id("interview_reviews", "review"),
+            owner_id=owner_id,
             company=company,
             round=round_name,
             topics=topics or [],
@@ -337,12 +378,13 @@ class SQLiteOfferPilotRepository:
         self._execute(
             """
             INSERT INTO interview_reviews (
-                id, company, round, topics, raw_message, status
+                id, owner_id, company, round, topics, raw_message, status
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 review.id,
+                review.owner_id,
                 review.company,
                 review.round,
                 json.dumps(review.topics, ensure_ascii=False),
@@ -359,6 +401,7 @@ class SQLiteOfferPilotRepository:
                 """
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL DEFAULT 'local_user',
                     title TEXT NOT NULL,
                     task_type TEXT NOT NULL,
                     status TEXT NOT NULL,
@@ -370,6 +413,7 @@ class SQLiteOfferPilotRepository:
                 """
                 CREATE TABLE IF NOT EXISTS applications (
                     id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL DEFAULT 'local_user',
                     company TEXT NOT NULL,
                     role TEXT NOT NULL,
                     status TEXT NOT NULL,
@@ -383,6 +427,7 @@ class SQLiteOfferPilotRepository:
                 """
                 CREATE TABLE IF NOT EXISTS interview_reviews (
                     id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL DEFAULT 'local_user',
                     company TEXT,
                     round TEXT,
                     topics TEXT NOT NULL DEFAULT '[]',
@@ -395,6 +440,7 @@ class SQLiteOfferPilotRepository:
                 """
                 CREATE TABLE IF NOT EXISTS interview_schedules (
                     id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL DEFAULT 'local_user',
                     application_id TEXT,
                     company TEXT NOT NULL,
                     role TEXT,
@@ -418,7 +464,12 @@ class SQLiteOfferPilotRepository:
             )
             connection.commit()
 
+        self._ensure_column("tasks", "owner_id", "TEXT NOT NULL DEFAULT 'local_user'")
+        self._ensure_column("applications", "owner_id", "TEXT NOT NULL DEFAULT 'local_user'")
+        self._ensure_column("interview_reviews", "owner_id", "TEXT NOT NULL DEFAULT 'local_user'")
+        self._ensure_column("interview_schedules", "owner_id", "TEXT NOT NULL DEFAULT 'local_user'")
         self._ensure_column("interview_schedules", "start_at", "TEXT")
+        self._ensure_indexes()
         self._seed_default_tasks()
 
     # 确保 column 存在或已配置。
@@ -430,20 +481,44 @@ class SQLiteOfferPilotRepository:
 
         self._execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}", ())
 
+    # 创建常用 owner 查询索引，保证多用户后查询不退化。
+    def _ensure_indexes(self) -> None:
+        self._execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner_id ON tasks(owner_id)", ())
+        self._execute(
+            "CREATE INDEX IF NOT EXISTS idx_applications_owner_id ON applications(owner_id)",
+            (),
+        )
+        self._execute(
+            "CREATE INDEX IF NOT EXISTS idx_interview_reviews_owner_id ON interview_reviews(owner_id)",
+            (),
+        )
+        self._execute(
+            "CREATE INDEX IF NOT EXISTS idx_interview_schedules_owner_id ON interview_schedules(owner_id)",
+            (),
+        )
+
     # 处理 seed_default_tasks 相关逻辑。
     def _seed_default_tasks(self) -> None:
-        task_count = self._fetch_value("SELECT COUNT(*) FROM tasks")
+        self._ensure_default_tasks_for_owner("local_user")
+
+    # 为指定用户补齐默认任务。
+    def _ensure_default_tasks_for_owner(self, owner_id: str) -> None:
+        owner_id = self._normalize_owner_id(owner_id)
+        task_count = self._fetch_value(
+            "SELECT COUNT(*) FROM tasks WHERE owner_id = ?",
+            (owner_id,),
+        )
         if task_count:
             return
-
         for task in _default_tasks():
             self._execute(
                 """
-                INSERT INTO tasks (id, title, task_type, status, priority)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO tasks (id, owner_id, title, task_type, status, priority)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    task.id,
+                    self._next_id("tasks", "task"),
+                    owner_id,
                     task.title,
                     task.task_type.value,
                     task.status.value,
@@ -451,18 +526,48 @@ class SQLiteOfferPilotRepository:
                 ),
             )
 
+    # 把升级前默认归属 local_user 的旧记录迁到第一个真实访问用户名下。
+    def _claim_legacy_rows_for_owner(self, table: str, owner_id: str) -> None:
+        owner_id = self._normalize_owner_id(owner_id)
+        if owner_id == "local_user":
+            return
+
+        owner_count = self._fetch_value(
+            f"SELECT COUNT(*) FROM {table} WHERE owner_id = ?",
+            (owner_id,),
+        )
+        if owner_count:
+            return
+
+        legacy_count = self._fetch_value(
+            f"SELECT COUNT(*) FROM {table} WHERE owner_id = ?",
+            ("local_user",),
+        )
+        if not legacy_count:
+            return
+
+        self._execute(
+            f"UPDATE {table} SET owner_id = ? WHERE owner_id = ?",
+            (owner_id, "local_user"),
+        )
+
     # 更新 task status。
     def _update_task_status(
         self,
         task_title: Optional[str],
         task_type: Optional[str],
+        owner_id: str,
         status: TaskStatus,
     ) -> Optional[Task]:
-        task = self._find_task(task_title=task_title, task_type=task_type)
+        owner_id = self._normalize_owner_id(owner_id)
+        task = self._find_task(task_title=task_title, task_type=task_type, owner_id=owner_id)
         if task is None:
             return None
 
-        self._execute("UPDATE tasks SET status = ? WHERE id = ?", (status.value, task.id))
+        self._execute(
+            "UPDATE tasks SET status = ? WHERE id = ? AND owner_id = ?",
+            (status.value, task.id, owner_id),
+        )
         task.status = status
         return task
 
@@ -471,15 +576,18 @@ class SQLiteOfferPilotRepository:
         self,
         task_title: Optional[str] = None,
         task_type: Optional[str] = None,
+        owner_id: str = "local_user",
     ) -> Optional[Task]:
+        owner_id = self._normalize_owner_id(owner_id)
+        self._ensure_default_tasks_for_owner(owner_id)
         rows = self._fetch_all(
             """
-            SELECT id, title, task_type, status, priority
+            SELECT id, title, task_type, status, priority, owner_id
             FROM tasks
-            WHERE status != ?
+            WHERE owner_id = ? AND status != ?
             ORDER BY id
             """,
-            (TaskStatus.PASSED.value,),
+            (owner_id, TaskStatus.PASSED.value),
         )
         tasks = [self._task_from_row(row) for row in rows]
 
@@ -495,19 +603,24 @@ class SQLiteOfferPilotRepository:
         return None
 
     # 查找 application。
-    def _find_application(self, company: str) -> Optional[Application]:
-        matches = self.list_applications(company=company)
+    def _find_application(self, company: str, owner_id: str = "local_user") -> Optional[Application]:
+        matches = self.list_applications(company=company, owner_id=owner_id)
         return matches[-1] if matches else None
 
     # 查找 application by id。
-    def _find_application_by_id(self, application_id: str) -> Optional[Application]:
+    def _find_application_by_id(
+        self,
+        application_id: str,
+        owner_id: str = "local_user",
+    ) -> Optional[Application]:
+        owner_id = self._normalize_owner_id(owner_id)
         rows = self._fetch_all(
             """
-            SELECT id, company, role, status, interview_time, round, jd_keywords
+            SELECT id, owner_id, company, role, status, interview_time, round, jd_keywords
             FROM applications
-            WHERE id = ?
+            WHERE id = ? AND owner_id = ?
             """,
-            (application_id,),
+            (application_id, owner_id),
         )
         if not rows:
             return None
@@ -548,6 +661,7 @@ class SQLiteOfferPilotRepository:
             id=row["id"],
             title=row["title"],
             task_type=TaskType(row["task_type"]),
+            owner_id=row["owner_id"],
             status=TaskStatus(row["status"]),
             priority=TaskPriority(row["priority"]),
         )
@@ -559,6 +673,7 @@ class SQLiteOfferPilotRepository:
             id=row["id"],
             company=row["company"],
             role=row["role"],
+            owner_id=row["owner_id"],
             status=ApplicationStatus(row["status"]),
             interview_time=row["interview_time"],
             round=row["round"],
@@ -570,6 +685,7 @@ class SQLiteOfferPilotRepository:
     def _interview_review_from_row(row: sqlite3.Row) -> InterviewReview:
         return InterviewReview(
             id=row["id"],
+            owner_id=row["owner_id"],
             company=row["company"],
             round=row["round"],
             topics=json.loads(row["topics"] or "[]"),
@@ -582,6 +698,7 @@ class SQLiteOfferPilotRepository:
     def _interview_schedule_from_row(row: sqlite3.Row) -> InterviewSchedule:
         return InterviewSchedule(
             id=row["id"],
+            owner_id=row["owner_id"],
             application_id=row["application_id"],
             company=row["company"],
             role=row["role"],
@@ -598,3 +715,9 @@ class SQLiteOfferPilotRepository:
     @staticmethod
     def _normalize(value: str) -> str:
         return value.replace(" ", "").lower()
+
+    # 标准化 owner_id，避免空字符串造成数据串到匿名空间。
+    @staticmethod
+    def _normalize_owner_id(owner_id: str) -> str:
+        normalized = (owner_id or "").strip()
+        return normalized or "local_user"

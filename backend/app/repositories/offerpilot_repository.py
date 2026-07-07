@@ -18,7 +18,7 @@ class OfferPilotRepository(Protocol):
         ...
 
     # 查询并格式化今天的秋招任务。
-    def list_today_tasks(self) -> List[Task]:
+    def list_today_tasks(self, owner_id: str = "local_user") -> List[Task]:
         ...
 
     # 创建投递记录，并按需同步面试日程和飞书多维表格。
@@ -29,11 +29,16 @@ class OfferPilotRepository(Protocol):
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         jd_keywords: Optional[List[str]] = None,
+        owner_id: str = "local_user",
     ) -> Application:
         ...
 
     # 查询 applications 列表。
-    def list_applications(self, company: Optional[str] = None) -> List[Application]:
+    def list_applications(
+        self,
+        company: Optional[str] = None,
+        owner_id: str = "local_user",
+    ) -> List[Application]:
         ...
 
     # 更新投递进度，并按需同步日历和多维表格。
@@ -44,6 +49,7 @@ class OfferPilotRepository(Protocol):
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         role: Optional[str] = None,
+        owner_id: str = "local_user",
     ) -> Optional[Application]:
         ...
 
@@ -57,6 +63,7 @@ class OfferPilotRepository(Protocol):
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         jd_keywords: Optional[List[str]] = None,
+        owner_id: str = "local_user",
     ) -> Optional[Application]:
         ...
 
@@ -71,11 +78,16 @@ class OfferPilotRepository(Protocol):
         start_at: Optional[str] = None,
         reminder_minutes: int = 30,
         raw_message: str = "",
+        owner_id: str = "local_user",
     ) -> InterviewSchedule:
         ...
 
     # 查询 interview schedules 列表。
-    def list_interview_schedules(self, company: Optional[str] = None) -> List[InterviewSchedule]:
+    def list_interview_schedules(
+        self,
+        company: Optional[str] = None,
+        owner_id: str = "local_user",
+    ) -> List[InterviewSchedule]:
         ...
 
     # 更新 interview schedule calendar event。
@@ -83,6 +95,7 @@ class OfferPilotRepository(Protocol):
         self,
         schedule_id: str,
         calendar_event_id: str,
+        owner_id: str = "local_user",
     ) -> Optional[InterviewSchedule]:
         ...
 
@@ -91,6 +104,7 @@ class OfferPilotRepository(Protocol):
         self,
         task_title: Optional[str] = None,
         task_type: Optional[str] = None,
+        owner_id: str = "local_user",
     ) -> Optional[Task]:
         ...
 
@@ -99,6 +113,7 @@ class OfferPilotRepository(Protocol):
         self,
         task_title: Optional[str] = None,
         task_type: Optional[str] = None,
+        owner_id: str = "local_user",
     ) -> Optional[Task]:
         ...
 
@@ -109,6 +124,7 @@ class OfferPilotRepository(Protocol):
         round_name: Optional[str] = None,
         topics: Optional[List[str]] = None,
         raw_message: str = "",
+        owner_id: str = "local_user",
     ) -> InterviewReview:
         ...
 
@@ -158,13 +174,18 @@ class InMemoryOfferPilotRepository:
         self.runtime_settings[key] = value
 
     # 查询并格式化今天的秋招任务。
-    def list_today_tasks(self) -> List[Task]:
+    def list_today_tasks(self, owner_id: str = "local_user") -> List[Task]:
+        self._ensure_default_tasks_for_owner(owner_id)
         active_statuses = {
             TaskStatus.PENDING,
             TaskStatus.IN_PROGRESS,
             TaskStatus.POSTPONED,
         }
-        return [task for task in self.tasks if task.status in active_statuses]
+        return [
+            task
+            for task in self.tasks
+            if task.owner_id == owner_id and task.status in active_statuses
+        ]
 
     # 创建投递记录，并按需同步面试日程和飞书多维表格。
     def create_application(
@@ -174,11 +195,13 @@ class InMemoryOfferPilotRepository:
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         jd_keywords: Optional[List[str]] = None,
+        owner_id: str = "local_user",
     ) -> Application:
         application = Application(
             id=f"app_{len(self.applications) + 1}",
             company=company,
             role=role,
+            owner_id=owner_id,
             status=application_status_from_round(round_name),
             interview_time=interview_time,
             round=round_name,
@@ -188,14 +211,27 @@ class InMemoryOfferPilotRepository:
         return application
 
     # 查询 applications 列表。
-    def list_applications(self, company: Optional[str] = None) -> List[Application]:
+    def list_applications(
+        self,
+        company: Optional[str] = None,
+        owner_id: str = "local_user",
+    ) -> List[Application]:
+        self._claim_legacy_records_for_owner(
+            records=self.applications,
+            owner_id=owner_id,
+        )
+        applications = [
+            application
+            for application in self.applications
+            if application.owner_id == owner_id
+        ]
         if not company:
-            return list(self.applications)
+            return list(applications)
 
         normalized_company = self._normalize(company)
         return [
             application
-            for application in self.applications
+            for application in applications
             if normalized_company in self._normalize(application.company)
         ]
 
@@ -207,8 +243,9 @@ class InMemoryOfferPilotRepository:
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         role: Optional[str] = None,
+        owner_id: str = "local_user",
     ) -> Optional[Application]:
-        application = self._find_application(company)
+        application = self._find_application(company, owner_id=owner_id)
         if application is None:
             return None
 
@@ -232,8 +269,9 @@ class InMemoryOfferPilotRepository:
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         jd_keywords: Optional[List[str]] = None,
+        owner_id: str = "local_user",
     ) -> Optional[Application]:
-        application = self._find_application_by_id(application_id)
+        application = self._find_application_by_id(application_id, owner_id=owner_id)
         if application is None:
             return None
 
@@ -262,9 +300,11 @@ class InMemoryOfferPilotRepository:
         start_at: Optional[str] = None,
         reminder_minutes: int = 30,
         raw_message: str = "",
+        owner_id: str = "local_user",
     ) -> InterviewSchedule:
         schedule = InterviewSchedule(
             id=f"schedule_{len(self.interview_schedules) + 1}",
+            owner_id=owner_id,
             application_id=application_id,
             company=company,
             role=role,
@@ -278,14 +318,27 @@ class InMemoryOfferPilotRepository:
         return schedule
 
     # 查询 interview schedules 列表。
-    def list_interview_schedules(self, company: Optional[str] = None) -> List[InterviewSchedule]:
+    def list_interview_schedules(
+        self,
+        company: Optional[str] = None,
+        owner_id: str = "local_user",
+    ) -> List[InterviewSchedule]:
+        self._claim_legacy_records_for_owner(
+            records=self.interview_schedules,
+            owner_id=owner_id,
+        )
+        schedules = [
+            schedule
+            for schedule in self.interview_schedules
+            if schedule.owner_id == owner_id
+        ]
         if not company:
-            return list(self.interview_schedules)
+            return list(schedules)
 
         normalized_company = self._normalize(company)
         return [
             schedule
-            for schedule in self.interview_schedules
+            for schedule in schedules
             if normalized_company in self._normalize(schedule.company)
         ]
 
@@ -294,9 +347,10 @@ class InMemoryOfferPilotRepository:
         self,
         schedule_id: str,
         calendar_event_id: str,
+        owner_id: str = "local_user",
     ) -> Optional[InterviewSchedule]:
         for schedule in self.interview_schedules:
-            if schedule.id == schedule_id:
+            if schedule.id == schedule_id and schedule.owner_id == owner_id:
                 schedule.calendar_event_id = calendar_event_id
                 return schedule
         return None
@@ -306,8 +360,9 @@ class InMemoryOfferPilotRepository:
         self,
         task_title: Optional[str] = None,
         task_type: Optional[str] = None,
+        owner_id: str = "local_user",
     ) -> Optional[Task]:
-        task = self._find_task(task_title=task_title, task_type=task_type)
+        task = self._find_task(task_title=task_title, task_type=task_type, owner_id=owner_id)
         if task is None:
             return None
 
@@ -319,8 +374,9 @@ class InMemoryOfferPilotRepository:
         self,
         task_title: Optional[str] = None,
         task_type: Optional[str] = None,
+        owner_id: str = "local_user",
     ) -> Optional[Task]:
-        task = self._find_task(task_title=task_title, task_type=task_type)
+        task = self._find_task(task_title=task_title, task_type=task_type, owner_id=owner_id)
         if task is None:
             return None
 
@@ -334,9 +390,11 @@ class InMemoryOfferPilotRepository:
         round_name: Optional[str] = None,
         topics: Optional[List[str]] = None,
         raw_message: str = "",
+        owner_id: str = "local_user",
     ) -> InterviewReview:
         review = InterviewReview(
             id=f"review_{len(self.interview_reviews) + 1}",
+            owner_id=owner_id,
             company=company,
             round=round_name,
             topics=topics or [],
@@ -350,8 +408,12 @@ class InMemoryOfferPilotRepository:
         self,
         task_title: Optional[str] = None,
         task_type: Optional[str] = None,
+        owner_id: str = "local_user",
     ) -> Optional[Task]:
+        self._ensure_default_tasks_for_owner(owner_id)
         for task in self.tasks:
+            if task.owner_id != owner_id:
+                continue
             if task.status == TaskStatus.PASSED:
                 continue
             if task_title and self._normalize(task_title) in self._normalize(task.title):
@@ -359,22 +421,59 @@ class InMemoryOfferPilotRepository:
 
         if task_type:
             for task in self.tasks:
-                if task.status != TaskStatus.PASSED and task.task_type.value == task_type:
+                if (
+                    task.owner_id == owner_id
+                    and task.status != TaskStatus.PASSED
+                    and task.task_type.value == task_type
+                ):
                     return task
 
         return None
 
     # 查找 application。
-    def _find_application(self, company: str) -> Optional[Application]:
-        matches = self.list_applications(company=company)
+    def _find_application(self, company: str, owner_id: str = "local_user") -> Optional[Application]:
+        matches = self.list_applications(company=company, owner_id=owner_id)
         return matches[-1] if matches else None
 
     # 查找 application by id。
-    def _find_application_by_id(self, application_id: str) -> Optional[Application]:
+    def _find_application_by_id(
+        self,
+        application_id: str,
+        owner_id: str = "local_user",
+    ) -> Optional[Application]:
         for application in self.applications:
-            if application.id == application_id:
+            if application.id == application_id and application.owner_id == owner_id:
                 return application
         return None
+
+    # 为指定用户补齐默认任务，避免新用户看不到基础准备任务。
+    def _ensure_default_tasks_for_owner(self, owner_id: str) -> None:
+        if any(task.owner_id == owner_id for task in self.tasks):
+            return
+
+        for task in _default_tasks():
+            self.tasks.append(
+                Task(
+                    id=f"task_{len(self.tasks) + 1}",
+                    title=task.title,
+                    task_type=task.task_type,
+                    owner_id=owner_id,
+                    status=task.status,
+                    priority=task.priority,
+                )
+            )
+
+    # 把升级前默认归属 local_user 的旧记录迁到第一个真实访问用户名下。
+    @staticmethod
+    def _claim_legacy_records_for_owner(records: List, owner_id: str) -> None:
+        if owner_id == "local_user":
+            return
+        if any(getattr(record, "owner_id", "local_user") == owner_id for record in records):
+            return
+
+        for record in records:
+            if getattr(record, "owner_id", "local_user") == "local_user":
+                record.owner_id = owner_id
 
     # 处理 normalize 相关逻辑。
     @staticmethod

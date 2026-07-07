@@ -16,6 +16,7 @@ class InterviewSchedule:
     id: str
     company: str
     round: str
+    owner_id: str = "local_user"
     application_id: Optional[str] = None
     role: Optional[str] = None
     start_time: Optional[str] = None
@@ -29,6 +30,7 @@ class InterviewSchedule:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
+            "owner_id": self.owner_id,
             "application_id": self.application_id,
             "company": self.company,
             "role": self.role,

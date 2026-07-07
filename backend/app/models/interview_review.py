@@ -13,6 +13,7 @@ class InterviewReviewStatus(str, Enum):
 @dataclass
 class InterviewReview:
     id: str
+    owner_id: str = "local_user"
     company: Optional[str] = None
     round: Optional[str] = None
     topics: List[str] = field(default_factory=list)
@@ -23,6 +24,7 @@ class InterviewReview:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
+            "owner_id": self.owner_id,
             "company": self.company,
             "round": self.round,
             "topics": list(self.topics),

@@ -82,7 +82,7 @@ def build_offerpilot_tool_registry(
 
     registry.register(
         AgentActionName.LIST_TODAY_TASKS.value,
-        lambda arguments: list_today_tasks(selected_repository),
+        lambda arguments: list_today_tasks(selected_repository, arguments),
         description="查看今天的 LeetCode、八股、项目深挖和投递相关任务。",
         mutating=False,
         examples=["今天任务是什么", "查看今日任务", "/today"],
@@ -178,8 +178,9 @@ def build_offerpilot_tool_registry(
 
 
 # 查询并格式化今天的秋招任务。
-def list_today_tasks(repository: OfferPilotRepository) -> ToolResult:
-    tasks = repository.list_today_tasks()
+def list_today_tasks(repository: OfferPilotRepository, arguments: Optional[Dict[str, Any]] = None) -> ToolResult:
+    owner_id = _owner_id_from_arguments(arguments or {})
+    tasks = repository.list_today_tasks(owner_id=owner_id)
     task_data = [task.to_dict() for task in tasks]
     if not task_data:
         return ToolResult(
@@ -218,12 +219,14 @@ def create_application(
         )
 
     round_name = _resolve_application_round(arguments)
+    owner_id = _owner_id_from_arguments(arguments)
     application = repository.create_application(
         company=arguments["company"],
         role=arguments["role"],
         interview_time=arguments.get("interview_time"),
         round_name=round_name,
         jd_keywords=arguments.get("jd_keywords", []),
+        owner_id=owner_id,
     )
     schedule = None
     if _should_create_schedule_for_created_application(arguments, round_name):
@@ -237,12 +240,14 @@ def create_application(
             start_at=start_at,
             reminder_minutes=30,
             raw_message=arguments.get("raw_message", ""),
+            owner_id=owner_id,
         )
 
     calendar_sync = _sync_interview_schedule_to_calendar(
         repository=repository,
         schedule=schedule,
         calendar_service=calendar_service,
+        owner_id=owner_id,
         attendee_user_id=arguments.get("attendee_user_id"),
         attendee_user_id_type=arguments.get("attendee_user_id_type", "open_id"),
     )
@@ -277,13 +282,14 @@ def create_application(
 
 # 查询投递记录或近期面试安排。
 def query_application(repository: OfferPilotRepository, arguments: Dict[str, Any]) -> ToolResult:
+    owner_id = _owner_id_from_arguments(arguments)
     query_type = arguments.get("query_type") or "list"
     company = arguments.get("company")
-    applications = repository.list_applications(company=company)
+    applications = repository.list_applications(company=company, owner_id=owner_id)
     schedules = []
 
     if query_type == "upcoming_interviews":
-        schedules = repository.list_interview_schedules(company=company)
+        schedules = repository.list_interview_schedules(company=company, owner_id=owner_id)
         applications = [
             application
             for application in applications
@@ -328,6 +334,7 @@ def update_application(
     interview_time = arguments.get("interview_time")
     round_name = arguments.get("round")
     role = arguments.get("role")
+    owner_id = _owner_id_from_arguments(arguments)
 
     if status is None and interview_time is None and round_name is None and role is None:
         return ToolResult(
@@ -337,12 +344,65 @@ def update_application(
             data={},
         )
 
+    if arguments.get("apply_to_all"):
+        applications = repository.list_applications(company=company, owner_id=owner_id)
+        if not applications:
+            return ToolResult(
+                tool_name=AgentActionName.UPDATE_APPLICATION.value,
+                success=False,
+                message=f"没有找到 {company} 的投递记录。你可以先说“我投递了{company}的某岗位”。",
+                data={"company": company},
+            )
+
+        updated_applications = []
+        bitable_sync_results = []
+        for application_to_update in applications:
+            updated_application = repository.update_application_by_id(
+                application_id=application_to_update.id,
+                status=status,
+                interview_time=interview_time,
+                round_name=round_name,
+                role=role,
+                owner_id=owner_id,
+            )
+            if updated_application is None:
+                continue
+            updated_applications.append(updated_application)
+            bitable_sync_results.append(
+                _sync_application_to_bitable(
+                    repository=repository,
+                    application=updated_application,
+                    schedule=None,
+                    calendar_sync=None,
+                    bitable_service=bitable_service,
+                    collaborator_user_id=arguments.get("bitable_collaborator_user_id")
+                    or arguments.get("attendee_user_id"),
+                    collaborator_user_id_type=arguments.get("bitable_collaborator_user_id_type")
+                    or arguments.get("attendee_user_id_type", "open_id"),
+                )
+            )
+
+        return ToolResult(
+            tool_name=AgentActionName.UPDATE_APPLICATION.value,
+            success=True,
+            message=_format_applications_bulk_updated_message(
+                company=company,
+                applications=updated_applications,
+                bitable_sync_results=bitable_sync_results,
+            ),
+            data={
+                "applications": [application.to_dict() for application in updated_applications],
+                "bitable_sync_results": bitable_sync_results,
+            },
+        )
+
     application = repository.update_application(
         company=company,
         status=status,
         interview_time=interview_time,
         round_name=round_name,
         role=role,
+        owner_id=owner_id,
     )
     if application is None:
         return ToolResult(
@@ -364,6 +424,7 @@ def update_application(
             start_at=start_at,
             reminder_minutes=30,
             raw_message=arguments.get("raw_message", ""),
+            owner_id=owner_id,
         )
 
     if schedule and arguments.get("calendar_reminder") is False:
@@ -373,6 +434,7 @@ def update_application(
             repository=repository,
             schedule=schedule,
             calendar_service=calendar_service,
+            owner_id=owner_id,
             attendee_user_id=arguments.get("attendee_user_id"),
             attendee_user_id_type=arguments.get("attendee_user_id_type", "open_id"),
         )
@@ -407,9 +469,11 @@ def update_application(
 
 # 将指定任务标记为已完成。
 def complete_task(repository: OfferPilotRepository, arguments: Dict[str, Any]) -> ToolResult:
+    owner_id = _owner_id_from_arguments(arguments)
     task = repository.complete_task(
         task_title=arguments.get("task_title"),
         task_type=arguments.get("task_type"),
+        owner_id=owner_id,
     )
     if task is None:
         return ToolResult(
@@ -429,9 +493,11 @@ def complete_task(repository: OfferPilotRepository, arguments: Dict[str, Any]) -
 
 # 将指定任务延期处理。
 def postpone_task(repository: OfferPilotRepository, arguments: Dict[str, Any]) -> ToolResult:
+    owner_id = _owner_id_from_arguments(arguments)
     task = repository.postpone_task(
         task_title=arguments.get("task_title"),
         task_type=arguments.get("task_type"),
+        owner_id=owner_id,
     )
     if task is None:
         return ToolResult(
@@ -451,11 +517,13 @@ def postpone_task(repository: OfferPilotRepository, arguments: Dict[str, Any]) -
 
 # 记录一次面试复盘。
 def create_interview_review(repository: OfferPilotRepository, arguments: Dict[str, Any]) -> ToolResult:
+    owner_id = _owner_id_from_arguments(arguments)
     review = repository.create_interview_review(
         company=arguments.get("company"),
         round_name=arguments.get("round"),
         topics=arguments.get("topics", []),
         raw_message=arguments.get("raw_message", ""),
+        owner_id=owner_id,
     )
     return ToolResult(
         tool_name=AgentActionName.CREATE_INTERVIEW_REVIEW.value,
@@ -574,6 +642,8 @@ def _resolve_application_status(arguments: Dict[str, Any]) -> Optional[Applicati
         return application_passed_status_from_round(round_name) or application_status_from_round(round_name)
     if update_type == "reject":
         return ApplicationStatus.REJECTED
+    if update_type == "withdraw":
+        return ApplicationStatus.WITHDRAWN
     if update_type == "offer":
         return ApplicationStatus.OFFER
     if update_type == "submitted":
@@ -624,6 +694,7 @@ def _sync_interview_schedule_to_calendar(
     repository: OfferPilotRepository,
     schedule: Optional[InterviewSchedule],
     calendar_service: Optional[FeishuCalendarService],
+    owner_id: str = "local_user",
     attendee_user_id: Optional[str] = None,
     attendee_user_id_type: str = "open_id",
 ) -> Dict[str, Any]:
@@ -659,6 +730,7 @@ def _sync_interview_schedule_to_calendar(
         repository.update_interview_schedule_calendar_event(
             schedule_id=schedule.id,
             calendar_event_id=result.event_id,
+            owner_id=owner_id,
         )
         schedule.calendar_event_id = result.event_id
 
@@ -709,6 +781,36 @@ def _format_application_updated_message(
             lines.append(f"已记录面试安排，默认提前 {schedule.reminder_minutes} 分钟提醒。")
         lines.extend(_format_calendar_sync_lines(calendar_sync))
     lines.extend(_format_bitable_sync_lines(bitable_sync))
+    return "\n".join(lines)
+
+
+# 格式化 applications bulk updated message。
+def _format_applications_bulk_updated_message(
+    company: str,
+    applications: List[Application],
+    bitable_sync_results: List[Dict[str, Any]],
+) -> str:
+    lines = [f"已更新 {len(applications)} 条 {company} 投递记录："]
+    for index, application in enumerate(applications, start=1):
+        lines.append(
+            f"{index}. {application.role}：{application_status_label(application.status)}"
+        )
+
+    failed_syncs = [
+        sync
+        for sync in bitable_sync_results
+        if sync and sync.get("status") == "failed"
+    ]
+    if failed_syncs:
+        lines.append(f"其中 {len(failed_syncs)} 条飞书多维表格同步失败。")
+        first_error = failed_syncs[0].get("error")
+        if first_error:
+            lines.append(f"失败原因：{first_error}。")
+    elif any(sync and sync.get("synced") for sync in bitable_sync_results):
+        lines.append("已同步到飞书多维表格。")
+    elif any(sync and sync.get("status") == "disabled" for sync in bitable_sync_results):
+        lines.append("飞书多维表格同步未开启，当前只保存到 OfferPilot。")
+
     return "\n".join(lines)
 
 
@@ -911,6 +1013,8 @@ def _build_application_bitable_fields(
         "下一步": _build_application_next_action(application, schedule),
         "最后同步时间": _datetime_to_bitable_timestamp_ms(datetime.now()),
     }
+    if application.owner_id != "local_user":
+        fields["OfferPilot用户ID"] = application.owner_id
     round_name = _normalize_bitable_round(application.round)
     if round_name:
         fields["面试轮次"] = round_name
@@ -927,6 +1031,12 @@ def _build_application_bitable_fields(
     if application.jd_keywords:
         fields["JD关键词"] = list(application.jd_keywords)
     return fields
+
+
+# 从工具入参中提取数据归属人，缺省兼容本地单用户模式。
+def _owner_id_from_arguments(arguments: Dict[str, Any]) -> str:
+    owner_id = str(arguments.get("owner_id") or "").strip()
+    return owner_id or "local_user"
 
 
 # 格式化 bitable sync lines。

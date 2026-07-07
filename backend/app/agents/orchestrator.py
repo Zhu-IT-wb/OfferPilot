@@ -215,6 +215,22 @@ class AgentOrchestrator:
             return {"pending_handled": False}
 
         message = state.get("message", "")
+        if self._is_pending_status_question(message):
+            response = self._manual_response(
+                intent=pending.intent,
+                confidence=pending.confidence,
+                action=pending.action,
+                reply=self._build_pending_status_reply(pending),
+                need_confirmation=pending.need_confirmation,
+                slots=pending.slots,
+                missing_slots=pending.missing_slots,
+            )
+            return {
+                "response": response,
+                "original_message": pending.original_message,
+                "pending_handled": True,
+            }
+
         application_plan = self.application_dialogue.try_handle_pending(
             pending=pending,
             message=message,
@@ -502,6 +518,29 @@ class AgentOrchestrator:
         self.conversation_store.clear_pending_action(conversation_id)
         return executed_response
 
+    # 构造待确认动作的真实状态回复。
+    def _build_pending_status_reply(self, pending: PendingAgentAction) -> str:
+        if pending.missing_slots:
+            if pending.intent in {IntentName.ADD_APPLICATION, IntentName.UPDATE_APPLICATION}:
+                missing_reply = self.application_dialogue.build_missing_reply(
+                    intent=pending.intent,
+                    missing_slots=pending.missing_slots,
+                )
+            else:
+                missing_reply = self._build_missing_application_reply(pending.missing_slots)
+            return f"还没有写入。{missing_reply}"
+
+        action_label = "这个动作"
+        if pending.action == AgentActionName.CREATE_APPLICATION:
+            company = pending.slots.get("company") or "这家公司"
+            role = pending.slots.get("role") or "这个岗位"
+            action_label = f"{company} 的 {role} 投递记录"
+        elif pending.action == AgentActionName.UPDATE_APPLICATION:
+            company = pending.slots.get("company") or "这家公司"
+            action_label = f"{company} 的投递进度"
+
+        return f"还没有写入。{action_label}还在待确认状态；回复“确认”或“对的”后，我才会真正写入数据库并同步飞书多维表格。"
+
     # 尝试用用户补充消息填充待确认动作缺失槽位。
     def _try_fill_pending_slots(
         self,
@@ -650,6 +689,17 @@ class AgentOrchestrator:
         normalized_user_id = user_id.strip() or "local_user"
         return f"{normalized_source}:{normalized_user_id}"
 
+    # 根据入口和用户 ID 生成业务数据归属 ID。
+    @staticmethod
+    def _owner_id(source: str, user_id: str) -> str:
+        normalized_source = (source or "api").strip().lower() or "api"
+        normalized_user_id = (user_id or "local_user").strip() or "local_user"
+        if normalized_user_id == "unknown_feishu_user":
+            return "local_user"
+        if normalized_source == "api" and normalized_user_id == "local_user":
+            return "local_user"
+        return f"{normalized_source}:{normalized_user_id}"
+
     # 判断用户消息是否表达确认。
     @staticmethod
     def _is_confirm_message(message: str) -> bool:
@@ -657,11 +707,19 @@ class AgentOrchestrator:
         return compact in {
             "确认",
             "确定",
+            "对",
+            "对的",
+            "是",
+            "是的",
+            "没错",
             "好",
             "好的",
             "可以",
+            "可以的",
             "执行",
             "没问题",
+            "嗯",
+            "嗯嗯",
             "yes",
             "y",
             "ok",
@@ -680,6 +738,29 @@ class AgentOrchestrator:
             "撤销",
             "cancel",
         }
+
+    # 判断用户是否在询问待确认动作有没有真正执行。
+    @staticmethod
+    def _is_pending_status_question(message: str) -> bool:
+        compact = re.sub(r"\s+", "", message).lower().rstrip("？?。！!")
+        return any(
+            phrase in compact
+            for phrase in (
+                "记录了吗",
+                "写入了吗",
+                "保存了吗",
+                "同步了吗",
+                "执行了吗",
+                "记了吗",
+                "录了吗",
+                "有没有记录",
+                "是否记录",
+                "记录了没",
+                "写入了没",
+                "保存了没",
+                "同步了没",
+            )
+        )
 
     # 从输入数据中提取 slot updates。
     @staticmethod
@@ -774,18 +855,18 @@ class AgentOrchestrator:
         user_id: str,
         source: str,
     ) -> IntentClassification:
-        if source.strip().lower() != "feishu":
-            return classification
-
+        normalized_source = source.strip().lower()
         normalized_user_id = user_id.strip()
-        if not normalized_user_id or normalized_user_id == "unknown_feishu_user":
-            return classification
-
         slots = classification.slots.copy()
-        slots.setdefault("attendee_user_id", normalized_user_id)
-        slots.setdefault("attendee_user_id_type", "open_id")
-        slots.setdefault("bitable_collaborator_user_id", normalized_user_id)
-        slots.setdefault("bitable_collaborator_user_id_type", "open_id")
+        slots.setdefault(
+            "owner_id",
+            AgentOrchestrator._owner_id(source=source, user_id=user_id),
+        )
+        if normalized_source == "feishu" and normalized_user_id and normalized_user_id != "unknown_feishu_user":
+            slots.setdefault("attendee_user_id", normalized_user_id)
+            slots.setdefault("attendee_user_id_type", "open_id")
+            slots.setdefault("bitable_collaborator_user_id", normalized_user_id)
+            slots.setdefault("bitable_collaborator_user_id_type", "open_id")
         return IntentClassification(
             intent=classification.intent,
             confidence=classification.confidence,

@@ -139,6 +139,51 @@ def test_llm_planner_forces_confirmation_for_mutating_action() -> None:
     assert result.tool_result is None
 
 
+def test_llm_planner_repairs_misparsed_natural_application_message() -> None:
+    class FakeLLMService:
+        async def generate_text(self, **kwargs):
+            return LLMResult(
+                provider="fake",
+                model="fake",
+                content=json.dumps(
+                    {
+                        "intent": "add_application",
+                        "confidence": 0.9,
+                        "action": "create_application",
+                        "reply": "我会记录这条投递。",
+                        "need_confirmation": False,
+                        "slots": {
+                            "company": "ai应用开发岗位",
+                            "role": "ai应用开发",
+                            "interview_time": "今天",
+                        },
+                        "missing_slots": [],
+                        "steps": [],
+                        "reason": "create application",
+                    },
+                    ensure_ascii=False,
+                ),
+                raw_response={},
+            )
+
+    planner = AgentPlanner(llm_service=FakeLLMService(), llm_planner_enabled=True)
+    orchestrator = AgentOrchestrator(
+        planner=planner,
+        tool_registry=build_offerpilot_tool_registry(calendar_service=None, bitable_service=None),
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    result = asyncio.run(
+        orchestrator.handle_message("小猪，我今天投递了 农夫山泉公司的 ai应用开发岗位")
+    )
+
+    assert result.action == AgentActionName.CREATE_APPLICATION
+    assert result.need_confirmation is True
+    assert result.slots["company"] == "农夫山泉"
+    assert result.slots["role"] == "ai应用开发"
+    assert "interview_time" not in result.slots
+
+
 def test_llm_planner_asks_for_specific_interview_time() -> None:
     class FakeLLMService:
         async def generate_text(self, **kwargs):

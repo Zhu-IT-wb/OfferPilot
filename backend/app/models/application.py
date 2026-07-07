@@ -62,6 +62,7 @@ class Application:
     id: str
     company: str
     role: str
+    owner_id: str = "local_user"
     status: ApplicationStatus = ApplicationStatus.PLANNED
     interview_time: Optional[str] = None
     round: Optional[str] = None
@@ -71,6 +72,7 @@ class Application:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
+            "owner_id": self.owner_id,
             "company": self.company,
             "role": self.role,
             "status": self.status.value,

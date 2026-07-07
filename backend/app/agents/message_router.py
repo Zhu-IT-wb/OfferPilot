@@ -97,7 +97,7 @@ class MessageRouter:
             word in compact for word in ("任务", "安排", "计划")
         ):
             return True
-        if any(word in compact for word in ("新增投递", "添加投递", "记录投递", "我投递了", "投了")):
+        if any(word in compact for word in ("新增投递", "添加投递", "记录投递", "我投递了", "投递了", "投了")):
             return True
         if any(word in compact for word in ("投递列表", "投递记录", "投递进度", "投了哪些", "投过哪些")):
             return True

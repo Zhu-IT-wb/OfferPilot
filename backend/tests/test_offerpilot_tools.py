@@ -2,6 +2,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.schemas.agent import AgentActionName
+from app.models.application import ApplicationStatus
 from app.services.feishu_service import (
     FeishuBitableAppResult,
     FeishuBitableCollaboratorResult,
@@ -14,7 +15,7 @@ from app.services.feishu_service import (
 from app.schemas.tool import ToolResult
 from app.repositories.offerpilot_repository import InMemoryOfferPilotRepository
 from app.tools import offerpilot_tools
-from app.tools.offerpilot_tools import build_offerpilot_tool_registry
+from app.tools.offerpilot_tools import build_offerpilot_tool_registry, update_application
 from app.tools.registry import ToolNotFoundError, ToolRegistry
 
 
@@ -389,6 +390,35 @@ def test_offerpilot_tools_query_company_application_status() -> None:
     assert "深信服 当前进度" in result.message
     assert "二面阶段" in result.message
     assert "今晚" in result.message
+
+
+def test_offerpilot_tools_withdraws_all_company_applications() -> None:
+    repository = InMemoryOfferPilotRepository()
+    first = repository.create_application(company="vivo", role="AI 应用开发")
+    second = repository.create_application(company="vivo", role="Java 后端")
+    repository.create_application(company="小米", role="AI 应用开发")
+
+    result = update_application(
+        repository,
+        {
+            "company": "vivo",
+            "update_type": "withdraw",
+            "status": "withdrawn",
+            "apply_to_all": True,
+        },
+        calendar_service=None,
+        bitable_service=None,
+    )
+
+    vivo_applications = repository.list_applications(company="vivo")
+    assert result.success is True
+    assert "已更新 2 条 vivo 投递记录" in result.message
+    assert [application.status for application in vivo_applications] == [
+        ApplicationStatus.WITHDRAWN,
+        ApplicationStatus.WITHDRAWN,
+    ]
+    assert result.data["applications"][0]["id"] == first.id
+    assert result.data["applications"][1]["id"] == second.id
 
 
 def test_offerpilot_tools_query_upcoming_interviews() -> None:

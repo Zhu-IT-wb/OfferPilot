@@ -21,3 +21,6 @@ backend/data/
 *.db
 *.sqlite
 *.sqlite3
+.docs/
+.data/
+CONTEXT.md

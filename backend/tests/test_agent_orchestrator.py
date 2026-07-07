@@ -1,9 +1,11 @@
 import asyncio
+import json
 
 from fastapi.testclient import TestClient
 
 from app.agents.conversation import InMemoryConversationStore
 from app.agents.orchestrator import AgentOrchestrator
+from app.agents.planner import AgentPlanner
 from app.api.routes import debug
 from app.main import app
 from app.repositories.offerpilot_repository import InMemoryOfferPilotRepository
@@ -14,6 +16,7 @@ from app.services.feishu_service import (
     FeishuCalendarEventResult,
     FeishuCalendarResult,
 )
+from app.services.llm_service import LLMResult
 from app.tools.offerpilot_tools import build_offerpilot_tool_registry
 
 
@@ -612,6 +615,253 @@ def test_orchestrator_fills_missing_slot_then_confirms_pending_action() -> None:
     assert repository.applications[0].company == "深信服"
     assert repository.applications[0].role == "AI 应用开发"
     assert repository.applications[0].round == "二面"
+
+
+def test_orchestrator_accepts_natural_confirmation_synonym_for_pending_action() -> None:
+    class FakeIntentClassifier:
+        async def classify(self, message):
+            assert message == "我今天投递了农夫山泉公司的 AI 应用开发岗位"
+            return IntentClassification(
+                intent=IntentName.ADD_APPLICATION,
+                confidence=0.82,
+                slots={
+                    "company": "农夫山泉",
+                    "role": "AI 应用开发",
+                },
+            )
+
+    repository = InMemoryOfferPilotRepository()
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
+    orchestrator = AgentOrchestrator(
+        intent_classifier=FakeIntentClassifier(),
+        tool_registry=registry,
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    first = asyncio.run(
+        orchestrator.handle_message(
+            "我今天投递了农夫山泉公司的 AI 应用开发岗位",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+    second = asyncio.run(
+        orchestrator.handle_message(
+            "对的",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+
+    assert first.need_confirmation is True
+    assert second.action == AgentActionName.CREATE_APPLICATION
+    assert second.tool_result is not None
+    assert second.tool_result.success is True
+    assert repository.applications[0].company == "农夫山泉"
+    assert repository.applications[0].role == "AI 应用开发"
+
+
+def test_orchestrator_updates_pending_application_company_from_correction() -> None:
+    class FakeIntentClassifier:
+        async def classify(self, message):
+            assert message == "我今天投递了农夫山泉公司的 AI 应用开发岗位"
+            return IntentClassification(
+                intent=IntentName.ADD_APPLICATION,
+                confidence=0.82,
+                slots={
+                    "company": "农夫山泉公司",
+                    "role": "AI 应用开发",
+                },
+            )
+
+    repository = InMemoryOfferPilotRepository()
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
+    orchestrator = AgentOrchestrator(
+        intent_classifier=FakeIntentClassifier(),
+        tool_registry=registry,
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    first = asyncio.run(
+        orchestrator.handle_message(
+            "我今天投递了农夫山泉公司的 AI 应用开发岗位",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+    second = asyncio.run(
+        orchestrator.handle_message(
+            "公司错了，公司是 农夫山泉",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+    third = asyncio.run(
+        orchestrator.handle_message(
+            "确认",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+
+    assert first.need_confirmation is True
+    assert second.action == AgentActionName.CREATE_APPLICATION
+    assert second.need_confirmation is True
+    assert second.slots["company"] == "农夫山泉"
+    assert third.tool_result is not None
+    assert third.tool_result.success is True
+    assert repository.applications[0].company == "农夫山泉"
+    assert repository.applications[0].role == "AI 应用开发"
+
+
+def test_orchestrator_does_not_claim_pending_application_was_recorded() -> None:
+    class FakeLLMService:
+        def __init__(self):
+            self.calls = 0
+
+        async def generate_text(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                content = {
+                    "intent": "add_application",
+                    "confidence": 0.9,
+                    "action": "create_application",
+                    "reply": "好的，我来帮你记录投递农夫山泉公司的 AI 应用开发岗位。",
+                    "need_confirmation": False,
+                    "slots": {"company": "农夫山泉", "role": "AI 应用开发"},
+                    "missing_slots": [],
+                    "steps": [],
+                    "reason": "create application",
+                }
+            else:
+                content = {
+                    "intent": "ask_help",
+                    "confidence": 0.9,
+                    "action": "answer_help",
+                    "reply": "好的，已经帮你记录投递农夫山泉公司的 AI 应用开发岗位。",
+                    "need_confirmation": False,
+                    "slots": {},
+                    "missing_slots": [],
+                    "steps": [],
+                    "reason": "answer status",
+                }
+            return LLMResult(
+                provider="fake",
+                model="fake",
+                content=json.dumps(content, ensure_ascii=False),
+                raw_response={},
+            )
+
+    repository = InMemoryOfferPilotRepository()
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
+    planner = AgentPlanner(llm_service=FakeLLMService(), llm_planner_enabled=True)
+    orchestrator = AgentOrchestrator(
+        planner=planner,
+        tool_registry=registry,
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    first = asyncio.run(
+        orchestrator.handle_message(
+            "小猪，我今天投递了 农夫山泉公司的 ai应用开发岗位",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+    assert first.action == AgentActionName.CREATE_APPLICATION
+    assert first.need_confirmation is True
+    assert "确认" in first.reply
+    assert first.tool_result is None
+    assert repository.applications == []
+
+    second = asyncio.run(
+        orchestrator.handle_message(
+            "你记录了吗",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+    assert second.action == AgentActionName.CREATE_APPLICATION
+    assert second.need_confirmation is True
+    assert second.tool_result is None
+    assert "还没有" in second.reply
+    assert "确认" in second.reply
+    assert repository.applications == []
+
+    third = asyncio.run(
+        orchestrator.handle_message(
+            "确认",
+            user_id="ou_test",
+            source="feishu",
+        )
+    )
+
+    assert third.tool_result is not None
+    assert third.tool_result.success is True
+    assert repository.applications[0].company == "农夫山泉"
+    assert repository.applications[0].role == "AI 应用开发"
+
+
+def test_orchestrator_repairs_withdraw_all_company_update_plan() -> None:
+    class FakeLLMService:
+        async def generate_text(self, **kwargs):
+            return LLMResult(
+                provider="fake",
+                model="fake",
+                content=json.dumps(
+                    {
+                        "intent": "update_application",
+                        "confidence": 0.9,
+                        "action": "update_application",
+                        "reply": "我识别到你想更新 vivo 的投递状态。下一步会定位投递记录并更新状态，执行前需要你确认。",
+                        "need_confirmation": True,
+                        "slots": {"company": "vivo"},
+                        "missing_slots": [],
+                        "steps": [],
+                        "reason": "update application",
+                    },
+                    ensure_ascii=False,
+                ),
+                raw_response={},
+            )
+
+    repository = InMemoryOfferPilotRepository()
+    repository.create_application(company="vivo", role="AI 应用开发")
+    repository.create_application(company="vivo", role="Java 后端")
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
+    planner = AgentPlanner(llm_service=FakeLLMService(), llm_planner_enabled=True)
+    orchestrator = AgentOrchestrator(
+        planner=planner,
+        tool_registry=registry,
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    first = asyncio.run(
+        orchestrator.handle_message(
+            "我取消投递了 vivo 的所有岗位，我不想去 vivo 了",
+            user_id="local_user",
+            source="api",
+        )
+    )
+    second = asyncio.run(
+        orchestrator.handle_message(
+            "确认",
+            user_id="local_user",
+            source="api",
+        )
+    )
+
+    assert first.action == AgentActionName.UPDATE_APPLICATION
+    assert first.need_confirmation is True
+    assert first.slots["status"] == "withdrawn"
+    assert first.slots["apply_to_all"] is True
+    assert "放弃" in first.reply
+    assert second.tool_result is not None
+    assert second.tool_result.success is True
+    assert [application.status.value for application in repository.list_applications(company="vivo")] == [
+        "withdrawn",
+        "withdrawn",
+    ]
 
 
 def test_orchestrator_confirm_without_pending_action_returns_guidance() -> None:
