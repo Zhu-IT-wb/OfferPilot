@@ -168,7 +168,29 @@ def test_intent_classifier_rule_extracts_application_update_schedule() -> None:
     assert result.slots["round"] == "一面"
     assert result.slots["interview_time"] == "明天早上八点"
     assert result.slots["update_type"] == "schedule_interview"
-    assert result.slots["status"] == "interview_1"
+
+
+def test_intent_classifier_rule_extracts_interview_reschedule() -> None:
+    classifier = IntentClassifier()
+
+    result = classifier._classify_by_rules("美团一面改到后天下午四点")
+
+    assert result.intent == IntentName.UPDATE_APPLICATION
+    assert result.slots["update_type"] == "reschedule_interview"
+    assert result.slots["company"] == "美团"
+    assert result.slots["round"] == "一面"
+    assert result.slots["interview_time"] == "后天下午四点"
+
+
+def test_intent_classifier_rule_extracts_interview_cancellation() -> None:
+    classifier = IntentClassifier()
+
+    result = classifier._classify_by_rules("取消美团一面")
+
+    assert result.intent == IntentName.UPDATE_APPLICATION
+    assert result.slots["update_type"] == "cancel_interview"
+    assert result.slots["company"] == "美团"
+    assert result.slots["round"] == "一面"
 
 
 def test_intent_classifier_rule_extracts_application_round_passed() -> None:

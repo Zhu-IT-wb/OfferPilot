@@ -1,4 +1,5 @@
 from app.models.application import ApplicationStatus
+from app.models.interview_schedule import InterviewScheduleStatus
 from app.models.task import TaskStatus
 from app.repositories.offerpilot_repository import InMemoryOfferPilotRepository
 
@@ -107,6 +108,66 @@ def test_repository_updates_interview_schedule_calendar_event() -> None:
     assert updated_schedule is not None
     assert updated_schedule.calendar_event_id == "evt_test_1"
     assert repository.interview_schedules[0].calendar_event_id == "evt_test_1"
+
+
+def test_repository_reschedules_interview_schedule_by_id() -> None:
+    repository = InMemoryOfferPilotRepository()
+    schedule = repository.create_interview_schedule(
+        company="深信服",
+        role="AI 应用开发",
+        round_name="一面",
+        start_time="明天早上八点",
+        start_at="2026-07-17T08:00:00+08:00",
+    )
+
+    updated_schedule = repository.update_interview_schedule(
+        schedule_id=schedule.id,
+        start_time="后天下午三点",
+        start_at="2026-07-18T15:00:00+08:00",
+    )
+
+    assert updated_schedule is not None
+    assert updated_schedule.id == schedule.id
+    assert updated_schedule.start_time == "后天下午三点"
+    assert updated_schedule.start_at == "2026-07-18T15:00:00+08:00"
+    assert updated_schedule.status == InterviewScheduleStatus.SCHEDULED
+
+
+def test_repository_cancels_interview_schedule_by_id() -> None:
+    repository = InMemoryOfferPilotRepository()
+    schedule = repository.create_interview_schedule(
+        company="深信服",
+        role="AI 应用开发",
+        round_name="一面",
+        start_time="明天早上八点",
+    )
+
+    cancelled_schedule = repository.cancel_interview_schedule(schedule.id)
+
+    assert cancelled_schedule is not None
+    assert cancelled_schedule.status == InterviewScheduleStatus.CANCELLED
+    assert repository.list_interview_schedules(company="深信服")[0].status == InterviewScheduleStatus.CANCELLED
+
+
+def test_repository_can_clear_application_interview_fields_by_id() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(
+        company="深信服",
+        role="AI 应用开发",
+        round_name="一面",
+        interview_time="明天下午三点",
+    )
+
+    updated = repository.update_application_by_id(
+        application_id=application.id,
+        status=ApplicationStatus.SUBMITTED,
+        clear_interview_fields=True,
+    )
+
+    assert updated is not None
+    assert updated.status == ApplicationStatus.SUBMITTED
+    assert updated.interview_time is None
+    assert updated.round is None
 
 
 def test_repository_completes_task_by_title() -> None:

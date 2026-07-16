@@ -879,6 +879,83 @@ def test_orchestrator_confirm_without_pending_action_returns_guidance() -> None:
     assert "没有待确认" in result.reply
 
 
+def test_orchestrator_requires_candidate_selection_before_updating_application() -> None:
+    class FakeIntentClassifier:
+        async def classify(self, message):
+            return IntentClassification(
+                intent=IntentName.UPDATE_APPLICATION,
+                confidence=0.9,
+                slots={"company": "美团", "update_type": "reject", "status": "rejected"},
+            )
+
+    repository = InMemoryOfferPilotRepository()
+    first_application = repository.create_application(company="美团", role="Java 后端")
+    second_application = repository.create_application(company="美团", role="AI 应用开发")
+    conversation_store = InMemoryConversationStore()
+    orchestrator = AgentOrchestrator(
+        intent_classifier=FakeIntentClassifier(),
+        tool_registry=build_offerpilot_tool_registry(
+            repository,
+            calendar_service=None,
+            bitable_service=None,
+        ),
+        conversation_store=conversation_store,
+    )
+
+    planned = asyncio.run(orchestrator.handle_message("美团一面挂了"))
+    candidates = asyncio.run(orchestrator.handle_message("确认"))
+    selected = asyncio.run(orchestrator.handle_message(f"application_id: {first_application.id}"))
+    executed = asyncio.run(orchestrator.handle_message("确认"))
+
+    assert planned.need_confirmation is True
+    assert candidates.missing_slots == ["application_id"]
+    assert candidates.tool_result is not None
+    assert candidates.tool_result.data["requires_selection"] is True
+    assert selected.slots["application_id"] == first_application.id
+    assert selected.need_confirmation is True
+    assert executed.tool_result is not None
+    assert executed.tool_result.success is True
+    assert repository.list_applications()[0].status.value == "rejected"
+    assert repository.list_applications()[1].id == second_application.id
+    assert repository.list_applications()[1].status.value == "planned"
+
+
+def test_orchestrator_reschedules_and_cancels_interview_with_rule_planner() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="美团", role="Java 后端", round_name="一面")
+    schedule = repository.create_interview_schedule(
+        application_id=application.id,
+        company=application.company,
+        role=application.role,
+        round_name="一面",
+        start_time="明天下午三点",
+    )
+    orchestrator = AgentOrchestrator(
+        tool_registry=build_offerpilot_tool_registry(
+            repository,
+            calendar_service=None,
+            bitable_service=None,
+        ),
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    reschedule_plan = asyncio.run(orchestrator.handle_message("美团一面改到后天下午四点"))
+    rescheduled = asyncio.run(orchestrator.handle_message("确认"))
+    cancel_plan = asyncio.run(orchestrator.handle_message("取消美团一面"))
+    cancelled = asyncio.run(orchestrator.handle_message("确认"))
+
+    assert reschedule_plan.action == AgentActionName.RESCHEDULE_INTERVIEW
+    assert reschedule_plan.need_confirmation is True
+    assert rescheduled.tool_result is not None
+    assert rescheduled.tool_result.success is True
+    assert rescheduled.tool_result.data["interview_schedule"]["id"] == schedule.id
+    assert rescheduled.tool_result.data["interview_schedule"]["start_time"] == "后天下午四点"
+    assert cancel_plan.action == AgentActionName.CANCEL_INTERVIEW
+    assert cancel_plan.need_confirmation is True
+    assert cancelled.tool_result is not None
+    assert cancelled.tool_result.data["interview_schedule"]["status"] == "cancelled"
+
+
 def test_debug_agent_route_returns_orchestrated_response(monkeypatch) -> None:
     class FakeAgentOrchestrator:
         async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):

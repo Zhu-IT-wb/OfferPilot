@@ -13,6 +13,8 @@ class AgentActionName(str, Enum):
     CREATE_APPLICATION = "create_application"
     QUERY_APPLICATION = "query_application"
     UPDATE_APPLICATION = "update_application"
+    RESCHEDULE_INTERVIEW = "reschedule_interview"
+    CANCEL_INTERVIEW = "cancel_interview"
     COMPLETE_TASK = "complete_task"
     POSTPONE_TASK = "postpone_task"
     CREATE_INTERVIEW_REVIEW = "create_interview_review"

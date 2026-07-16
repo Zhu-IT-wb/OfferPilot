@@ -33,6 +33,8 @@ class ApplicationDialogueManager:
         "role": "岗位",
         "round": "轮次",
         "interview_time": "具体面试时间（例如明天下午三点）",
+        "application_id": "投递记录 ID（例如 app_1）",
+        "schedule_id": "面试安排 ID（例如 schedule_1）",
     }
 
     # 根据投递类意图生成多轮对话计划。
@@ -64,7 +66,9 @@ class ApplicationDialogueManager:
 
         expected_slots = set(pending.missing_slots)
         if pending.action == AgentActionName.UPDATE_APPLICATION:
-            expected_slots.update({"company", "role", "round", "interview_time", "calendar_reminder"})
+            expected_slots.update({"company", "role", "round", "interview_time", "calendar_reminder", "application_id"})
+        elif pending.action in {AgentActionName.RESCHEDULE_INTERVIEW, AgentActionName.CANCEL_INTERVIEW}:
+            expected_slots.update({"company", "role", "round", "interview_time", "application_id", "schedule_id"})
         elif pending.action == AgentActionName.CREATE_APPLICATION:
             expected_slots.update({"company", "role", "round", "interview_time"})
 
@@ -121,9 +125,13 @@ class ApplicationDialogueManager:
     # 处理 plan_update_application 相关逻辑。
     def _plan_update_application(self, classification: IntentClassification) -> AgentResponse:
         update_type = classification.slots.get("update_type")
-        required_slots = ["company"]
+        required_slots: List[str] = []
+        if not any(classification.slots.get(slot) for slot in ("company", "application_id", "schedule_id")):
+            required_slots.append("company")
         if update_type == "schedule_interview":
             required_slots.extend(["round", "interview_time"])
+        elif update_type == "reschedule_interview":
+            required_slots.append("interview_time")
 
         missing_slots = self._missing_required_slots(classification.slots, required_slots=required_slots)
         if (
@@ -142,9 +150,15 @@ class ApplicationDialogueManager:
                 missing_slots=missing_slots,
             )
 
+        action = AgentActionName.UPDATE_APPLICATION
+        if update_type == "reschedule_interview":
+            action = AgentActionName.RESCHEDULE_INTERVIEW
+        elif update_type == "cancel_interview":
+            action = AgentActionName.CANCEL_INTERVIEW
+
         return self._response(
             classification=classification,
-            action=AgentActionName.UPDATE_APPLICATION,
+            action=action,
             reply=self._build_update_application_reply(classification.slots),
             need_confirmation=True,
         )
@@ -157,8 +171,21 @@ class ApplicationDialogueManager:
         expected_slots: Optional[set[str]] = None,
     ) -> Dict[str, Any]:
         text = message.strip()
-        expected = expected_slots or {"company", "role", "round", "interview_time", "calendar_reminder"}
+        expected = expected_slots or {
+            "company", "role", "round", "interview_time", "calendar_reminder", "application_id", "schedule_id"
+        }
         updates: Dict[str, Any] = {}
+
+        for identifier in ("application_id", "schedule_id"):
+            if identifier not in expected:
+                continue
+            identifier_match = re.search(
+                rf"(?:{identifier}\s*[:：]?\s*)?\b({'app' if identifier == 'application_id' else 'schedule'}_\d+)\b",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if identifier_match:
+                updates[identifier] = identifier_match.group(1).lower()
 
         if "company" in expected:
             company = cls._extract_labeled_value(
@@ -390,6 +417,12 @@ class ApplicationDialogueManager:
                     "默认会同步飞书日历并提前 30 分钟提醒；如果不需要，可以先回复“不需要提醒”，否则回复“确认”执行。"
                 )
             return f"我识别到你要记录面试安排，{ '，'.join(details) }。下一步会更新投递进度并记录面试安排，执行前需要你确认。"
+        if update_type == "reschedule_interview":
+            target = slots.get("schedule_id") or slots.get("application_id") or company or "这场面试"
+            return f"我识别到你要把 {target} 改期到 {slots.get('interview_time')}。定位到唯一面试安排后执行，写入前需要你确认。"
+        if update_type == "cancel_interview":
+            target = slots.get("schedule_id") or slots.get("application_id") or company or "这场面试"
+            return f"我识别到你要取消 {target} 的面试安排。定位到唯一面试安排后执行，写入前需要你确认。"
         if update_type == "pass_round" and details:
             return f"我识别到你要记录面试/笔试通过，{ '，'.join(details) }。下一步会更新投递进度，执行前需要你确认。"
         if update_type == "offer" and company:

@@ -44,7 +44,8 @@ Return strict JSON only, without markdown fences:
 Slot guidance:
 - Keep relative time expressions as written, such as "明天下午三点".
 - For update_application, use update_type when clear:
-  schedule_interview, pass_round, reject, offer, submitted, or status_update.
+  schedule_interview, reschedule_interview, cancel_interview, pass_round, reject,
+  offer, submitted, or status_update.
 - For schedule_interview, use calendar_reminder when the user clearly says whether
   Feishu calendar reminder is needed. Use true for "需要提醒/同步日历", false for
   "不用提醒/不同步日历". Omit it when unclear.
@@ -226,12 +227,18 @@ Slot guidance:
             for word in ("约我", "约了", "安排", "通知", "邀我", "邀请", "收到面试", "发来面试")
         )
         has_pass_word = any(word in compact for word in ("过了", "通过", "进了", "进入"))
+        has_reschedule_word = any(word in compact for word in ("改期", "改到", "调整到", "推迟到", "提前到"))
+        has_cancel_interview_word = "取消" in compact and (has_round or "面试" in compact or "笔试" in compact)
         has_terminal_word = any(
             word in compact
             for word in ("offer", "挂了", "拒了", "拒绝", "没过", "凉了", "取消投递", "撤回投递", "不想去", "放弃")
         )
 
         if has_schedule_word and (has_round or "面试" in compact or "笔试" in compact):
+            return True
+        if has_reschedule_word and (has_round or "面试" in compact or "笔试" in compact):
+            return True
+        if has_cancel_interview_word and "取消投递" not in compact:
             return True
         if has_round and has_pass_word:
             return True
@@ -426,6 +433,10 @@ Slot guidance:
     def _extract_update_type(compact: str) -> str:
         if "offer" in compact:
             return "offer"
+        if "取消" in compact and any(word in compact for word in ("面试", "笔试", "一面", "二面", "三面", "hr面")):
+            return "cancel_interview"
+        if any(word in compact for word in ("改期", "改到", "调整到", "推迟到", "提前到")):
+            return "reschedule_interview"
         if any(word in compact for word in ("取消投递", "撤回投递", "不想去", "放弃")):
             return "withdraw"
         if any(word in compact for word in ("挂了", "拒了", "拒绝", "没过", "凉了")):
@@ -486,6 +497,8 @@ Slot guidance:
         text_without_time = self._remove_time_expression(text)
         round_pattern = r"(?:笔试|一面|二面|三面|hr\s*面|HR\s*面)"
         patterns = [
+            rf"(?:取消)(?P<company>[\u4e00-\u9fa5A-Za-z0-9_-]{{2,20}}?)(?:的)?{round_pattern}",
+            rf"(?P<company>.+?){round_pattern}(?:改期|改到|调整到|推迟到|提前到)",
             r"(?:取消|撤回|放弃)(?:投递)?(?:了)?\s*(?P<company>[\u4e00-\u9fa5A-Za-z0-9_-]{2,20})(?:的)?(?:所有岗位|全部岗位|所有投递|全部投递|岗位|职位)?",
             r"不想去\s*(?P<company>[\u4e00-\u9fa5A-Za-z0-9_-]{2,20})(?:了)?",
             r"(?:之前)?投递[了的]?(?P<company>[\u4e00-\u9fa5A-Za-z0-9_-]{2,20}?)(?:java|ai|agent|后端|前端|算法|开发|实习|岗位|职位|，|,).*?(?:约我|约了|安排(?:了)?|通知|邀我|邀请|收到面试|发来面试)",

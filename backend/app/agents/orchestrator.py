@@ -515,7 +515,13 @@ class AgentOrchestrator:
             message=pending.original_message,
             confirmed=True,
         )
-        self.conversation_store.clear_pending_action(conversation_id)
+        if executed_response.missing_slots:
+            self.conversation_store.set_pending_action(
+                conversation_id,
+                PendingAgentAction.from_response(executed_response, pending.original_message),
+            )
+        else:
+            self.conversation_store.clear_pending_action(conversation_id)
         return executed_response
 
     # 构造待确认动作的真实状态回复。
@@ -631,14 +637,26 @@ class AgentOrchestrator:
     # 把工具执行结果合并到 Agent 响应里。
     @staticmethod
     def _with_tool_result(response: AgentResponse, tool_result: ToolResult) -> AgentResponse:
+        slots = response.slots.copy()
+        raw_missing_slots = tool_result.data.get("missing_slots", [])
+        missing_slots = [
+            slot
+            for slot in raw_missing_slots
+            if isinstance(slot, str) and slot
+        ] if isinstance(raw_missing_slots, list) else []
+        if tool_result.data.get("requires_selection"):
+            selection_slot = tool_result.data.get("selection_slot")
+            if isinstance(selection_slot, str) and selection_slot:
+                missing_slots = [selection_slot]
+            slots["candidates"] = tool_result.data.get("candidates", [])
         return AgentResponse(
             intent=response.intent,
             confidence=response.confidence,
             action=response.action,
             reply=tool_result.message,
             need_confirmation=False,
-            slots=response.slots,
-            missing_slots=response.missing_slots,
+            slots=slots,
+            missing_slots=missing_slots,
             tool_result=tool_result,
         )
 

@@ -11,7 +11,7 @@ from app.models.application import (
     application_status_label,
     application_status_from_round,
 )
-from app.models.interview_schedule import InterviewSchedule
+from app.models.interview_schedule import InterviewSchedule, InterviewScheduleStatus
 from app.repositories.offerpilot_repository import (
     InMemoryOfferPilotRepository,
     OfferPilotRepository,
@@ -141,6 +141,23 @@ def build_offerpilot_tool_registry(
             "bitable_collaborator_user_id_type",
         ],
         examples=["明天下午三点美团一面", "字节二面过了", "阿里给 offer 了"],
+    )
+    registry.register(
+        AgentActionName.RESCHEDULE_INTERVIEW.value,
+        lambda arguments: reschedule_interview(selected_repository, arguments),
+        description="按 application_id 或 schedule_id 定位已有面试安排并修改时间；匹配不唯一时返回候选项。",
+        mutating=True,
+        required_slots=["interview_time"],
+        optional_slots=["application_id", "schedule_id", "company", "role", "round", "start_at"],
+        examples=["把美团一面改到后天下午四点", "将 schedule_1 改到下周一上午十点"],
+    )
+    registry.register(
+        AgentActionName.CANCEL_INTERVIEW.value,
+        lambda arguments: cancel_interview(selected_repository, arguments),
+        description="按 application_id 或 schedule_id 定位已有面试安排并取消；匹配不唯一时返回候选项。",
+        mutating=True,
+        optional_slots=["application_id", "schedule_id", "company", "role", "round"],
+        examples=["取消美团一面", "取消 schedule_1"],
     )
     registry.register(
         AgentActionName.COMPLETE_TASK.value,
@@ -322,12 +339,13 @@ def update_application(
     bitable_service: Optional[FeishuBitableService] = None,
 ) -> ToolResult:
     company = arguments.get("company")
-    if not company:
+    application_id = arguments.get("application_id")
+    if not company and not application_id:
         return ToolResult(
             tool_name=AgentActionName.UPDATE_APPLICATION.value,
             success=False,
-            message="更新投递进度失败，缺少公司。请补充公司后再试。",
-            data={"missing_slots": ["company"]},
+            message="更新投递进度失败，缺少 application_id 或公司。请补充后再试。",
+            data={"missing_slots": ["application_id", "company"]},
         )
 
     status = _resolve_application_status(arguments)
@@ -345,6 +363,13 @@ def update_application(
         )
 
     if arguments.get("apply_to_all"):
+        if not company:
+            return ToolResult(
+                tool_name=AgentActionName.UPDATE_APPLICATION.value,
+                success=False,
+                message="批量更新需要提供公司。",
+                data={"missing_slots": ["company"]},
+            )
         applications = repository.list_applications(company=company, owner_id=owner_id)
         if not applications:
             return ToolResult(
@@ -396,8 +421,17 @@ def update_application(
             },
         )
 
-    application = repository.update_application(
-        company=company,
+    candidates = _find_application_candidates(repository, arguments, owner_id=owner_id)
+    selection_result = _application_selection_result(
+        tool_name=AgentActionName.UPDATE_APPLICATION.value,
+        candidates=candidates,
+        locator=company or application_id or "指定条件",
+    )
+    if selection_result is not None:
+        return selection_result
+
+    application = repository.update_application_by_id(
+        application_id=candidates[0].id,
         status=status,
         interview_time=interview_time,
         round_name=round_name,
@@ -465,6 +499,351 @@ def update_application(
             "bitable_sync": bitable_sync,
         },
     )
+
+
+# 修改已有面试安排，不创建新的 schedule。
+def reschedule_interview(
+    repository: OfferPilotRepository,
+    arguments: Dict[str, Any],
+) -> ToolResult:
+    interview_time = arguments.get("interview_time")
+    if not interview_time:
+        return ToolResult(
+            tool_name=AgentActionName.RESCHEDULE_INTERVIEW.value,
+            success=False,
+            message="面试改期失败，缺少新的具体面试时间。",
+            data={"missing_slots": ["interview_time"]},
+        )
+
+    owner_id = _owner_id_from_arguments(arguments)
+    candidates = _find_schedule_candidates(repository, arguments, owner_id=owner_id)
+    selection_result = _schedule_selection_result(
+        tool_name=AgentActionName.RESCHEDULE_INTERVIEW.value,
+        candidates=candidates,
+        locator=arguments.get("company") or arguments.get("application_id") or arguments.get("schedule_id") or "指定条件",
+    )
+    if selection_result is not None:
+        return selection_result
+
+    schedule = candidates[0]
+    normalized_start_at = _normalize_interview_start_at(interview_time)
+    explicit_start_at = arguments.get("start_at")
+    if not normalized_start_at or (
+        explicit_start_at
+        and not _iso_datetimes_match(normalized_start_at, str(explicit_start_at))
+    ):
+        return ToolResult(
+            tool_name=AgentActionName.RESCHEDULE_INTERVIEW.value,
+            success=False,
+            message="面试改期失败，新的面试时间无法解析。请提供包含日期和具体时刻的时间。",
+            data={"missing_slots": ["interview_time"], "schedule_id": schedule.id},
+        )
+    start_at = normalized_start_at
+    updated_schedule = repository.update_interview_schedule(
+        schedule_id=schedule.id,
+        start_time=interview_time,
+        start_at=start_at,
+        round_name=arguments.get("round"),
+        owner_id=owner_id,
+    )
+    if updated_schedule is None:
+        return ToolResult(
+            tool_name=AgentActionName.RESCHEDULE_INTERVIEW.value,
+            success=False,
+            message="面试改期失败，目标安排已不存在。",
+            data={"schedule_id": schedule.id},
+        )
+
+    application = _application_for_schedule(repository, updated_schedule, owner_id=owner_id)
+    if application is not None:
+        application = repository.update_application_by_id(
+            application_id=application.id,
+            interview_time=interview_time,
+            round_name=arguments.get("round") or updated_schedule.round,
+            owner_id=owner_id,
+        )
+
+    return ToolResult(
+        tool_name=AgentActionName.RESCHEDULE_INTERVIEW.value,
+        success=True,
+        message=(
+            f"已将 {updated_schedule.company} {updated_schedule.round} 改期到 {updated_schedule.start_time}。"
+            "飞书日历更新将在外部同步能力接入后执行。"
+        ),
+        data={
+            "application": application.to_dict() if application else None,
+            "interview_schedule": updated_schedule.to_dict(),
+        },
+    )
+
+
+# 取消已有面试安排，不删除历史记录。
+def cancel_interview(
+    repository: OfferPilotRepository,
+    arguments: Dict[str, Any],
+) -> ToolResult:
+    owner_id = _owner_id_from_arguments(arguments)
+    candidates = _find_schedule_candidates(repository, arguments, owner_id=owner_id)
+    selection_result = _schedule_selection_result(
+        tool_name=AgentActionName.CANCEL_INTERVIEW.value,
+        candidates=candidates,
+        locator=arguments.get("company") or arguments.get("application_id") or arguments.get("schedule_id") or "指定条件",
+    )
+    if selection_result is not None:
+        return selection_result
+
+    schedule = repository.cancel_interview_schedule(candidates[0].id, owner_id=owner_id)
+    if schedule is None:
+        return ToolResult(
+            tool_name=AgentActionName.CANCEL_INTERVIEW.value,
+            success=False,
+            message="取消面试失败，目标安排已不存在。",
+            data={"schedule_id": candidates[0].id},
+        )
+
+    application = _application_for_schedule(repository, schedule, owner_id=owner_id)
+    if application is not None:
+        remaining_schedules = [
+            candidate
+            for candidate in repository.list_interview_schedules(owner_id=owner_id)
+            if candidate.application_id == application.id
+            and candidate.status == InterviewScheduleStatus.SCHEDULED
+        ]
+        if remaining_schedules:
+            next_schedule = min(remaining_schedules, key=_interview_schedule_sort_key)
+            application = repository.update_application_by_id(
+                application_id=application.id,
+                status=application_status_from_round(next_schedule.round),
+                interview_time=next_schedule.start_time,
+                round_name=next_schedule.round,
+                owner_id=owner_id,
+            )
+        else:
+            application = repository.update_application_by_id(
+                application_id=application.id,
+                status=ApplicationStatus.SUBMITTED,
+                clear_interview_fields=True,
+                owner_id=owner_id,
+            )
+    return ToolResult(
+        tool_name=AgentActionName.CANCEL_INTERVIEW.value,
+        success=True,
+        message=(
+            f"已取消 {schedule.company} {schedule.round}（原时间：{schedule.start_time or '未记录'}）。"
+            "飞书日历删除将在外部同步能力接入后执行。"
+        ),
+        data={
+            "application": application.to_dict() if application else None,
+            "interview_schedule": schedule.to_dict(),
+        },
+    )
+
+
+# 按稳定 ID 或可读字段筛选投递候选；不在这里默认选择任意一条。
+def _find_application_candidates(
+    repository: OfferPilotRepository,
+    arguments: Dict[str, Any],
+    owner_id: str,
+) -> List[Application]:
+    application_id = arguments.get("application_id")
+    if application_id:
+        return [
+            application
+            for application in repository.list_applications(owner_id=owner_id)
+            if application.id == application_id
+        ]
+
+    applications = repository.list_applications(
+        company=arguments.get("company"),
+        owner_id=owner_id,
+    )
+    role = arguments.get("role")
+    if role:
+        normalized_role = _normalize_match_value(str(role))
+        applications = [
+            application
+            for application in applications
+            if normalized_role in _normalize_match_value(application.role)
+        ]
+    return applications
+
+
+# 按稳定 ID 或投递字段筛选仍有效的面试安排候选。
+def _find_schedule_candidates(
+    repository: OfferPilotRepository,
+    arguments: Dict[str, Any],
+    owner_id: str,
+) -> List[InterviewSchedule]:
+    schedule_id = arguments.get("schedule_id")
+    application_id = arguments.get("application_id")
+    schedules = repository.list_interview_schedules(owner_id=owner_id)
+    if schedule_id:
+        return [
+            schedule
+            for schedule in schedules
+            if schedule.id == schedule_id and schedule.status == InterviewScheduleStatus.SCHEDULED
+        ]
+
+    if application_id:
+        schedules = [schedule for schedule in schedules if schedule.application_id == application_id]
+    elif arguments.get("company"):
+        normalized_company = _normalize_match_value(str(arguments["company"]))
+        schedules = [
+            schedule
+            for schedule in schedules
+            if normalized_company in _normalize_match_value(schedule.company)
+        ]
+    role = arguments.get("role")
+    round_name = arguments.get("round")
+    if role:
+        normalized_role = _normalize_match_value(str(role))
+        schedules = [
+            schedule
+            for schedule in schedules
+            if schedule.role and normalized_role in _normalize_match_value(schedule.role)
+        ]
+    if round_name:
+        normalized_round = _normalize_match_value(str(round_name))
+        schedules = [
+            schedule
+            for schedule in schedules
+            if _normalize_match_value(schedule.round) == normalized_round
+        ]
+    return [schedule for schedule in schedules if schedule.status == InterviewScheduleStatus.SCHEDULED]
+
+
+# 在零匹配或多匹配时返回明确结果；唯一匹配返回 None 继续执行。
+def _application_selection_result(
+    tool_name: str,
+    candidates: List[Application],
+    locator: str,
+) -> Optional[ToolResult]:
+    if not candidates:
+        return ToolResult(
+            tool_name=tool_name,
+            success=False,
+            message=f"没有找到与 {locator} 匹配的投递记录。",
+            data={"candidates": []},
+        )
+    if len(candidates) == 1:
+        return None
+
+    candidate_data = [
+        {
+            "application_id": application.id,
+            "company": application.company,
+            "role": application.role,
+            "status": application.status.value,
+            "round": application.round,
+            "interview_time": application.interview_time,
+        }
+        for application in candidates
+    ]
+    lines = [
+        f"{index}. {item['application_id']}｜{item['company']}｜{item['role']}｜{item['round'] or '未记录轮次'}"
+        for index, item in enumerate(candidate_data, start=1)
+    ]
+    return ToolResult(
+        tool_name=tool_name,
+        success=False,
+        message="找到多条投递记录，请回复 application_id 选择后再执行：\n" + "\n".join(lines),
+        data={
+            "requires_selection": True,
+            "selection_slot": "application_id",
+            "candidates": candidate_data,
+        },
+    )
+
+
+# 在零匹配或多匹配时返回明确结果；唯一匹配返回 None 继续执行。
+def _schedule_selection_result(
+    tool_name: str,
+    candidates: List[InterviewSchedule],
+    locator: str,
+) -> Optional[ToolResult]:
+    if not candidates:
+        return ToolResult(
+            tool_name=tool_name,
+            success=False,
+            message=f"没有找到与 {locator} 匹配的有效面试安排。",
+            data={"candidates": []},
+        )
+    if len(candidates) == 1:
+        return None
+
+    candidate_data = [
+        {
+            "schedule_id": schedule.id,
+            "application_id": schedule.application_id,
+            "company": schedule.company,
+            "role": schedule.role,
+            "round": schedule.round,
+            "interview_time": schedule.start_time,
+        }
+        for schedule in candidates
+    ]
+    lines = [
+        f"{index}. {item['schedule_id']}｜{item['company']}｜{item['role'] or '岗位未记录'}｜"
+        f"{item['round']}｜{item['interview_time'] or '时间未记录'}"
+        for index, item in enumerate(candidate_data, start=1)
+    ]
+    return ToolResult(
+        tool_name=tool_name,
+        success=False,
+        message="找到多条面试安排，请回复 schedule_id 选择后再执行：\n" + "\n".join(lines),
+        data={
+            "requires_selection": True,
+            "selection_slot": "schedule_id",
+            "candidates": candidate_data,
+        },
+    )
+
+
+# 获取面试安排关联的投递记录。
+def _application_for_schedule(
+    repository: OfferPilotRepository,
+    schedule: InterviewSchedule,
+    owner_id: str,
+) -> Optional[Application]:
+    if not schedule.application_id:
+        return None
+    return next(
+        (
+            application
+            for application in repository.list_applications(owner_id=owner_id)
+            if application.id == schedule.application_id
+        ),
+        None,
+    )
+
+
+# 标准化候选匹配字段。
+def _normalize_match_value(value: str) -> str:
+    return "".join(value.split()).lower()
+
+
+# 确保模型或调用方提供的标准时间没有背离用户表达，允许一分钟内的序列化误差。
+def _iso_datetimes_match(first: str, second: str) -> bool:
+    try:
+        first_value = datetime.fromisoformat(first.replace("Z", "+00:00"))
+        second_value = datetime.fromisoformat(second.replace("Z", "+00:00"))
+        return abs(first_value.timestamp() - second_value.timestamp()) <= 60
+    except (TypeError, ValueError):
+        return False
+
+
+# 优先选择时间上最早的有效面试安排，ID 仅作为相同时间的稳定次序。
+def _interview_schedule_sort_key(schedule: InterviewSchedule) -> tuple[float, str]:
+    parsed: Optional[datetime] = None
+    if schedule.start_at:
+        try:
+            parsed = datetime.fromisoformat(schedule.start_at.replace("Z", "+00:00"))
+        except ValueError:
+            parsed = None
+    if parsed is None and schedule.start_time:
+        parsed = parse_chinese_datetime(schedule.start_time)
+    timestamp = parsed.timestamp() if parsed is not None else float("inf")
+    return timestamp, schedule.id
 
 
 # 将指定任务标记为已完成。

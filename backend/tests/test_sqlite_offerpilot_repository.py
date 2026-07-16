@@ -1,4 +1,5 @@
 from app.models.application import ApplicationStatus
+from app.models.interview_schedule import InterviewScheduleStatus
 from app.models.task import TaskStatus
 from app.repositories.sqlite_offerpilot_repository import SQLiteOfferPilotRepository
 from app.schemas.agent import AgentActionName
@@ -128,6 +129,73 @@ def test_sqlite_repository_updates_interview_schedule_calendar_event(tmp_path) -
     assert updated_schedule is not None
     assert updated_schedule.calendar_event_id == "evt_test_1"
     assert schedules[0].calendar_event_id == "evt_test_1"
+
+
+def test_sqlite_repository_reschedules_interview_schedule_by_id(tmp_path) -> None:
+    db_path = tmp_path / "offerpilot.db"
+    repository = SQLiteOfferPilotRepository(str(db_path))
+    schedule = repository.create_interview_schedule(
+        company="深信服",
+        role="AI 应用开发",
+        round_name="一面",
+        start_time="明天早上八点",
+        start_at="2026-07-17T08:00:00+08:00",
+    )
+
+    updated_schedule = repository.update_interview_schedule(
+        schedule_id=schedule.id,
+        start_time="后天下午三点",
+        start_at="2026-07-18T15:00:00+08:00",
+    )
+    reopened_repository = SQLiteOfferPilotRepository(str(db_path))
+    persisted = reopened_repository.list_interview_schedules(company="深信服")[0]
+
+    assert updated_schedule is not None
+    assert persisted.id == schedule.id
+    assert persisted.start_time == "后天下午三点"
+    assert persisted.start_at == "2026-07-18T15:00:00+08:00"
+
+
+def test_sqlite_repository_cancels_interview_schedule_by_id(tmp_path) -> None:
+    db_path = tmp_path / "offerpilot.db"
+    repository = SQLiteOfferPilotRepository(str(db_path))
+    schedule = repository.create_interview_schedule(
+        company="深信服",
+        role="AI 应用开发",
+        round_name="一面",
+        start_time="明天早上八点",
+    )
+
+    cancelled_schedule = repository.cancel_interview_schedule(schedule.id)
+    reopened_repository = SQLiteOfferPilotRepository(str(db_path))
+    persisted = reopened_repository.list_interview_schedules(company="深信服")[0]
+
+    assert cancelled_schedule is not None
+    assert cancelled_schedule.status == InterviewScheduleStatus.CANCELLED
+    assert persisted.status == InterviewScheduleStatus.CANCELLED
+
+
+def test_sqlite_repository_can_clear_application_interview_fields_by_id(tmp_path) -> None:
+    db_path = tmp_path / "offerpilot.db"
+    repository = SQLiteOfferPilotRepository(str(db_path))
+    application = repository.create_application(
+        company="深信服",
+        role="AI 应用开发",
+        round_name="一面",
+        interview_time="明天下午三点",
+    )
+
+    repository.update_application_by_id(
+        application_id=application.id,
+        status=ApplicationStatus.SUBMITTED,
+        clear_interview_fields=True,
+    )
+    reopened_repository = SQLiteOfferPilotRepository(str(db_path))
+    persisted = reopened_repository.list_applications(company="深信服")[0]
+
+    assert persisted.status == ApplicationStatus.SUBMITTED
+    assert persisted.interview_time is None
+    assert persisted.round is None
 
 
 def test_sqlite_repository_completes_task_by_title(tmp_path) -> None:

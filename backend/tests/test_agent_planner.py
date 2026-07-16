@@ -27,6 +27,43 @@ def test_agent_planner_returns_structured_plan_for_today_tasks() -> None:
     assert plan.to_response().action == AgentActionName.LIST_TODAY_TASKS
 
 
+def test_agent_planner_routes_interview_reschedule_to_domain_tool() -> None:
+    planner = AgentPlanner()
+
+    plan = planner.plan(
+        IntentClassification(
+            intent=IntentName.UPDATE_APPLICATION,
+            confidence=0.9,
+            slots={
+                "company": "美团",
+                "round": "一面",
+                "interview_time": "后天下午四点",
+                "update_type": "reschedule_interview",
+            },
+        )
+    )
+
+    assert plan.action == AgentActionName.RESCHEDULE_INTERVIEW
+    assert plan.need_confirmation is True
+    assert plan.steps[0].tool_name == "reschedule_interview"
+
+
+def test_agent_planner_routes_interview_cancellation_to_domain_tool() -> None:
+    planner = AgentPlanner()
+
+    plan = planner.plan(
+        IntentClassification(
+            intent=IntentName.UPDATE_APPLICATION,
+            confidence=0.9,
+            slots={"schedule_id": "schedule_1", "update_type": "cancel_interview"},
+        )
+    )
+
+    assert plan.action == AgentActionName.CANCEL_INTERVIEW
+    assert plan.need_confirmation is True
+    assert plan.steps[0].tool_name == "cancel_interview"
+
+
 def test_orchestrator_uses_compiled_langgraph() -> None:
     orchestrator = AgentOrchestrator()
 

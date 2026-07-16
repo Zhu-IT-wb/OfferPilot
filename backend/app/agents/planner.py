@@ -401,6 +401,8 @@ class AgentPlanner:
 - create_application
 - query_application
 - update_application
+- reschedule_interview
+- cancel_interview
 - complete_task
 - postpone_task
 - create_interview_review
@@ -420,6 +422,7 @@ class AgentPlanner:
 6. 用户问某家公司进度时，使用 query_application，slots.query_type = "company_status"，并抽取 company。
 7. 用户说“我投递了某公司某岗位”时，使用 create_application，必须抽取 company 和 role。
 8. 用户说“某公司约我一面/明天三点某公司面试”时，使用 update_application，slots.update_type = "schedule_interview"，必须抽取 company、round、interview_time、status。
+8.1 用户要求面试改期时使用 reschedule_interview；取消已有面试时使用 cancel_interview。两者都属于写操作。
 9. 具体面试时间必须包含日期/相对日期和小时，例如“明天下午三点”。只有“明天下午”不够，必须 ask_clarification，missing_slots 包含 interview_time。
 10. 普通问候、你是谁、你能做什么，使用 answer_help，不要进入写操作。
 11. 如果用户追问“先准备哪个/哪个更急/怎么排序”，并且 recent_context.tool_result 里有近期面试列表，使用 answer_help，直接基于最近工具结果给优先级建议，不要追问 tasks_to_prioritize 之类不存在的字段。
@@ -587,7 +590,11 @@ AgentPlan JSON 字段：
         if action == AgentActionName.CREATE_APPLICATION:
             slots = self._normalize_create_application_slots(message=message, slots=slots)
 
-        if action == AgentActionName.UPDATE_APPLICATION:
+        if action in {
+            AgentActionName.UPDATE_APPLICATION,
+            AgentActionName.RESCHEDULE_INTERVIEW,
+            AgentActionName.CANCEL_INTERVIEW,
+        }:
             slots = self._normalize_update_slots(message=message, slots=slots)
 
         required_slots = self._required_slots_for_action(action=action, slots=slots, tool_map=tool_map)
@@ -639,6 +646,8 @@ AgentPlan JSON 字段：
         if action == AgentActionName.CREATE_APPLICATION:
             return self.rule_planner._build_create_application_reply(slots)
         if action == AgentActionName.UPDATE_APPLICATION:
+            return self.rule_planner._build_update_application_reply(slots)
+        if action in {AgentActionName.RESCHEDULE_INTERVIEW, AgentActionName.CANCEL_INTERVIEW}:
             return self.rule_planner._build_update_application_reply(slots)
         if action == AgentActionName.COMPLETE_TASK:
             return self.rule_planner._build_task_reply("完成", slots)
@@ -724,10 +733,19 @@ AgentPlan JSON 字段：
         if action == AgentActionName.CREATE_APPLICATION:
             return ["company", "role"]
         if action == AgentActionName.UPDATE_APPLICATION:
-            required = ["company"]
+            required = []
+            if not any(slots.get(slot) for slot in ("company", "application_id")):
+                required.append("company")
             if slots.get("update_type") == "schedule_interview":
                 required.extend(["round", "interview_time"])
             return required
+        if action == AgentActionName.RESCHEDULE_INTERVIEW:
+            required = ["interview_time"]
+            if not any(slots.get(slot) for slot in ("company", "application_id", "schedule_id")):
+                required.append("company")
+            return required
+        if action == AgentActionName.CANCEL_INTERVIEW:
+            return [] if any(slots.get(slot) for slot in ("company", "application_id", "schedule_id")) else ["company"]
         spec = tool_map.get(action.value)
         return spec.required_slots if spec else []
 
@@ -750,8 +768,14 @@ AgentPlan JSON 字段：
     ) -> set[str]:
         if plan.intent == IntentName.ADD_APPLICATION or plan.action == AgentActionName.CREATE_APPLICATION:
             return {"company", "role", "round", "interview_time"}
-        if plan.intent == IntentName.UPDATE_APPLICATION or plan.action == AgentActionName.UPDATE_APPLICATION:
-            return {"company", "role", "round", "interview_time", "calendar_reminder"}
+        if plan.intent == IntentName.UPDATE_APPLICATION or plan.action in {
+            AgentActionName.UPDATE_APPLICATION,
+            AgentActionName.RESCHEDULE_INTERVIEW,
+            AgentActionName.CANCEL_INTERVIEW,
+        }:
+            return {
+                "company", "role", "round", "interview_time", "calendar_reminder", "application_id", "schedule_id"
+            }
         if plan.action in {AgentActionName.COMPLETE_TASK, AgentActionName.POSTPONE_TASK}:
             return {"task_title", "task_type"}
         if plan.action == AgentActionName.CREATE_INTERVIEW_REVIEW:
@@ -761,7 +785,9 @@ AgentPlan JSON 字段：
     # 判断面试更新时间是否必须可被解析成具体时间。
     @staticmethod
     def _requires_specific_interview_time(action: AgentActionName, slots: Dict[str, Any]) -> bool:
-        return action == AgentActionName.UPDATE_APPLICATION and slots.get("update_type") == "schedule_interview"
+        return action == AgentActionName.RESCHEDULE_INTERVIEW or (
+            action == AgentActionName.UPDATE_APPLICATION and slots.get("update_type") == "schedule_interview"
+        )
 
     # 判断槽位值是否更像岗位而不是公司。
     @staticmethod

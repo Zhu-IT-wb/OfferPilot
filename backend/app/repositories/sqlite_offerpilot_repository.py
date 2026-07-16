@@ -182,6 +182,7 @@ class SQLiteOfferPilotRepository:
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         jd_keywords: Optional[List[str]] = None,
+        clear_interview_fields: bool = False,
         owner_id: str = "local_user",
     ) -> Optional[Application]:
         owner_id = self._normalize_owner_id(owner_id)
@@ -201,6 +202,9 @@ class SQLiteOfferPilotRepository:
             application.round = round_name
         if jd_keywords is not None:
             application.jd_keywords = list(jd_keywords)
+        if clear_interview_fields:
+            application.interview_time = None
+            application.round = None
 
         self._execute(
             """
@@ -326,6 +330,80 @@ class SQLiteOfferPilotRepository:
             WHERE id = ? AND owner_id = ?
             """,
             (calendar_event_id, schedule_id, owner_id),
+        )
+        return schedule
+
+    # 按稳定 ID 更新面试安排，保留原日历事件关联。
+    def update_interview_schedule(
+        self,
+        schedule_id: str,
+        start_time: Optional[str] = None,
+        start_at: Optional[str] = None,
+        round_name: Optional[str] = None,
+        reminder_minutes: Optional[int] = None,
+        owner_id: str = "local_user",
+    ) -> Optional[InterviewSchedule]:
+        owner_id = self._normalize_owner_id(owner_id)
+        schedules = [
+            schedule
+            for schedule in self.list_interview_schedules(owner_id=owner_id)
+            if schedule.id == schedule_id
+        ]
+        if not schedules:
+            return None
+
+        schedule = schedules[0]
+        if start_time is not None:
+            schedule.start_time = start_time
+        if start_at is not None:
+            schedule.start_at = start_at
+        if round_name is not None:
+            schedule.round = round_name
+        if reminder_minutes is not None:
+            schedule.reminder_minutes = reminder_minutes
+        schedule.status = InterviewScheduleStatus.SCHEDULED
+        self._execute(
+            """
+            UPDATE interview_schedules
+            SET round = ?, start_time = ?, start_at = ?, reminder_minutes = ?, status = ?
+            WHERE id = ? AND owner_id = ?
+            """,
+            (
+                schedule.round,
+                schedule.start_time,
+                schedule.start_at,
+                schedule.reminder_minutes,
+                schedule.status.value,
+                schedule.id,
+                owner_id,
+            ),
+        )
+        return schedule
+
+    # 按稳定 ID 将面试安排标记为已取消。
+    def cancel_interview_schedule(
+        self,
+        schedule_id: str,
+        owner_id: str = "local_user",
+    ) -> Optional[InterviewSchedule]:
+        owner_id = self._normalize_owner_id(owner_id)
+        schedules = [
+            schedule
+            for schedule in self.list_interview_schedules(owner_id=owner_id)
+            if schedule.id == schedule_id
+        ]
+        if not schedules:
+            return None
+
+        schedule = schedules[0]
+        schedule.status = InterviewScheduleStatus.CANCELLED
+        self._execute(
+            """
+            UPDATE interview_schedules
+            SET status = ?
+            WHERE id = ? AND owner_id = ?
+            """,
+            (schedule.status.value, schedule.id, owner_id),
         )
         return schedule
 

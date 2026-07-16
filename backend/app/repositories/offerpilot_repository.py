@@ -3,7 +3,7 @@ from typing import List, Optional, Protocol
 
 from app.models.application import Application, ApplicationStatus, application_status_from_round
 from app.models.interview_review import InterviewReview
-from app.models.interview_schedule import InterviewSchedule
+from app.models.interview_schedule import InterviewSchedule, InterviewScheduleStatus
 from app.models.task import Task, TaskPriority, TaskStatus, TaskType
 
 
@@ -63,6 +63,7 @@ class OfferPilotRepository(Protocol):
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         jd_keywords: Optional[List[str]] = None,
+        clear_interview_fields: bool = False,
         owner_id: str = "local_user",
     ) -> Optional[Application]:
         ...
@@ -95,6 +96,26 @@ class OfferPilotRepository(Protocol):
         self,
         schedule_id: str,
         calendar_event_id: str,
+        owner_id: str = "local_user",
+    ) -> Optional[InterviewSchedule]:
+        ...
+
+    # 按稳定 ID 更新面试安排。
+    def update_interview_schedule(
+        self,
+        schedule_id: str,
+        start_time: Optional[str] = None,
+        start_at: Optional[str] = None,
+        round_name: Optional[str] = None,
+        reminder_minutes: Optional[int] = None,
+        owner_id: str = "local_user",
+    ) -> Optional[InterviewSchedule]:
+        ...
+
+    # 按稳定 ID 取消面试安排。
+    def cancel_interview_schedule(
+        self,
+        schedule_id: str,
         owner_id: str = "local_user",
     ) -> Optional[InterviewSchedule]:
         ...
@@ -269,6 +290,7 @@ class InMemoryOfferPilotRepository:
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         jd_keywords: Optional[List[str]] = None,
+        clear_interview_fields: bool = False,
         owner_id: str = "local_user",
     ) -> Optional[Application]:
         application = self._find_application_by_id(application_id, owner_id=owner_id)
@@ -287,6 +309,9 @@ class InMemoryOfferPilotRepository:
             application.round = round_name
         if jd_keywords is not None:
             application.jd_keywords = list(jd_keywords)
+        if clear_interview_fields:
+            application.interview_time = None
+            application.round = None
         return application
 
     # 创建 interview schedule。
@@ -352,6 +377,43 @@ class InMemoryOfferPilotRepository:
         for schedule in self.interview_schedules:
             if schedule.id == schedule_id and schedule.owner_id == owner_id:
                 schedule.calendar_event_id = calendar_event_id
+                return schedule
+        return None
+
+    # 按稳定 ID 更新面试安排，保留原日历事件关联。
+    def update_interview_schedule(
+        self,
+        schedule_id: str,
+        start_time: Optional[str] = None,
+        start_at: Optional[str] = None,
+        round_name: Optional[str] = None,
+        reminder_minutes: Optional[int] = None,
+        owner_id: str = "local_user",
+    ) -> Optional[InterviewSchedule]:
+        for schedule in self.interview_schedules:
+            if schedule.id != schedule_id or schedule.owner_id != owner_id:
+                continue
+            if start_time is not None:
+                schedule.start_time = start_time
+            if start_at is not None:
+                schedule.start_at = start_at
+            if round_name is not None:
+                schedule.round = round_name
+            if reminder_minutes is not None:
+                schedule.reminder_minutes = reminder_minutes
+            schedule.status = InterviewScheduleStatus.SCHEDULED
+            return schedule
+        return None
+
+    # 按稳定 ID 将面试安排标记为已取消。
+    def cancel_interview_schedule(
+        self,
+        schedule_id: str,
+        owner_id: str = "local_user",
+    ) -> Optional[InterviewSchedule]:
+        for schedule in self.interview_schedules:
+            if schedule.id == schedule_id and schedule.owner_id == owner_id:
+                schedule.status = InterviewScheduleStatus.CANCELLED
                 return schedule
         return None
 

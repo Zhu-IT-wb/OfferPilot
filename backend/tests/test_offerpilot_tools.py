@@ -727,3 +727,242 @@ def test_offerpilot_tools_complete_seed_task() -> None:
     assert result.success is True
     assert result.data["task"]["id"] == "task_1"
     assert result.data["task"]["status"] == "passed"
+
+
+def test_update_application_requires_application_id_when_company_has_multiple_matches() -> None:
+    repository = InMemoryOfferPilotRepository()
+    first = repository.create_application(company="美团", role="Java 后端")
+    second = repository.create_application(company="美团", role="AI 应用开发")
+
+    result = update_application(
+        repository,
+        {"company": "美团", "status": "rejected", "update_type": "reject"},
+        calendar_service=None,
+        bitable_service=None,
+    )
+
+    assert result.success is False
+    assert result.data["requires_selection"] is True
+    assert result.data["selection_slot"] == "application_id"
+    assert [candidate["application_id"] for candidate in result.data["candidates"]] == [first.id, second.id]
+    assert all(application.status != ApplicationStatus.REJECTED for application in repository.applications)
+
+
+def test_reschedule_interview_updates_existing_schedule_by_stable_ids() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="美团", role="Java 后端", round_name="一面")
+    schedule = repository.create_interview_schedule(
+        application_id=application.id,
+        company=application.company,
+        role=application.role,
+        round_name="一面",
+        start_time="明天下午三点",
+        start_at="2026-07-17T15:00:00+08:00",
+    )
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
+
+    result = registry.run(
+        "reschedule_interview",
+        {
+            "application_id": application.id,
+            "schedule_id": schedule.id,
+            "interview_time": "后天下午四点",
+            "start_at": "2026-07-18T16:00:00+08:00",
+        },
+    )
+
+    assert result.success is True
+    assert result.data["application"]["id"] == application.id
+    assert result.data["interview_schedule"]["id"] == schedule.id
+    assert result.data["interview_schedule"]["start_time"] == "后天下午四点"
+    assert len(repository.interview_schedules) == 1
+
+
+def test_cancel_interview_updates_schedule_status_by_schedule_id() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="美团", role="Java 后端", round_name="一面")
+    schedule = repository.create_interview_schedule(
+        application_id=application.id,
+        company=application.company,
+        role=application.role,
+        round_name="一面",
+        start_time="明天下午三点",
+    )
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
+
+    result = registry.run(
+        "cancel_interview",
+        {"application_id": application.id, "schedule_id": schedule.id},
+    )
+
+    assert result.success is True
+    assert result.data["interview_schedule"]["id"] == schedule.id
+    assert result.data["interview_schedule"]["status"] == "cancelled"
+    assert result.data["application"]["status"] == "submitted"
+    assert result.data["application"]["interview_time"] is None
+    assert result.data["application"]["round"] is None
+
+
+def test_update_application_uses_stable_id_even_when_descriptive_slots_are_stale() -> None:
+    repository = InMemoryOfferPilotRepository()
+    target = repository.create_application(company="美团", role="Java 后端")
+    repository.create_application(company="字节跳动", role="AI 应用开发")
+
+    result = update_application(
+        repository,
+        {
+            "application_id": target.id,
+            "company": "错误公司",
+            "role": "错误岗位",
+            "status": "rejected",
+            "update_type": "reject",
+        },
+        calendar_service=None,
+        bitable_service=None,
+    )
+
+    assert result.success is True
+    assert result.data["application"]["id"] == target.id
+    assert result.data["application"]["status"] == "rejected"
+
+
+def test_reschedule_interview_rejects_unparseable_time_without_preserving_stale_start_at() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="美团", role="Java 后端")
+    schedule = repository.create_interview_schedule(
+        application_id=application.id,
+        company="美团",
+        role="Java 后端",
+        round_name="一面",
+        start_time="明天下午三点",
+        start_at="2026-07-17T15:00:00+08:00",
+    )
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
+
+    result = registry.run(
+        "reschedule_interview",
+        {"schedule_id": schedule.id, "interview_time": "有空的时候"},
+    )
+
+    assert result.success is False
+    assert repository.interview_schedules[0].start_time == "明天下午三点"
+    assert repository.interview_schedules[0].start_at == "2026-07-17T15:00:00+08:00"
+
+
+def test_reschedule_interview_rejects_invalid_explicit_start_at() -> None:
+    repository = InMemoryOfferPilotRepository()
+    schedule = repository.create_interview_schedule(
+        company="美团",
+        role="Java 后端",
+        round_name="一面",
+        start_time="明天下午三点",
+        start_at="2026-07-17T15:00:00+08:00",
+    )
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
+
+    result = registry.run(
+        "reschedule_interview",
+        {
+            "schedule_id": schedule.id,
+            "interview_time": "后天下午四点",
+            "start_at": "not-an-iso-datetime",
+        },
+    )
+
+    assert result.success is False
+    assert repository.interview_schedules[0].start_time == "明天下午三点"
+    assert repository.interview_schedules[0].start_at == "2026-07-17T15:00:00+08:00"
+
+
+def test_reschedule_interview_rejects_explicit_start_at_that_contradicts_user_time() -> None:
+    repository = InMemoryOfferPilotRepository()
+    schedule = repository.create_interview_schedule(
+        company="美团",
+        role="Java 后端",
+        round_name="一面",
+        start_time="明天下午三点",
+        start_at="2026-07-17T15:00:00+08:00",
+    )
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
+
+    result = registry.run(
+        "reschedule_interview",
+        {
+            "schedule_id": schedule.id,
+            "interview_time": "后天下午四点",
+            "start_at": "2026-08-18T16:00:00+08:00",
+        },
+    )
+
+    assert result.success is False
+    assert repository.interview_schedules[0].start_time == "明天下午三点"
+    assert repository.interview_schedules[0].start_at == "2026-07-17T15:00:00+08:00"
+
+
+def test_cancel_interview_reconciles_application_to_earliest_remaining_schedule() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="美团", role="Java 后端", round_name="一面")
+    cancelled = repository.create_interview_schedule(
+        application_id=application.id,
+        company="美团",
+        role="Java 后端",
+        round_name="一面",
+        start_time="明天下午三点",
+        start_at="2026-07-17T15:00:00+08:00",
+    )
+    repository.create_interview_schedule(
+        application_id=application.id,
+        company="美团",
+        role="Java 后端",
+        round_name="三面",
+        start_time="下周三下午三点",
+        start_at="2026-07-22T15:00:00+08:00",
+    )
+    earliest = repository.create_interview_schedule(
+        application_id=application.id,
+        company="美团",
+        role="Java 后端",
+        round_name="二面",
+        start_time="下周一下午三点",
+        start_at="2026-07-20T15:00:00+08:00",
+    )
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
+
+    result = registry.run("cancel_interview", {"schedule_id": cancelled.id})
+
+    assert result.success is True
+    assert result.data["application"]["round"] == earliest.round
+    assert result.data["application"]["interview_time"] == earliest.start_time
+    assert result.data["application"]["status"] == "interview_2"
+
+
+def test_reschedule_interview_returns_schedule_candidates_without_mutating() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="美团", role="Java 后端")
+    first = repository.create_interview_schedule(
+        application_id=application.id,
+        company="美团",
+        role="Java 后端",
+        round_name="一面",
+        start_time="明天下午三点",
+    )
+    second = repository.create_interview_schedule(
+        application_id=application.id,
+        company="美团",
+        role="Java 后端",
+        round_name="二面",
+        start_time="后天下午三点",
+    )
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
+
+    result = registry.run(
+        "reschedule_interview",
+        {"application_id": application.id, "interview_time": "下周一下午四点"},
+    )
+
+    assert result.success is False
+    assert result.data["requires_selection"] is True
+    assert result.data["selection_slot"] == "schedule_id"
+    assert [candidate["schedule_id"] for candidate in result.data["candidates"]] == [first.id, second.id]
+    assert first.start_time == "明天下午三点"
+    assert second.start_time == "后天下午三点"
