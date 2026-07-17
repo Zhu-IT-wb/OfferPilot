@@ -1,6 +1,7 @@
+import hashlib
 import json
-from typing import Any, Dict, List, Optional
 from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional
 
 from app.core.config import settings
 from app.models.application import (
@@ -36,7 +37,10 @@ _OFFERPILOT_BITABLE_TABLE_ID_SETTING = "feishu.offerpilot_bitable_table_id"
 _OFFERPILOT_BITABLE_SCHEMA_VERSION_SETTING = "feishu.offerpilot_bitable_schema_version"
 _OFFERPILOT_BITABLE_RECORD_ID_PREFIX = "feishu.offerpilot_bitable_record_id."
 _OFFERPILOT_BITABLE_COLLABORATOR_PREFIX = "feishu.offerpilot_bitable_collaborator."
+_OFFERPILOT_SYNC_IDEMPOTENCY_PREFIX = "sync.idempotency."
+_OFFERPILOT_REQUEST_IDEMPOTENCY_PREFIX = "request.idempotency."
 _CURRENT_BITABLE_SCHEMA_VERSION = "v2"
+_SYNC_MAX_ATTEMPTS = 3
 _DEFAULT_EXTERNAL_SERVICE = object()
 
 
@@ -139,24 +143,36 @@ def build_offerpilot_tool_registry(
             "attendee_user_id_type",
             "bitable_collaborator_user_id",
             "bitable_collaborator_user_id_type",
+            "idempotency_key",
+            "retry_after_reconciliation",
         ],
         examples=["明天下午三点美团一面", "字节二面过了", "阿里给 offer 了"],
     )
     registry.register(
         AgentActionName.RESCHEDULE_INTERVIEW.value,
-        lambda arguments: reschedule_interview(selected_repository, arguments),
+        lambda arguments: reschedule_interview(
+            selected_repository,
+            arguments,
+            calendar_service=selected_calendar_service,
+            bitable_service=selected_bitable_service,
+        ),
         description="按 application_id 或 schedule_id 定位已有面试安排并修改时间；匹配不唯一时返回候选项。",
         mutating=True,
         required_slots=["interview_time"],
-        optional_slots=["application_id", "schedule_id", "company", "role", "round", "start_at"],
+        optional_slots=["application_id", "schedule_id", "company", "role", "round", "start_at", "idempotency_key"],
         examples=["把美团一面改到后天下午四点", "将 schedule_1 改到下周一上午十点"],
     )
     registry.register(
         AgentActionName.CANCEL_INTERVIEW.value,
-        lambda arguments: cancel_interview(selected_repository, arguments),
+        lambda arguments: cancel_interview(
+            selected_repository,
+            arguments,
+            calendar_service=selected_calendar_service,
+            bitable_service=selected_bitable_service,
+        ),
         description="按 application_id 或 schedule_id 定位已有面试安排并取消；匹配不唯一时返回候选项。",
         mutating=True,
-        optional_slots=["application_id", "schedule_id", "company", "role", "round"],
+        optional_slots=["application_id", "schedule_id", "company", "role", "round", "idempotency_key"],
         examples=["取消美团一面", "取消 schedule_1"],
     )
     registry.register(
@@ -430,6 +446,33 @@ def update_application(
     if selection_result is not None:
         return selection_result
 
+    should_create_schedule = _should_create_interview_schedule(arguments, round_name)
+    normalized_start_at = (
+        arguments.get("start_at") or _normalize_interview_start_at(interview_time)
+        if should_create_schedule
+        else None
+    )
+    request_idempotency_key = arguments.get("idempotency_key")
+    idempotency_conflict = _claim_request_idempotency_key(
+        repository=repository,
+        namespace=f"update_application:{owner_id}",
+        idempotency_key=request_idempotency_key,
+        payload={
+            "application_id": candidates[0].id,
+            "status": status.value if status else None,
+            "round": round_name,
+            "start_at": normalized_start_at,
+            "role": role,
+        },
+    )
+    if idempotency_conflict:
+        return ToolResult(
+            tool_name=AgentActionName.UPDATE_APPLICATION.value,
+            success=False,
+            message=idempotency_conflict,
+            data={"idempotency_conflict": True, "application_id": candidates[0].id},
+        )
+
     application = repository.update_application_by_id(
         application_id=candidates[0].id,
         status=status,
@@ -447,19 +490,37 @@ def update_application(
         )
 
     schedule = None
-    if _should_create_interview_schedule(arguments, round_name):
-        start_at = arguments.get("start_at") or _normalize_interview_start_at(interview_time)
-        schedule = repository.create_interview_schedule(
-            company=application.company,
-            round_name=round_name or application.round or "面试",
+    if should_create_schedule:
+        schedule = _find_existing_interview_schedule(
+            repository=repository,
             application_id=application.id,
-            role=application.role,
+            round_name=round_name or application.round or "面试",
+            start_at=normalized_start_at,
             start_time=interview_time,
-            start_at=start_at,
-            reminder_minutes=30,
-            raw_message=arguments.get("raw_message", ""),
             owner_id=owner_id,
         )
+        if schedule is None:
+            schedule = repository.create_interview_schedule(
+                company=application.company,
+                round_name=round_name or application.round or "面试",
+                application_id=application.id,
+                role=application.role,
+                start_time=interview_time,
+                start_at=normalized_start_at,
+                reminder_minutes=30,
+                raw_message=arguments.get("raw_message", ""),
+                owner_id=owner_id,
+            )
+
+    operation_key = (
+        f"schedule:{owner_id}:{schedule.id}:{schedule.start_at or schedule.start_time}:"
+        f"{request_idempotency_key or 'derived'}"
+        if schedule is not None
+        else None
+    )
+    if operation_key and arguments.get("retry_after_reconciliation") is True:
+        _clear_sync_state(repository, f"{operation_key}:calendar")
+        _clear_sync_state(repository, f"{operation_key}:bitable")
 
     if schedule and arguments.get("calendar_reminder") is False:
         calendar_sync = {"synced": False, "status": "skipped_by_user"}
@@ -471,6 +532,7 @@ def update_application(
             owner_id=owner_id,
             attendee_user_id=arguments.get("attendee_user_id"),
             attendee_user_id_type=arguments.get("attendee_user_id_type", "open_id"),
+            idempotency_key=f"{operation_key}:calendar" if operation_key else None,
         )
     bitable_sync = _sync_application_to_bitable(
         repository=repository,
@@ -481,7 +543,9 @@ def update_application(
         collaborator_user_id=arguments.get("bitable_collaborator_user_id") or arguments.get("attendee_user_id"),
         collaborator_user_id_type=arguments.get("bitable_collaborator_user_id_type")
         or arguments.get("attendee_user_id_type", "open_id"),
+        idempotency_key=f"{operation_key}:bitable" if operation_key else None,
     )
+    operation_status = _external_write_status(calendar_sync, bitable_sync)
 
     return ToolResult(
         tool_name=AgentActionName.UPDATE_APPLICATION.value,
@@ -497,6 +561,9 @@ def update_application(
             "interview_schedule": schedule.to_dict() if schedule else None,
             "calendar_sync": calendar_sync,
             "bitable_sync": bitable_sync,
+            "operation_status": operation_status,
+            "retryable": operation_status == "partial_success",
+            "idempotency_key": operation_key,
         },
     )
 
@@ -505,6 +572,8 @@ def update_application(
 def reschedule_interview(
     repository: OfferPilotRepository,
     arguments: Dict[str, Any],
+    calendar_service: Optional[FeishuCalendarService] = None,
+    bitable_service: Optional[FeishuBitableService] = None,
 ) -> ToolResult:
     interview_time = arguments.get("interview_time")
     if not interview_time:
@@ -539,6 +608,24 @@ def reschedule_interview(
             data={"missing_slots": ["interview_time"], "schedule_id": schedule.id},
         )
     start_at = normalized_start_at
+    request_idempotency_key = arguments.get("idempotency_key")
+    idempotency_conflict = _claim_request_idempotency_key(
+        repository=repository,
+        namespace=f"reschedule:{owner_id}",
+        idempotency_key=request_idempotency_key,
+        payload={
+            "schedule_id": schedule.id,
+            "start_at": start_at,
+            "round": arguments.get("round") or schedule.round,
+        },
+    )
+    if idempotency_conflict:
+        return ToolResult(
+            tool_name=AgentActionName.RESCHEDULE_INTERVIEW.value,
+            success=False,
+            message=idempotency_conflict,
+            data={"idempotency_conflict": True, "schedule_id": schedule.id},
+        )
     updated_schedule = repository.update_interview_schedule(
         schedule_id=schedule.id,
         start_time=interview_time,
@@ -563,16 +650,49 @@ def reschedule_interview(
             owner_id=owner_id,
         )
 
+    operation_key = (
+        f"reschedule:{owner_id}:{updated_schedule.id}:{updated_schedule.start_at}:"
+        f"{request_idempotency_key or 'derived'}"
+    )
+    calendar_sync = _sync_rescheduled_interview_to_calendar(
+        repository=repository,
+        schedule=updated_schedule,
+        calendar_service=calendar_service,
+        owner_id=owner_id,
+        idempotency_key=f"{operation_key}:calendar",
+    )
+    bitable_sync = (
+        _sync_application_to_bitable(
+            repository=repository,
+            application=application,
+            schedule=updated_schedule,
+            calendar_sync=calendar_sync,
+            bitable_service=bitable_service,
+            idempotency_key=(
+                f"{operation_key}:bitable:"
+                f"{calendar_sync.get('calendar_event_id') or updated_schedule.calendar_event_id or 'none'}"
+            ),
+        )
+        if application is not None
+        else {"synced": False, "status": "not_applicable", "attempts": 0}
+    )
+    operation_status = _external_write_status(calendar_sync, bitable_sync)
+
     return ToolResult(
         tool_name=AgentActionName.RESCHEDULE_INTERVIEW.value,
         success=True,
         message=(
             f"已将 {updated_schedule.company} {updated_schedule.round} 改期到 {updated_schedule.start_time}。"
-            "飞书日历更新将在外部同步能力接入后执行。"
+            + _external_write_summary(operation_status)
         ),
         data={
             "application": application.to_dict() if application else None,
             "interview_schedule": updated_schedule.to_dict(),
+            "calendar_sync": calendar_sync,
+            "bitable_sync": bitable_sync,
+            "operation_status": operation_status,
+            "retryable": operation_status == "partial_success",
+            "idempotency_key": operation_key,
         },
     )
 
@@ -581,9 +701,16 @@ def reschedule_interview(
 def cancel_interview(
     repository: OfferPilotRepository,
     arguments: Dict[str, Any],
+    calendar_service: Optional[FeishuCalendarService] = None,
+    bitable_service: Optional[FeishuBitableService] = None,
 ) -> ToolResult:
     owner_id = _owner_id_from_arguments(arguments)
-    candidates = _find_schedule_candidates(repository, arguments, owner_id=owner_id)
+    candidates = _find_schedule_candidates(
+        repository,
+        arguments,
+        owner_id=owner_id,
+        include_cancelled_by_id=True,
+    )
     selection_result = _schedule_selection_result(
         tool_name=AgentActionName.CANCEL_INTERVIEW.value,
         candidates=candidates,
@@ -592,7 +719,23 @@ def cancel_interview(
     if selection_result is not None:
         return selection_result
 
-    schedule = repository.cancel_interview_schedule(candidates[0].id, owner_id=owner_id)
+    selected_schedule = candidates[0]
+    request_idempotency_key = arguments.get("idempotency_key")
+    idempotency_conflict = _claim_request_idempotency_key(
+        repository=repository,
+        namespace=f"cancel:{owner_id}",
+        idempotency_key=request_idempotency_key,
+        payload={"schedule_id": selected_schedule.id},
+    )
+    if idempotency_conflict:
+        return ToolResult(
+            tool_name=AgentActionName.CANCEL_INTERVIEW.value,
+            success=False,
+            message=idempotency_conflict,
+            data={"idempotency_conflict": True, "schedule_id": selected_schedule.id},
+        )
+
+    schedule = repository.cancel_interview_schedule(selected_schedule.id, owner_id=owner_id)
     if schedule is None:
         return ToolResult(
             tool_name=AgentActionName.CANCEL_INTERVIEW.value,
@@ -602,6 +745,7 @@ def cancel_interview(
         )
 
     application = _application_for_schedule(repository, schedule, owner_id=owner_id)
+    next_schedule: Optional[InterviewSchedule] = None
     if application is not None:
         remaining_schedules = [
             candidate
@@ -625,16 +769,49 @@ def cancel_interview(
                 clear_interview_fields=True,
                 owner_id=owner_id,
             )
+    operation_key = (
+        f"cancel:{owner_id}:{schedule.id}:"
+        f"{request_idempotency_key or 'derived'}"
+    )
+    calendar_sync = _sync_cancelled_interview_to_calendar(
+        repository=repository,
+        schedule=schedule,
+        calendar_service=calendar_service,
+        owner_id=owner_id,
+        idempotency_key=f"{operation_key}:calendar",
+    )
+    bitable_sync = (
+        _sync_application_to_bitable(
+            repository=repository,
+            application=application,
+            schedule=next_schedule,
+            calendar_sync=calendar_sync,
+            bitable_service=bitable_service,
+            idempotency_key=(
+                f"{operation_key}:bitable:"
+                f"{calendar_sync.get('calendar_event_id') or 'none'}"
+            ),
+            clear_interview_fields=next_schedule is None,
+        )
+        if application is not None
+        else {"synced": False, "status": "not_applicable", "attempts": 0}
+    )
+    operation_status = _external_write_status(calendar_sync, bitable_sync)
     return ToolResult(
         tool_name=AgentActionName.CANCEL_INTERVIEW.value,
         success=True,
         message=(
             f"已取消 {schedule.company} {schedule.round}（原时间：{schedule.start_time or '未记录'}）。"
-            "飞书日历删除将在外部同步能力接入后执行。"
+            + _external_write_summary(operation_status)
         ),
         data={
             "application": application.to_dict() if application else None,
             "interview_schedule": schedule.to_dict(),
+            "calendar_sync": calendar_sync,
+            "bitable_sync": bitable_sync,
+            "operation_status": operation_status,
+            "retryable": operation_status == "partial_success",
+            "idempotency_key": operation_key,
         },
     )
 
@@ -673,6 +850,7 @@ def _find_schedule_candidates(
     repository: OfferPilotRepository,
     arguments: Dict[str, Any],
     owner_id: str,
+    include_cancelled_by_id: bool = False,
 ) -> List[InterviewSchedule]:
     schedule_id = arguments.get("schedule_id")
     application_id = arguments.get("application_id")
@@ -681,7 +859,11 @@ def _find_schedule_candidates(
         return [
             schedule
             for schedule in schedules
-            if schedule.id == schedule_id and schedule.status == InterviewScheduleStatus.SCHEDULED
+            if schedule.id == schedule_id
+            and (
+                schedule.status == InterviewScheduleStatus.SCHEDULED
+                or include_cancelled_by_id
+            )
         ]
 
     if application_id:
@@ -1041,6 +1223,27 @@ def _should_create_interview_schedule(arguments: Dict[str, Any], round_name: Opt
     return bool(arguments.get("interview_time") and arguments.get("status") in INTERVIEW_APPLICATION_STATUSES)
 
 
+# 查找同一投递下相同轮次与时间的有效安排，避免确认重放创建重复记录。
+def _find_existing_interview_schedule(
+    repository: OfferPilotRepository,
+    application_id: str,
+    round_name: str,
+    start_at: Optional[str],
+    start_time: Optional[str],
+    owner_id: str,
+) -> Optional[InterviewSchedule]:
+    for schedule in repository.list_interview_schedules(owner_id=owner_id):
+        if schedule.status != InterviewScheduleStatus.SCHEDULED:
+            continue
+        if schedule.application_id != application_id or schedule.round != round_name:
+            continue
+        if start_at and schedule.start_at == start_at:
+            return schedule
+        if not start_at and schedule.start_time == start_time:
+            return schedule
+    return None
+
+
 # 解析并确定 application round。
 def _resolve_application_round(arguments: Dict[str, Any]) -> Optional[str]:
     if arguments.get("round"):
@@ -1076,6 +1279,7 @@ def _sync_interview_schedule_to_calendar(
     owner_id: str = "local_user",
     attendee_user_id: Optional[str] = None,
     attendee_user_id_type: str = "open_id",
+    idempotency_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     if schedule is None:
         return {"synced": False, "status": "not_applicable"}
@@ -1085,6 +1289,13 @@ def _sync_interview_schedule_to_calendar(
         return {"synced": False, "status": "disabled"}
     if not schedule.start_at and not schedule.start_time:
         return {"synced": False, "status": "missing_start_time"}
+
+    if idempotency_key:
+        cached = _load_sync_state(repository, idempotency_key)
+        if cached is not None and (
+            cached.get("synced") or cached.get("reconciliation_required")
+        ):
+            return {**cached, "attempts": 0, "idempotent_replay": True}
 
     try:
         calendar_context = _ensure_calendar_for_sync(repository, calendar_service)
@@ -1099,11 +1310,17 @@ def _sync_interview_schedule_to_calendar(
             calendar_id=calendar_context.get("calendar_id"),
         )
     except (FeishuConfigurationError, FeishuRequestError) as exc:
-        return {
+        failure_result = {
             "synced": False,
             "status": "failed",
+            "attempts": 1,
+            "reconciliation_required": True,
             "error": _summarize_calendar_sync_error(str(exc)),
         }
+        if idempotency_key:
+            failure_result["idempotency_key"] = idempotency_key
+            _store_sync_result(repository, idempotency_key, failure_result)
+        return failure_result
 
     if result.event_id:
         repository.update_interview_schedule_calendar_event(
@@ -1121,13 +1338,129 @@ def _sync_interview_schedule_to_calendar(
         attendee_user_id_type=attendee_user_id_type,
     )
 
-    return {
+    sync_result = {
         "synced": True,
         "status": "synced",
+        "attempts": 1,
         "calendar_event_id": result.event_id,
         "attendee_sync": attendee_sync,
         **calendar_context,
     }
+    if idempotency_key:
+        sync_result["idempotency_key"] = idempotency_key
+        _store_sync_result(repository, idempotency_key, sync_result)
+    return sync_result
+
+
+# 更新已有日程；不存在远端事件时补建，并对成功步骤进行幂等缓存。
+def _sync_rescheduled_interview_to_calendar(
+    repository: OfferPilotRepository,
+    schedule: InterviewSchedule,
+    calendar_service: Optional[FeishuCalendarService],
+    owner_id: str,
+    idempotency_key: str,
+) -> Dict[str, Any]:
+    if calendar_service is None or not calendar_service.is_calendar_sync_enabled():
+        return {"synced": False, "status": "disabled", "attempts": 0}
+
+    def operation() -> Dict[str, Any]:
+        calendar_context = _ensure_calendar_for_sync(repository, calendar_service)
+        calendar_id = calendar_context.get("calendar_id")
+        if schedule.calendar_event_id:
+            result = calendar_service.update_interview_event(
+                calendar_id=calendar_id,
+                event_id=schedule.calendar_event_id,
+                company=schedule.company,
+                role=schedule.role,
+                round_name=schedule.round,
+                start_time_text=schedule.start_time,
+                start_at=schedule.start_at,
+                reminder_minutes=schedule.reminder_minutes,
+                description=schedule.raw_message,
+            )
+            operation_name = "updated"
+        else:
+            result = calendar_service.create_interview_event(
+                company=schedule.company,
+                role=schedule.role,
+                round_name=schedule.round,
+                start_time_text=schedule.start_time,
+                start_at=schedule.start_at,
+                reminder_minutes=schedule.reminder_minutes,
+                description=schedule.raw_message,
+                calendar_id=calendar_id,
+            )
+            operation_name = "created"
+        if not result.event_id:
+            raise FeishuRequestError("Feishu calendar response does not contain event_id.")
+        repository.update_interview_schedule_calendar_event(
+            schedule_id=schedule.id,
+            calendar_event_id=result.event_id,
+            owner_id=owner_id,
+        )
+        schedule.calendar_event_id = result.event_id
+        return {
+            "synced": True,
+            "status": "synced",
+            "operation": operation_name,
+            "calendar_event_id": result.event_id,
+            **calendar_context,
+        }
+
+    return _run_idempotent_sync(
+        repository=repository,
+        idempotency_key=idempotency_key,
+        operation=operation,
+        error_formatter=_summarize_calendar_sync_error,
+        max_attempts=_SYNC_MAX_ATTEMPTS if schedule.calendar_event_id else 1,
+        reconciliation_required_on_failure=not bool(schedule.calendar_event_id),
+    )
+
+
+# 删除已有远端日程，成功后清除本地 calendar_event_id。
+def _sync_cancelled_interview_to_calendar(
+    repository: OfferPilotRepository,
+    schedule: InterviewSchedule,
+    calendar_service: Optional[FeishuCalendarService],
+    owner_id: str,
+    idempotency_key: str,
+) -> Dict[str, Any]:
+    if calendar_service is None or not calendar_service.is_calendar_sync_enabled():
+        return {"synced": False, "status": "disabled", "attempts": 0}
+    cached = _load_sync_result(repository, idempotency_key)
+    if cached is not None:
+        return {**cached, "attempts": 0, "idempotent_replay": True}
+    if not schedule.calendar_event_id:
+        return {"synced": False, "status": "not_applicable", "attempts": 0}
+
+    event_id = schedule.calendar_event_id
+
+    def operation() -> Dict[str, Any]:
+        calendar_context = _ensure_calendar_for_sync(repository, calendar_service)
+        calendar_service.delete_interview_event(
+            calendar_id=calendar_context.get("calendar_id"),
+            event_id=event_id,
+        )
+        repository.update_interview_schedule_calendar_event(
+            schedule_id=schedule.id,
+            calendar_event_id=None,
+            owner_id=owner_id,
+        )
+        schedule.calendar_event_id = None
+        return {
+            "synced": True,
+            "status": "synced",
+            "operation": "deleted",
+            "calendar_event_id": event_id,
+            **calendar_context,
+        }
+
+    return _run_idempotent_sync(
+        repository=repository,
+        idempotency_key=idempotency_key,
+        operation=operation,
+        error_formatter=_summarize_calendar_sync_error,
+    )
 
 
 # 标准化 interview start at。
@@ -1237,24 +1570,78 @@ def _sync_application_to_bitable(
     bitable_service: Optional[FeishuBitableService],
     collaborator_user_id: Optional[str] = None,
     collaborator_user_id_type: str = "open_id",
+    idempotency_key: Optional[str] = None,
+    clear_interview_fields: bool = False,
+) -> Dict[str, Any]:
+    if bitable_service is None or not bitable_service.is_bitable_sync_enabled():
+        return {"synced": False, "status": "disabled", "attempts": 0}
+
+    if idempotency_key:
+        cached = _load_sync_state(repository, idempotency_key)
+        if cached is not None and (
+            cached.get("synced") or cached.get("reconciliation_required")
+        ):
+            return {**cached, "attempts": 0, "idempotent_replay": True}
+
+    last_result: Dict[str, Any] = {"synced": False, "status": "failed", "error": "unknown"}
+    for attempt in range(1, _SYNC_MAX_ATTEMPTS + 1):
+        last_result = _sync_application_to_bitable_once(
+            repository=repository,
+            application=application,
+            schedule=schedule,
+            calendar_sync=calendar_sync,
+            bitable_service=bitable_service,
+            collaborator_user_id=collaborator_user_id,
+            collaborator_user_id_type=collaborator_user_id_type,
+            clear_interview_fields=clear_interview_fields,
+        )
+        last_result["attempts"] = attempt
+        if last_result.get("status") == "failed" and not last_result.get("retry_safe", True):
+            last_result["reconciliation_required"] = True
+            last_result["idempotency_key"] = idempotency_key
+            if idempotency_key:
+                _store_sync_result(repository, idempotency_key, last_result)
+            return last_result
+        if last_result.get("status") != "failed":
+            if idempotency_key and last_result.get("synced"):
+                last_result["idempotency_key"] = idempotency_key
+                _store_sync_result(repository, idempotency_key, last_result)
+            return last_result
+    if idempotency_key:
+        last_result["idempotency_key"] = idempotency_key
+        _store_sync_result(repository, idempotency_key, last_result)
+    return last_result
+
+
+# 执行一次 application 多维表格同步。
+def _sync_application_to_bitable_once(
+    repository: OfferPilotRepository,
+    application: Application,
+    schedule: Optional[InterviewSchedule],
+    calendar_sync: Optional[Dict[str, Any]],
+    bitable_service: Optional[FeishuBitableService],
+    collaborator_user_id: Optional[str] = None,
+    collaborator_user_id_type: str = "open_id",
+    clear_interview_fields: bool = False,
 ) -> Dict[str, Any]:
     if bitable_service is None:
         return {"synced": False, "status": "disabled"}
-    if not bitable_service.is_bitable_sync_enabled():
-        return {"synced": False, "status": "disabled"}
 
+    retry_safe = False
     try:
         bitable_context = _ensure_bitable_for_sync(repository, bitable_service)
         fields = _build_application_bitable_fields(
             application=application,
             schedule=schedule,
             calendar_sync=calendar_sync,
+            clear_interview_fields=clear_interview_fields,
         )
         record_setting_key = _bitable_record_setting_key(
             table_id=bitable_context["table_id"],
             application_id=application.id,
         )
         existing_record_id = repository.get_runtime_setting(record_setting_key)
+        retry_safe = bool(existing_record_id)
 
         event_subscription = None
         if existing_record_id:
@@ -1292,6 +1679,7 @@ def _sync_application_to_bitable(
         return {
             "synced": False,
             "status": "failed",
+            "retry_safe": retry_safe,
             "error": _summarize_bitable_collaborator_error(str(exc)),
         }
 
@@ -1374,9 +1762,10 @@ def _build_application_bitable_fields(
     application: Application,
     schedule: Optional[InterviewSchedule],
     calendar_sync: Optional[Dict[str, Any]],
+    clear_interview_fields: bool = False,
 ) -> Dict[str, Any]:
     calendar_event_id = application.to_dict().get("calendar_event_id")
-    if schedule and schedule.calendar_event_id:
+    if schedule is not None:
         calendar_event_id = schedule.calendar_event_id
     elif calendar_sync and calendar_sync.get("calendar_event_id"):
         calendar_event_id = calendar_sync["calendar_event_id"]
@@ -1405,10 +1794,22 @@ def _build_application_bitable_fields(
             fields["面试开始时间"] = start_timestamp
     if schedule:
         fields["提醒分钟"] = schedule.reminder_minutes
-    if calendar_event_id:
+    if schedule is not None:
+        fields["日历事件ID"] = calendar_event_id
+    elif calendar_event_id:
         fields["日历事件ID"] = calendar_event_id
     if application.jd_keywords:
         fields["JD关键词"] = list(application.jd_keywords)
+    if clear_interview_fields:
+        fields.update(
+            {
+                "面试轮次": None,
+                "面试时间文本": None,
+                "面试开始时间": None,
+                "提醒分钟": None,
+                "日历事件ID": None,
+            }
+        )
     return fields
 
 
@@ -1447,6 +1848,153 @@ def _summarize_sync_error(error: str) -> str:
         return "unknown"
     first_line = error.splitlines()[0].strip()
     return first_line[:160]
+
+
+# 带有限重试执行一个外部同步步骤，并缓存成功结果用于幂等回放。
+def _run_idempotent_sync(
+    repository: OfferPilotRepository,
+    idempotency_key: str,
+    operation: Callable[[], Dict[str, Any]],
+    error_formatter: Callable[[str], str],
+    max_attempts: int = _SYNC_MAX_ATTEMPTS,
+    reconciliation_required_on_failure: bool = False,
+) -> Dict[str, Any]:
+    cached = _load_sync_state(repository, idempotency_key)
+    if cached is not None and (
+        cached.get("synced") or cached.get("reconciliation_required")
+    ):
+        return {**cached, "attempts": 0, "idempotent_replay": True}
+
+    last_error = "unknown"
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = operation()
+        except (FeishuConfigurationError, FeishuRequestError) as exc:
+            last_error = error_formatter(str(exc))
+            continue
+        result = {
+            **result,
+            "attempts": attempt,
+            "idempotency_key": idempotency_key,
+        }
+        _store_sync_result(repository, idempotency_key, result)
+        return result
+    failure_result = {
+        "synced": False,
+        "status": "failed",
+        "attempts": max_attempts,
+        "idempotency_key": idempotency_key,
+        "error": last_error,
+    }
+    if reconciliation_required_on_failure:
+        failure_result["reconciliation_required"] = True
+    if idempotency_key:
+        _store_sync_result(repository, idempotency_key, failure_result)
+    return failure_result
+
+
+# 读取已完成同步步骤的缓存结果。
+def _load_sync_result(
+    repository: OfferPilotRepository,
+    idempotency_key: str,
+) -> Optional[Dict[str, Any]]:
+    value = _load_sync_state(repository, idempotency_key)
+    return value if value is not None and value.get("synced") else None
+
+
+# 读取同步步骤的持久化状态，包括需要人工核对的未知结果。
+def _load_sync_state(
+    repository: OfferPilotRepository,
+    idempotency_key: str,
+) -> Optional[Dict[str, Any]]:
+    raw_value = repository.get_runtime_setting(_sync_idempotency_setting_key(idempotency_key))
+    if not raw_value:
+        return None
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+# 保存同步步骤状态；成功用于幂等回放，失败用于恢复与核对。
+def _store_sync_result(
+    repository: OfferPilotRepository,
+    idempotency_key: str,
+    result: Dict[str, Any],
+) -> None:
+    repository.set_runtime_setting(
+        _sync_idempotency_setting_key(idempotency_key),
+        json.dumps(result, ensure_ascii=False, sort_keys=True),
+    )
+
+
+# 用户完成远端核对后，清除未知结果，允许同一逻辑操作安全恢复。
+def _clear_sync_state(
+    repository: OfferPilotRepository,
+    idempotency_key: str,
+) -> None:
+    repository.set_runtime_setting(_sync_idempotency_setting_key(idempotency_key), "")
+
+
+# 将调用方幂等键绑定到请求指纹；相同键不能代表另一项写操作。
+def _claim_request_idempotency_key(
+    repository: OfferPilotRepository,
+    namespace: str,
+    idempotency_key: Optional[Any],
+    payload: Dict[str, Any],
+) -> Optional[str]:
+    if idempotency_key is None:
+        return None
+    normalized_key = str(idempotency_key).strip()
+    if not normalized_key:
+        return None
+    request_fingerprint = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    binding_digest = hashlib.sha256(
+        f"{namespace}:{normalized_key}".encode("utf-8")
+    ).hexdigest()
+    setting_key = f"{_OFFERPILOT_REQUEST_IDEMPOTENCY_PREFIX}{binding_digest}"
+    existing_fingerprint = repository.get_runtime_setting(setting_key)
+    if existing_fingerprint and existing_fingerprint != request_fingerprint:
+        return "幂等键已用于另一组参数，请为新的写操作更换幂等键。"
+    if not existing_fingerprint:
+        repository.set_runtime_setting(setting_key, request_fingerprint)
+    return None
+
+
+# 将外部幂等键压缩成稳定的 runtime setting key。
+def _sync_idempotency_setting_key(idempotency_key: str) -> str:
+    digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+    return f"{_OFFERPILOT_SYNC_IDEMPOTENCY_PREFIX}{digest}"
+
+
+# 汇总本地写入之后的外部同步结果。
+def _external_write_status(*sync_results: Dict[str, Any]) -> str:
+    if any(result.get("reconciliation_required") for result in sync_results):
+        return "reconciliation_required"
+    if any(result.get("status") == "failed" for result in sync_results):
+        return "partial_success"
+    synced_results = [result for result in sync_results if result.get("synced")]
+    if synced_results and len(synced_results) == len(sync_results):
+        return "completed"
+    if synced_results:
+        return "completed_with_skips"
+    return "completed_local_only"
+
+
+# 生成用户可理解的外部同步摘要。
+def _external_write_summary(operation_status: str) -> str:
+    if operation_status == "reconciliation_required":
+        return "本地状态已更新，但远端写入结果未知；为避免重复记录，需先核对飞书状态。"
+    if operation_status == "partial_success":
+        return "本地状态已更新，但部分飞书同步失败，可使用相同幂等键重试。"
+    if operation_status == "completed_with_skips":
+        return "已完成当前启用的飞书同步；未启用的目标保留本地状态。"
+    if operation_status == "completed_local_only":
+        return "外部同步未启用，本地状态已更新。"
+    return "飞书日历和多维表格均已同步。"
 
 
 # 处理 bitable_record_setting_key 相关逻辑。

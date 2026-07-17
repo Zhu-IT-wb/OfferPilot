@@ -309,7 +309,7 @@ class SQLiteOfferPilotRepository:
     def update_interview_schedule_calendar_event(
         self,
         schedule_id: str,
-        calendar_event_id: str,
+        calendar_event_id: Optional[str],
         owner_id: str = "local_user",
     ) -> Optional[InterviewSchedule]:
         owner_id = self._normalize_owner_id(owner_id)

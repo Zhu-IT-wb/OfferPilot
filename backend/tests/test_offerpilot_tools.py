@@ -11,6 +11,7 @@ from app.services.feishu_service import (
     FeishuCalendarAttendeeResult,
     FeishuCalendarEventResult,
     FeishuCalendarResult,
+    FeishuRequestError,
 )
 from app.schemas.tool import ToolResult
 from app.repositories.offerpilot_repository import InMemoryOfferPilotRepository
@@ -318,6 +319,7 @@ def test_offerpilot_tools_updates_existing_bitable_record_for_application_progre
                 "面试时间文本": "后天下午三点",
                 "面试开始时间": 1783062000000,
                 "提醒分钟": 30,
+                "日历事件ID": None,
             },
         }
     ]
@@ -748,7 +750,12 @@ def test_update_application_requires_application_id_when_company_has_multiple_ma
     assert all(application.status != ApplicationStatus.REJECTED for application in repository.applications)
 
 
-def test_reschedule_interview_updates_existing_schedule_by_stable_ids() -> None:
+def test_reschedule_interview_updates_existing_schedule_by_stable_ids(monkeypatch) -> None:
+    monkeypatch.setattr(
+        offerpilot_tools,
+        "_normalize_interview_start_at",
+        lambda value: "2026-07-18T16:00:00+08:00",
+    )
     repository = InMemoryOfferPilotRepository()
     application = repository.create_application(company="美团", role="Java 后端", round_name="一面")
     schedule = repository.create_interview_schedule(
@@ -849,7 +856,12 @@ def test_reschedule_interview_rejects_unparseable_time_without_preserving_stale_
     assert repository.interview_schedules[0].start_at == "2026-07-17T15:00:00+08:00"
 
 
-def test_reschedule_interview_rejects_invalid_explicit_start_at() -> None:
+def test_reschedule_interview_rejects_invalid_explicit_start_at(monkeypatch) -> None:
+    monkeypatch.setattr(
+        offerpilot_tools,
+        "_normalize_interview_start_at",
+        lambda value: "2026-07-18T16:00:00+08:00",
+    )
     repository = InMemoryOfferPilotRepository()
     schedule = repository.create_interview_schedule(
         company="美团",
@@ -874,7 +886,12 @@ def test_reschedule_interview_rejects_invalid_explicit_start_at() -> None:
     assert repository.interview_schedules[0].start_at == "2026-07-17T15:00:00+08:00"
 
 
-def test_reschedule_interview_rejects_explicit_start_at_that_contradicts_user_time() -> None:
+def test_reschedule_interview_rejects_explicit_start_at_that_contradicts_user_time(monkeypatch) -> None:
+    monkeypatch.setattr(
+        offerpilot_tools,
+        "_normalize_interview_start_at",
+        lambda value: "2026-07-18T16:00:00+08:00",
+    )
     repository = InMemoryOfferPilotRepository()
     schedule = repository.create_interview_schedule(
         company="美团",
@@ -897,6 +914,94 @@ def test_reschedule_interview_rejects_explicit_start_at_that_contradicts_user_ti
     assert result.success is False
     assert repository.interview_schedules[0].start_time == "明天下午三点"
     assert repository.interview_schedules[0].start_at == "2026-07-17T15:00:00+08:00"
+
+
+def test_schedule_interview_replay_reuses_schedule_and_external_sync() -> None:
+    class FakeCalendarService:
+        calendar_id = "primary"
+
+        def __init__(self):
+            self.create_calls = 0
+
+        def is_calendar_sync_enabled(self):
+            return True
+
+        def should_manage_offerpilot_calendar(self):
+            return False
+
+        def create_interview_event(self, **kwargs):
+            self.create_calls += 1
+            return FeishuCalendarEventResult(event_id="evt_once", raw_response={"code": 0})
+
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="美团", role="Java 后端")
+    calendar_service = FakeCalendarService()
+    registry = build_offerpilot_tool_registry(repository, calendar_service, bitable_service=None)
+    arguments = {
+        "application_id": application.id,
+        "company": "美团",
+        "round": "一面",
+        "interview_time": "明天下午三点",
+        "start_at": "2026-07-18T15:00:00+08:00",
+        "update_type": "schedule_interview",
+        "idempotency_key": "schedule-meituan-round-1",
+    }
+
+    first = registry.run("update_application", arguments)
+    second = registry.run("update_application", arguments)
+
+    assert first.success is True
+    assert second.success is True
+    assert len(repository.interview_schedules) == 1
+    assert calendar_service.create_calls == 1
+    assert second.data["calendar_sync"]["idempotent_replay"] is True
+
+
+def test_schedule_interview_can_retry_after_user_reconciles_unknown_calendar_result() -> None:
+    class FakeCalendarService:
+        calendar_id = "primary"
+
+        def __init__(self):
+            self.create_calls = 0
+
+        def is_calendar_sync_enabled(self):
+            return True
+
+        def should_manage_offerpilot_calendar(self):
+            return False
+
+        def create_interview_event(self, **kwargs):
+            self.create_calls += 1
+            if self.create_calls == 1:
+                raise FeishuRequestError("response timeout; remote result unknown")
+            return FeishuCalendarEventResult(event_id="evt_after_reconcile", raw_response={"code": 0})
+
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="美团", role="Java 后端")
+    calendar_service = FakeCalendarService()
+    registry = build_offerpilot_tool_registry(repository, calendar_service, bitable_service=None)
+    arguments = {
+        "application_id": application.id,
+        "company": "美团",
+        "round": "一面",
+        "interview_time": "明天下午三点",
+        "start_at": "2026-07-18T15:00:00+08:00",
+        "update_type": "schedule_interview",
+        "idempotency_key": "schedule-after-reconcile",
+    }
+
+    first = registry.run("update_application", arguments)
+    blocked_replay = registry.run("update_application", arguments)
+    recovered = registry.run(
+        "update_application",
+        {**arguments, "retry_after_reconciliation": True},
+    )
+
+    assert first.data["operation_status"] == "reconciliation_required"
+    assert blocked_replay.data["calendar_sync"]["idempotent_replay"] is True
+    assert calendar_service.create_calls == 2
+    assert recovered.data["calendar_sync"]["calendar_event_id"] == "evt_after_reconcile"
+    assert len(repository.interview_schedules) == 1
 
 
 def test_cancel_interview_reconciles_application_to_earliest_remaining_schedule() -> None:
@@ -934,6 +1039,242 @@ def test_cancel_interview_reconciles_application_to_earliest_remaining_schedule(
     assert result.data["application"]["round"] == earliest.round
     assert result.data["application"]["interview_time"] == earliest.start_time
     assert result.data["application"]["status"] == "interview_2"
+
+
+def test_cancel_interview_syncs_remaining_schedule_to_bitable() -> None:
+    class FakeBitableService:
+        app_token = "bascn_offerpilot"
+        table_id = "tbl_applications"
+
+        def __init__(self):
+            self.fields = None
+
+        def is_bitable_sync_enabled(self):
+            return True
+
+        def should_manage_offerpilot_bitable(self):
+            return False
+
+        def update_record(self, **kwargs):
+            self.fields = kwargs["fields"]
+            return FeishuBitableRecordResult(record_id=kwargs["record_id"], raw_response={"code": 0})
+
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="美团", role="Java 后端", round_name="一面")
+    cancelled = repository.create_interview_schedule(
+        application_id=application.id,
+        company="美团",
+        role="Java 后端",
+        round_name="一面",
+        start_time="明天下午三点",
+        start_at="2026-07-18T15:00:00+08:00",
+    )
+    remaining = repository.create_interview_schedule(
+        application_id=application.id,
+        company="美团",
+        role="Java 后端",
+        round_name="二面",
+        start_time="下周一下午三点",
+        start_at="2026-07-20T15:00:00+08:00",
+    )
+    repository.set_runtime_setting(
+        "feishu.offerpilot_bitable_record_id.tbl_applications.app_1",
+        "rec_app_1",
+    )
+    bitable_service = FakeBitableService()
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=bitable_service)
+
+    result = registry.run("cancel_interview", {"schedule_id": cancelled.id})
+
+    assert result.success is True
+    assert result.data["operation_status"] == "completed_with_skips"
+    assert bitable_service.fields["面试轮次"] == remaining.round
+    assert bitable_service.fields["面试时间文本"] == remaining.start_time
+    assert bitable_service.fields["面试开始时间"] is not None
+    assert "日历事件ID" in bitable_service.fields
+    assert bitable_service.fields["日历事件ID"] is None
+
+
+def test_reschedule_sync_retries_failed_step_and_replays_successful_step_idempotently() -> None:
+    class FakeCalendarService:
+        calendar_id = "primary"
+
+        def __init__(self):
+            self.update_calls = 0
+
+        def is_calendar_sync_enabled(self):
+            return True
+
+        def should_manage_offerpilot_calendar(self):
+            return False
+
+        def update_interview_event(self, **kwargs):
+            self.update_calls += 1
+            return FeishuCalendarEventResult(event_id=kwargs["event_id"], raw_response={"code": 0})
+
+    class FakeBitableService:
+        app_token = "bascn_offerpilot"
+        table_id = "tbl_applications"
+
+        def __init__(self):
+            self.update_calls = 0
+            self.should_fail = True
+
+        def is_bitable_sync_enabled(self):
+            return True
+
+        def should_manage_offerpilot_bitable(self):
+            return False
+
+        def update_record(self, **kwargs):
+            self.update_calls += 1
+            if self.should_fail:
+                raise FeishuRequestError("temporary bitable failure")
+            return FeishuBitableRecordResult(record_id=kwargs["record_id"], raw_response={"code": 0})
+
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="美团", role="Java 后端", round_name="一面")
+    schedule = repository.create_interview_schedule(
+        application_id=application.id,
+        company="美团",
+        role="Java 后端",
+        round_name="一面",
+        start_time="明天下午三点",
+        start_at="2026-07-18T15:00:00+08:00",
+    )
+    repository.update_interview_schedule_calendar_event(schedule.id, "evt_test_1")
+    repository.set_runtime_setting(
+        "feishu.offerpilot_bitable_record_id.tbl_applications.app_1",
+        "rec_app_1",
+    )
+    calendar_service = FakeCalendarService()
+    bitable_service = FakeBitableService()
+    registry = build_offerpilot_tool_registry(repository, calendar_service, bitable_service)
+    arguments = {
+        "schedule_id": schedule.id,
+        "interview_time": "后天下午四点",
+        "idempotency_key": "scenario-1-reschedule",
+    }
+
+    first = registry.run("reschedule_interview", arguments)
+    bitable_service.should_fail = False
+    second = registry.run("reschedule_interview", arguments)
+
+    assert first.success is True
+    assert first.data["operation_status"] == "partial_success"
+    assert first.data["retryable"] is True
+    assert first.data["calendar_sync"]["attempts"] == 1
+    assert first.data["bitable_sync"]["attempts"] == 3
+    assert second.data["operation_status"] == "completed"
+    assert second.data["calendar_sync"]["idempotent_replay"] is True
+    assert calendar_service.update_calls == 1
+    assert bitable_service.update_calls == 4
+
+
+def test_reschedule_rejects_reusing_idempotency_key_for_different_time() -> None:
+    repository = InMemoryOfferPilotRepository()
+    schedule = repository.create_interview_schedule(
+        company="美团",
+        role="Java 后端",
+        round_name="一面",
+        start_time="明天下午三点",
+        start_at="2026-07-18T15:00:00+08:00",
+    )
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None)
+
+    first = registry.run(
+        "reschedule_interview",
+        {
+            "schedule_id": schedule.id,
+            "interview_time": "后天下午四点",
+            "idempotency_key": "same-request-key",
+        },
+    )
+    second = registry.run(
+        "reschedule_interview",
+        {
+            "schedule_id": schedule.id,
+            "interview_time": "下周一下午五点",
+            "idempotency_key": "same-request-key",
+        },
+    )
+
+    assert first.success is True
+    assert second.success is False
+    assert second.data["idempotency_conflict"] is True
+    assert repository.interview_schedules[0].start_time == "后天下午四点"
+
+
+def test_cancel_sync_deletes_calendar_event_and_clears_bitable_interview_fields() -> None:
+    class FakeCalendarService:
+        calendar_id = "primary"
+
+        def __init__(self):
+            self.deleted = []
+
+        def is_calendar_sync_enabled(self):
+            return True
+
+        def should_manage_offerpilot_calendar(self):
+            return False
+
+        def delete_interview_event(self, **kwargs):
+            self.deleted.append(kwargs)
+            return FeishuCalendarEventResult(event_id=kwargs["event_id"], raw_response={"code": 0})
+
+    class FakeBitableService:
+        app_token = "bascn_offerpilot"
+        table_id = "tbl_applications"
+
+        def __init__(self):
+            self.fields = None
+
+        def is_bitable_sync_enabled(self):
+            return True
+
+        def should_manage_offerpilot_bitable(self):
+            return False
+
+        def update_record(self, **kwargs):
+            self.fields = kwargs["fields"]
+            return FeishuBitableRecordResult(record_id=kwargs["record_id"], raw_response={"code": 0})
+
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(
+        company="美团",
+        role="Java 后端",
+        round_name="一面",
+        interview_time="明天下午三点",
+    )
+    schedule = repository.create_interview_schedule(
+        application_id=application.id,
+        company="美团",
+        role="Java 后端",
+        round_name="一面",
+        start_time="明天下午三点",
+        start_at="2026-07-18T15:00:00+08:00",
+    )
+    repository.update_interview_schedule_calendar_event(schedule.id, "evt_test_1")
+    repository.set_runtime_setting(
+        "feishu.offerpilot_bitable_record_id.tbl_applications.app_1",
+        "rec_app_1",
+    )
+    calendar_service = FakeCalendarService()
+    bitable_service = FakeBitableService()
+    registry = build_offerpilot_tool_registry(repository, calendar_service, bitable_service)
+
+    result = registry.run(
+        "cancel_interview",
+        {"schedule_id": schedule.id, "idempotency_key": "scenario-1-cancel"},
+    )
+
+    assert result.success is True
+    assert result.data["operation_status"] == "completed"
+    assert calendar_service.deleted == [{"calendar_id": "primary", "event_id": "evt_test_1"}]
+    assert bitable_service.fields["面试轮次"] is None
+    assert bitable_service.fields["面试时间文本"] is None
+    assert bitable_service.fields["面试开始时间"] is None
+    assert bitable_service.fields["日历事件ID"] is None
 
 
 def test_reschedule_interview_returns_schedule_candidates_without_mutating() -> None:

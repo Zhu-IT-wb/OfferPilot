@@ -230,6 +230,71 @@ def test_feishu_calendar_service_prefers_normalized_start_at(monkeypatch) -> Non
     assert calls[1]["payload"]["start_time"]["timestamp"] == "1782802800"
 
 
+def test_feishu_calendar_service_updates_interview_event(monkeypatch) -> None:
+    calls = []
+    service = FeishuCalendarService(
+        app_id="app_id",
+        app_secret="app_secret",
+        calendar_id="primary",
+        sync_enabled=True,
+        timezone="Asia/Shanghai",
+        event_duration_minutes=60,
+    )
+    service._tenant_access_token = "tenant_token"
+    service._tenant_access_token_expires_at = float("inf")
+
+    def fake_patch_json_sync(path, payload, headers=None, params=None):
+        calls.append({"path": path, "payload": payload, "headers": headers, "params": params})
+        return {"code": 0, "data": {"event": {"event_id": "evt_test_1"}}}
+
+    monkeypatch.setattr(service, "_patch_json_sync", fake_patch_json_sync)
+
+    result = service.update_interview_event(
+        calendar_id="primary",
+        event_id="evt_test_1",
+        company="深信服",
+        role="AI 应用开发",
+        round_name="一面",
+        start_time_text="后天下午四点",
+        start_at="2026-07-18T16:00:00+08:00",
+        reminder_minutes=30,
+    )
+
+    assert result.event_id == "evt_test_1"
+    assert calls[0]["path"] == "/calendar/v4/calendars/primary/events/evt_test_1"
+    assert calls[0]["headers"] == {"Authorization": "Bearer tenant_token"}
+    assert calls[0]["payload"]["start_time"]["timestamp"] == "1784361600"
+
+
+def test_feishu_calendar_service_deletes_interview_event(monkeypatch) -> None:
+    calls = []
+    service = FeishuCalendarService(
+        app_id="app_id",
+        app_secret="app_secret",
+        calendar_id="primary",
+        sync_enabled=True,
+    )
+    service._tenant_access_token = "tenant_token"
+    service._tenant_access_token_expires_at = float("inf")
+
+    def fake_delete_json_sync(path, headers=None, params=None):
+        calls.append({"path": path, "headers": headers, "params": params})
+        return {"code": 0}
+
+    monkeypatch.setattr(service, "_delete_json_sync", fake_delete_json_sync)
+
+    result = service.delete_interview_event(calendar_id="primary", event_id="evt_test_1")
+
+    assert result.event_id == "evt_test_1"
+    assert calls == [
+        {
+            "path": "/calendar/v4/calendars/primary/events/evt_test_1",
+            "headers": {"Authorization": "Bearer tenant_token"},
+            "params": None,
+        }
+    ]
+
+
 def test_feishu_calendar_service_creates_shared_calendar(monkeypatch) -> None:
     calls = []
     service = FeishuCalendarService(

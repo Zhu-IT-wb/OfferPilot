@@ -4,6 +4,7 @@ import json
 from fastapi.testclient import TestClient
 
 from app.agents.conversation import InMemoryConversationStore
+from app.agents.intent_classifier import IntentClassifier
 from app.agents.orchestrator import AgentOrchestrator
 from app.agents.planner import AgentPlanner
 from app.api.routes import debug
@@ -12,6 +13,7 @@ from app.repositories.offerpilot_repository import InMemoryOfferPilotRepository
 from app.schemas.agent import AgentActionName, AgentResponse
 from app.schemas.intent import IntentClassification, IntentName
 from app.services.feishu_service import (
+    FeishuBitableRecordResult,
     FeishuCalendarAttendeeResult,
     FeishuCalendarEventResult,
     FeishuCalendarResult,
@@ -954,6 +956,90 @@ def test_orchestrator_reschedules_and_cancels_interview_with_rule_planner() -> N
     assert cancel_plan.need_confirmation is True
     assert cancelled.tool_result is not None
     assert cancelled.tool_result.data["interview_schedule"]["status"] == "cancelled"
+
+
+def test_scenario_one_application_schedule_reschedule_cancel_end_to_end() -> None:
+    class RuleIntentClassifier:
+        async def classify(self, message):
+            return IntentClassifier()._classify_by_rules(message)
+
+    class FakeCalendarService:
+        calendar_id = "primary"
+
+        def __init__(self):
+            self.created = []
+            self.updated = []
+            self.deleted = []
+
+        def is_calendar_sync_enabled(self):
+            return True
+
+        def should_manage_offerpilot_calendar(self):
+            return False
+
+        def create_interview_event(self, **kwargs):
+            self.created.append(kwargs)
+            return FeishuCalendarEventResult(event_id="evt_scenario_1", raw_response={"code": 0})
+
+        def update_interview_event(self, **kwargs):
+            self.updated.append(kwargs)
+            return FeishuCalendarEventResult(event_id=kwargs["event_id"], raw_response={"code": 0})
+
+        def delete_interview_event(self, **kwargs):
+            self.deleted.append(kwargs)
+            return FeishuCalendarEventResult(event_id=kwargs["event_id"], raw_response={"code": 0})
+
+    class FakeBitableService:
+        app_token = "bascn_offerpilot"
+        table_id = "tbl_applications"
+
+        def __init__(self):
+            self.updates = []
+
+        def is_bitable_sync_enabled(self):
+            return True
+
+        def should_manage_offerpilot_bitable(self):
+            return False
+
+        def update_record(self, **kwargs):
+            self.updates.append(kwargs["fields"])
+            return FeishuBitableRecordResult(record_id=kwargs["record_id"], raw_response={"code": 0})
+
+    repository = InMemoryOfferPilotRepository()
+    repository.set_runtime_setting(
+        "feishu.offerpilot_bitable_record_id.tbl_applications.app_1",
+        "rec_app_1",
+    )
+    calendar_service = FakeCalendarService()
+    bitable_service = FakeBitableService()
+    orchestrator = AgentOrchestrator(
+        intent_classifier=RuleIntentClassifier(),
+        tool_registry=build_offerpilot_tool_registry(repository, calendar_service, bitable_service),
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    asyncio.run(orchestrator.handle_message("我投递了美团 Java 后端实习"))
+    created = asyncio.run(orchestrator.handle_message("确认"))
+    asyncio.run(orchestrator.handle_message("美团约我明天下午三点一面"))
+    scheduled = asyncio.run(orchestrator.handle_message("确认"))
+    asyncio.run(orchestrator.handle_message("美团一面改到后天下午四点"))
+    rescheduled = asyncio.run(orchestrator.handle_message("确认"))
+    asyncio.run(orchestrator.handle_message("取消美团一面"))
+    cancelled = asyncio.run(orchestrator.handle_message("确认"))
+
+    assert created.tool_result is not None and created.tool_result.success is True
+    assert scheduled.tool_result is not None and scheduled.tool_result.success is True
+    assert rescheduled.tool_result is not None
+    assert "operation_status" in rescheduled.tool_result.data, rescheduled.tool_result.data
+    assert rescheduled.tool_result.data["operation_status"] == "completed"
+    assert cancelled.tool_result is not None
+    assert cancelled.tool_result.data["operation_status"] == "completed"
+    assert len(calendar_service.created) == 1
+    assert len(calendar_service.updated) == 1
+    assert len(calendar_service.deleted) == 1
+    assert bitable_service.updates[-1]["面试时间文本"] is None
+    assert repository.interview_schedules[0].status.value == "cancelled"
 
 
 def test_debug_agent_route_returns_orchestrated_response(monkeypatch) -> None:

@@ -317,6 +317,74 @@ class FeishuMessageService:
 
         return response_data
 
+    # 发送 PATCH 请求处理 json sync。
+    def _patch_json_sync(
+        self,
+        path: str,
+        payload: Dict[str, Any],
+        headers: Optional[Dict[str, str]] = None,
+        params: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        url = f"{self.base_url}{path}"
+        request_headers = {"Content-Type": "application/json"}
+        if headers:
+            request_headers.update(headers)
+
+        try:
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                response = client.patch(
+                    url,
+                    json=payload,
+                    headers=request_headers,
+                    params=params,
+                )
+                response.raise_for_status()
+                response_data = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise FeishuRequestError(
+                f"Feishu OpenAPI returned HTTP {exc.response.status_code}: {exc.response.text}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise FeishuRequestError(f"Feishu OpenAPI request failed: {exc}") from exc
+        except ValueError as exc:
+            raise FeishuRequestError("Feishu OpenAPI response is not valid JSON.") from exc
+
+        if not isinstance(response_data, dict):
+            raise FeishuRequestError("Feishu OpenAPI response must be a JSON object.")
+        return response_data
+
+    # 发送 DELETE 请求处理 json sync；兼容 204 空响应。
+    def _delete_json_sync(
+        self,
+        path: str,
+        headers: Optional[Dict[str, str]] = None,
+        params: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        url = f"{self.base_url}{path}"
+        request_headers: Dict[str, str] = {}
+        if headers:
+            request_headers.update(headers)
+
+        try:
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                response = client.delete(url, headers=request_headers, params=params)
+                response.raise_for_status()
+                if not response.content:
+                    return {"code": 0}
+                response_data = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise FeishuRequestError(
+                f"Feishu OpenAPI returned HTTP {exc.response.status_code}: {exc.response.text}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise FeishuRequestError(f"Feishu OpenAPI request failed: {exc}") from exc
+        except ValueError as exc:
+            raise FeishuRequestError("Feishu OpenAPI response is not valid JSON.") from exc
+
+        if not isinstance(response_data, dict):
+            raise FeishuRequestError("Feishu OpenAPI response must be a JSON object.")
+        return response_data
+
     # 获取 json sync。
     def _get_json_sync(
         self,
@@ -488,25 +556,16 @@ class FeishuCalendarService(FeishuMessageService):
         if event_start_at is None:
             raise FeishuRequestError(f"Cannot parse interview start time: {start_time_text or start_at}")
 
-        end_at = event_start_at + timedelta(minutes=max(self.event_duration_minutes, 1))
-        summary = _build_interview_event_summary(company=company, role=role, round_name=round_name)
-        payload = {
-            "summary": summary,
-            "description": description,
-            "start_time": {
-                "timestamp": str(int(event_start_at.timestamp())),
-                "timezone": self.timezone,
-            },
-            "end_time": {
-                "timestamp": str(int(end_at.timestamp())),
-                "timezone": self.timezone,
-            },
-            "reminders": [
-                {
-                    "minutes": reminder_minutes,
-                }
-            ],
-        }
+        payload = _build_interview_event_payload(
+            company=company,
+            role=role,
+            round_name=round_name,
+            event_start_at=event_start_at,
+            timezone=self.timezone,
+            duration_minutes=self.event_duration_minutes,
+            reminder_minutes=reminder_minutes,
+            description=description,
+        )
         token = self.get_tenant_access_token_sync()
         response_data = self._post_json_sync(
             path=f"/calendar/v4/calendars/{selected_calendar_id}/events",
@@ -519,6 +578,80 @@ class FeishuCalendarService(FeishuMessageService):
             event_id=_extract_calendar_event_id(response_data),
             raw_response=response_data,
         )
+
+    # 更新飞书日历中已有的面试日程。
+    def update_interview_event(
+        self,
+        calendar_id: str,
+        event_id: str,
+        company: str,
+        role: Optional[str],
+        round_name: str,
+        start_time_text: Optional[str],
+        start_at: Optional[Any] = None,
+        reminder_minutes: int = 30,
+        description: str = "",
+        now: Optional[datetime] = None,
+    ) -> FeishuCalendarEventResult:
+        if not self.is_calendar_sync_enabled():
+            raise FeishuConfigurationError("Feishu calendar sync is not enabled.")
+        if not calendar_id:
+            raise FeishuConfigurationError("Feishu calendar id is missing.")
+        if not event_id:
+            raise FeishuConfigurationError("Feishu event id is missing.")
+
+        event_start_at = _coerce_event_start_at(start_at, self.timezone)
+        if event_start_at is None:
+            event_start_at = parse_chinese_datetime(
+                text=start_time_text,
+                timezone=self.timezone,
+                now=now,
+            )
+        if event_start_at is None:
+            raise FeishuRequestError(f"Cannot parse interview start time: {start_time_text or start_at}")
+
+        payload = _build_interview_event_payload(
+            company=company,
+            role=role,
+            round_name=round_name,
+            event_start_at=event_start_at,
+            timezone=self.timezone,
+            duration_minutes=self.event_duration_minutes,
+            reminder_minutes=reminder_minutes,
+            description=description,
+        )
+        token = self.get_tenant_access_token_sync()
+        response_data = self._patch_json_sync(
+            path=f"/calendar/v4/calendars/{calendar_id}/events/{event_id}",
+            payload=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self._raise_for_feishu_code(response_data)
+        return FeishuCalendarEventResult(
+            event_id=_extract_calendar_event_id(response_data) or event_id,
+            raw_response=response_data,
+        )
+
+    # 删除飞书日历中已有的面试日程。
+    def delete_interview_event(
+        self,
+        calendar_id: str,
+        event_id: str,
+    ) -> FeishuCalendarEventResult:
+        if not self.is_calendar_sync_enabled():
+            raise FeishuConfigurationError("Feishu calendar sync is not enabled.")
+        if not calendar_id:
+            raise FeishuConfigurationError("Feishu calendar id is missing.")
+        if not event_id:
+            raise FeishuConfigurationError("Feishu event id is missing.")
+
+        token = self.get_tenant_access_token_sync()
+        response_data = self._delete_json_sync(
+            path=f"/calendar/v4/calendars/{calendar_id}/events/{event_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self._raise_for_feishu_code(response_data)
+        return FeishuCalendarEventResult(event_id=event_id, raw_response=response_data)
 
     # 把用户加入飞书日程参与人。
     def add_event_attendee(
@@ -559,6 +692,37 @@ class FeishuCalendarService(FeishuMessageService):
             attendee_ids=_extract_attendee_ids(response_data),
             raw_response=response_data,
         )
+
+
+# 构造创建和更新日程共用的请求体。
+def _build_interview_event_payload(
+    company: str,
+    role: Optional[str],
+    round_name: str,
+    event_start_at: datetime,
+    timezone: str,
+    duration_minutes: int,
+    reminder_minutes: int,
+    description: str,
+) -> Dict[str, Any]:
+    end_at = event_start_at + timedelta(minutes=max(duration_minutes, 1))
+    return {
+        "summary": _build_interview_event_summary(
+            company=company,
+            role=role,
+            round_name=round_name,
+        ),
+        "description": description,
+        "start_time": {
+            "timestamp": str(int(event_start_at.timestamp())),
+            "timezone": timezone,
+        },
+        "end_time": {
+            "timestamp": str(int(end_at.timestamp())),
+            "timezone": timezone,
+        },
+        "reminders": [{"minutes": reminder_minutes}],
+    }
 
 
 # 将输入转换为 event start at。
