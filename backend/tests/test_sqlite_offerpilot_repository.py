@@ -1,3 +1,5 @@
+import sqlite3
+
 from app.models.application import ApplicationStatus
 from app.models.interview_schedule import InterviewScheduleStatus
 from app.models.task import TaskStatus
@@ -53,6 +55,37 @@ def test_sqlite_repository_persists_application_across_instances(tmp_path) -> No
     assert application.status == ApplicationStatus.INTERVIEW_1
     assert application.to_dict()["jd_keywords"] == ["Java", "Redis"]
     assert second_application.id == "app_2"
+    assert second_application.status == ApplicationStatus.SUBMITTED
+
+
+def test_sqlite_repository_migrates_legacy_confirmed_planned_application(tmp_path) -> None:
+    db_path = tmp_path / "offerpilot.db"
+    repository = SQLiteOfferPilotRepository(str(db_path))
+    application = repository.create_application(company="腾讯", role="Java 后端")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE applications SET status = 'planned' WHERE id = ?",
+            (application.id,),
+        )
+        connection.execute(
+            "DELETE FROM runtime_settings WHERE key = 'migration.application_planned_to_submitted.v1'"
+        )
+        connection.commit()
+
+    reopened = SQLiteOfferPilotRepository(str(db_path))
+
+    assert reopened.list_applications()[0].status == ApplicationStatus.SUBMITTED
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE applications SET status = 'planned' WHERE id = ?",
+            (application.id,),
+        )
+        connection.commit()
+
+    reopened_after_migration = SQLiteOfferPilotRepository(str(db_path))
+
+    assert reopened_after_migration.list_applications()[0].status == ApplicationStatus.PLANNED
 
 
 def test_sqlite_repository_lists_applications_by_company(tmp_path) -> None:

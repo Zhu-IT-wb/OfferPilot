@@ -39,7 +39,7 @@ _OFFERPILOT_BITABLE_RECORD_ID_PREFIX = "feishu.offerpilot_bitable_record_id."
 _OFFERPILOT_BITABLE_COLLABORATOR_PREFIX = "feishu.offerpilot_bitable_collaborator."
 _OFFERPILOT_SYNC_IDEMPOTENCY_PREFIX = "sync.idempotency."
 _OFFERPILOT_REQUEST_IDEMPOTENCY_PREFIX = "request.idempotency."
-_CURRENT_BITABLE_SCHEMA_VERSION = "v2"
+_CURRENT_BITABLE_SCHEMA_VERSION = "v3"
 _SYNC_MAX_ATTEMPTS = 3
 _DEFAULT_EXTERNAL_SERVICE = object()
 
@@ -1709,9 +1709,17 @@ def _ensure_bitable_for_sync(
         else False
     )
     if not should_manage:
+        app_token = getattr(bitable_service, "app_token", None)
+        table_id = getattr(bitable_service, "table_id", None)
+        _migrate_bitable_schema_if_needed(
+            repository=repository,
+            bitable_service=bitable_service,
+            app_token=app_token,
+            table_id=table_id,
+        )
         return {
-            "app_token": getattr(bitable_service, "app_token", None),
-            "table_id": getattr(bitable_service, "table_id", None),
+            "app_token": app_token,
+            "table_id": table_id,
             "bitable_managed": False,
             "bitable_auto_created": False,
         }
@@ -1731,10 +1739,8 @@ def _ensure_bitable_for_sync(
         auto_created = True
 
     table_id = stored_table_id
-    if not table_id or stored_schema_version != _CURRENT_BITABLE_SCHEMA_VERSION:
+    if not table_id:
         table_name = getattr(bitable_service, "table_name", None) or settings.feishu_offerpilot_bitable_table_name
-        if table_id and stored_schema_version != _CURRENT_BITABLE_SCHEMA_VERSION:
-            table_name = f"{table_name} Pro"
         table_result = bitable_service.create_application_table(
             app_token=app_token,
             table_name=table_name,
@@ -1748,6 +1754,13 @@ def _ensure_bitable_for_sync(
             _CURRENT_BITABLE_SCHEMA_VERSION,
         )
         auto_created = True
+    elif stored_schema_version != _CURRENT_BITABLE_SCHEMA_VERSION:
+        _migrate_bitable_schema_if_needed(
+            repository=repository,
+            bitable_service=bitable_service,
+            app_token=app_token,
+            table_id=table_id,
+        )
 
     return {
         "app_token": app_token,
@@ -1755,6 +1768,30 @@ def _ensure_bitable_for_sync(
         "bitable_managed": True,
         "bitable_auto_created": auto_created,
     }
+
+
+# 旧表原地升级，避免每次 schema 变化都创建一张新的 “Pro” 表。
+def _migrate_bitable_schema_if_needed(
+    repository: OfferPilotRepository,
+    bitable_service: FeishuBitableService,
+    app_token: Optional[str],
+    table_id: Optional[str],
+) -> None:
+    if not app_token or not table_id:
+        return
+    stored_schema_version = repository.get_runtime_setting(
+        _OFFERPILOT_BITABLE_SCHEMA_VERSION_SETTING
+    )
+    if stored_schema_version == _CURRENT_BITABLE_SCHEMA_VERSION:
+        return
+    migrate_schema = getattr(bitable_service, "migrate_application_table_schema", None)
+    if not callable(migrate_schema):
+        return
+    migrate_schema(app_token=app_token, table_id=table_id)
+    repository.set_runtime_setting(
+        _OFFERPILOT_BITABLE_SCHEMA_VERSION_SETTING,
+        _CURRENT_BITABLE_SCHEMA_VERSION,
+    )
 
 
 # 构造 application bitable fields。
@@ -1771,11 +1808,11 @@ def _build_application_bitable_fields(
         calendar_event_id = calendar_sync["calendar_event_id"]
 
     fields: Dict[str, Any] = {
+        "投递记录": _build_application_bitable_title(application),
         "OfferPilot记录ID": application.id,
         "公司": application.company,
         "岗位": application.role,
         "投递状态": application_status_label(application.status),
-        "状态值": application.status.value,
         "优先级": _infer_application_priority(application),
         "来源": "飞书助手",
         "下一步": _build_application_next_action(application, schedule),
@@ -1811,6 +1848,15 @@ def _build_application_bitable_fields(
             }
         )
     return fields
+
+
+# 生成适合作为多维表格主字段的可读标题，内部 ID 另列保存。
+def _build_application_bitable_title(application: Application) -> str:
+    company = application.company.strip()
+    role = application.role.strip()
+    if company and role:
+        return f"{company}｜{role}"
+    return company or role or "未命名投递"
 
 
 # 从工具入参中提取数据归属人，缺省兼容本地单用户模式。

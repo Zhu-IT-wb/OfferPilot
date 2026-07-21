@@ -14,6 +14,9 @@ from app.models.task import Task, TaskPriority, TaskStatus, TaskType
 from app.repositories.offerpilot_repository import _default_tasks
 
 
+_PLANNED_APPLICATION_MIGRATION_SETTING = "migration.application_planned_to_submitted.v1"
+
+
 # 使用 SQLite 持久化 OfferPilot 业务数据。
 class SQLiteOfferPilotRepository:
     # 初始化当前组件所需的依赖和配置。
@@ -78,7 +81,11 @@ class SQLiteOfferPilotRepository:
             company=company,
             role=role,
             owner_id=owner_id,
-            status=application_status_from_round(round_name),
+            status=(
+                application_status_from_round(round_name)
+                if round_name
+                else ApplicationStatus.SUBMITTED
+            ),
             interview_time=interview_time,
             round=round_name,
             jd_keywords=jd_keywords or [],
@@ -547,6 +554,7 @@ class SQLiteOfferPilotRepository:
         self._ensure_column("interview_reviews", "owner_id", "TEXT NOT NULL DEFAULT 'local_user'")
         self._ensure_column("interview_schedules", "owner_id", "TEXT NOT NULL DEFAULT 'local_user'")
         self._ensure_column("interview_schedules", "start_at", "TEXT")
+        self._migrate_confirmed_planned_applications()
         self._ensure_indexes()
         self._seed_default_tasks()
 
@@ -558,6 +566,16 @@ class SQLiteOfferPilotRepository:
             return
 
         self._execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}", ())
+
+    # 旧版本只在用户确认后建记录，因此持久化的 planned 实际都已完成投递。
+    def _migrate_confirmed_planned_applications(self) -> None:
+        if self.get_runtime_setting(_PLANNED_APPLICATION_MIGRATION_SETTING) == "complete":
+            return
+        self._execute(
+            "UPDATE applications SET status = ? WHERE status = ?",
+            (ApplicationStatus.SUBMITTED.value, ApplicationStatus.PLANNED.value),
+        )
+        self.set_runtime_setting(_PLANNED_APPLICATION_MIGRATION_SETTING, "complete")
 
     # 创建常用 owner 查询索引，保证多用户后查询不退化。
     def _ensure_indexes(self) -> None:

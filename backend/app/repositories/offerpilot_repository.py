@@ -223,7 +223,11 @@ class InMemoryOfferPilotRepository:
             company=company,
             role=role,
             owner_id=owner_id,
-            status=application_status_from_round(round_name),
+            status=(
+                application_status_from_round(round_name)
+                if round_name
+                else ApplicationStatus.SUBMITTED
+            ),
             interview_time=interview_time,
             round=round_name,
             jd_keywords=jd_keywords or [],

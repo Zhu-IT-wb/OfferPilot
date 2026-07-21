@@ -39,6 +39,14 @@ def test_repository_creates_application_with_round_status() -> None:
     assert repository.applications == [application]
 
 
+def test_repository_creates_confirmed_application_as_submitted() -> None:
+    repository = InMemoryOfferPilotRepository()
+
+    application = repository.create_application(company="腾讯", role="Java 后端")
+
+    assert application.status == ApplicationStatus.SUBMITTED
+
+
 def test_repository_lists_applications_by_company() -> None:
     repository = InMemoryOfferPilotRepository()
     repository.create_application(company="深信服", role="AI 应用开发", round_name="二面")

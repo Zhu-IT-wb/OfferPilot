@@ -501,10 +501,18 @@ def test_feishu_bitable_service_creates_app_table_record_and_updates_record(monk
     assert calls[2]["payload"]["table"]["name"] == "投递记录"
     assert calls[2]["payload"]["table"]["default_view_name"] == "全部投递"
     assert calls[2]["payload"]["table"]["fields"][0] == {
+        "field_name": "投递记录",
+        "type": 1,
+    }
+    assert calls[2]["payload"]["table"]["fields"][1] == {
         "field_name": "OfferPilot记录ID",
         "type": 1,
     }
-    status_field = calls[2]["payload"]["table"]["fields"][3]
+    assert all(
+        field["field_name"] != "状态值"
+        for field in calls[2]["payload"]["table"]["fields"]
+    )
+    status_field = calls[2]["payload"]["table"]["fields"][4]
     assert status_field["field_name"] == "投递状态"
     assert status_field["type"] == 3
     assert [option["name"] for option in status_field["property"]["options"][:4]] == [
@@ -532,6 +540,106 @@ def test_feishu_bitable_service_creates_app_table_record_and_updates_record(monk
         "headers": {"Authorization": "Bearer tenant_token"},
         "params": None,
     }
+
+
+def test_feishu_bitable_service_migrates_legacy_application_table_in_place(monkeypatch) -> None:
+    service = FeishuBitableService(app_id="app_id", app_secret="app_secret", sync_enabled=True)
+    put_calls = []
+    post_calls = []
+    delete_calls = []
+    monkeypatch.setattr(service, "get_tenant_access_token_sync", lambda: "tenant_token")
+
+    def fake_get(path, headers=None, params=None):
+        if path.endswith("/fields"):
+            if params and params.get("page_token") == "fields_page_2":
+                return {
+                    "code": 0,
+                    "data": {
+                        "items": [
+                            {
+                                "field_id": "fld_status_value",
+                                "field_name": "状态值",
+                                "type": 1,
+                            }
+                        ],
+                        "has_more": False,
+                    },
+                }
+            return {
+                "code": 0,
+                "data": {
+                    "items": [
+                        {"field_id": "fld_primary", "field_name": "OfferPilot记录ID", "type": 1},
+                        {"field_id": "fld_company", "field_name": "公司", "type": 1},
+                        {"field_id": "fld_role", "field_name": "岗位", "type": 1},
+                    ],
+                    "has_more": True,
+                    "page_token": "fields_page_2",
+                },
+            }
+        return {
+            "code": 0,
+            "data": {
+                "items": [
+                    {
+                        "record_id": "rec_1",
+                        "fields": {
+                            "投递记录": "app_20",
+                            "公司": "腾讯",
+                            "岗位": "Java 后端",
+                            "投递状态": "待投递/待确认",
+                        },
+                    }
+                ],
+                "has_more": False,
+            },
+        }
+
+    def fake_put(path, payload, headers=None, params=None):
+        put_calls.append({"path": path, "payload": payload})
+        return {"code": 0, "data": {"record": {"record_id": "rec_1"}}}
+
+    def fake_post(path, payload, headers=None, params=None):
+        post_calls.append({"path": path, "payload": payload})
+        return {"code": 0, "data": {"field": {"field_id": "fld_internal"}}}
+
+    def fake_delete(path, headers=None, params=None):
+        delete_calls.append(path)
+        return {"code": 0}
+
+    monkeypatch.setattr(service, "_get_json_sync", fake_get)
+    monkeypatch.setattr(service, "_put_json_sync", fake_put)
+    monkeypatch.setattr(service, "_post_json_sync", fake_post)
+    monkeypatch.setattr(service, "_delete_json_sync", fake_delete)
+
+    result = service.migrate_application_table_schema("bascn_test", "tbl_test")
+
+    assert result == {
+        "renamed_fields": 1,
+        "created_fields": 1,
+        "deleted_fields": 1,
+        "updated_records": 1,
+    }
+    assert put_calls[0] == {
+        "path": "/bitable/v1/apps/bascn_test/tables/tbl_test/fields/fld_primary",
+        "payload": {"field_name": "投递记录", "type": 1},
+    }
+    assert post_calls == [
+        {
+            "path": "/bitable/v1/apps/bascn_test/tables/tbl_test/fields",
+            "payload": {"field_name": "OfferPilot记录ID", "type": 1},
+        }
+    ]
+    assert put_calls[1]["payload"] == {
+        "fields": {
+            "投递记录": "腾讯｜Java 后端",
+            "OfferPilot记录ID": "app_20",
+            "投递状态": "已投递",
+        }
+    }
+    assert delete_calls == [
+        "/bitable/v1/apps/bascn_test/tables/tbl_test/fields/fld_status_value"
+    ]
 
 
 def test_feishu_bitable_service_gets_record(monkeypatch) -> None:

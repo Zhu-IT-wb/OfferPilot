@@ -977,6 +977,7 @@ class FeishuBitableService(FeishuMessageService):
     DATETIME_FIELD_TYPE = 5
 
     APPLICATION_TABLE_FIELDS = [
+        {"field_name": "投递记录", "type": TEXT_FIELD_TYPE},
         {"field_name": "OfferPilot记录ID", "type": TEXT_FIELD_TYPE},
         {"field_name": "公司", "type": TEXT_FIELD_TYPE},
         {"field_name": "岗位", "type": TEXT_FIELD_TYPE},
@@ -985,7 +986,6 @@ class FeishuBitableService(FeishuMessageService):
             "type": SINGLE_SELECT_FIELD_TYPE,
             "property": {"options": _build_bitable_select_options(_BITABLE_APPLICATION_STATUS_OPTIONS)},
         },
-        {"field_name": "状态值", "type": TEXT_FIELD_TYPE},
         {
             "field_name": "面试轮次",
             "type": SINGLE_SELECT_FIELD_TYPE,
@@ -1113,6 +1113,182 @@ class FeishuBitableService(FeishuMessageService):
             table_id=_extract_bitable_table_id(response_data),
             raw_response=response_data,
         )
+
+    # 将旧版投递表原地迁移为用户可读主标题，并移除内部状态展示列。
+    def migrate_application_table_schema(
+        self,
+        app_token: str,
+        table_id: str,
+    ) -> Dict[str, int]:
+        if not self.is_bitable_sync_enabled():
+            raise FeishuConfigurationError("Feishu bitable sync is not enabled.")
+        if not app_token or not table_id:
+            raise FeishuConfigurationError("Feishu bitable app token or table id is missing.")
+
+        fields = self.list_fields(app_token=app_token, table_id=table_id)
+        fields_by_name = {
+            field.get("field_name"): field
+            for field in fields
+            if isinstance(field.get("field_name"), str)
+        }
+        renamed_fields = 0
+        created_fields = 0
+        deleted_fields = 0
+        updated_records = 0
+
+        title_field = fields_by_name.get("投递记录")
+        internal_id_field = fields_by_name.get("OfferPilot记录ID")
+        if title_field is None and internal_id_field is not None:
+            self.update_field(
+                app_token=app_token,
+                table_id=table_id,
+                field_id=str(internal_id_field.get("field_id") or ""),
+                field_name="投递记录",
+                field_type=self.TEXT_FIELD_TYPE,
+            )
+            renamed_fields += 1
+            title_field = {**internal_id_field, "field_name": "投递记录"}
+            internal_id_field = None
+
+        if internal_id_field is None:
+            self.create_field(
+                app_token=app_token,
+                table_id=table_id,
+                field_name="OfferPilot记录ID",
+                field_type=self.TEXT_FIELD_TYPE,
+            )
+            created_fields += 1
+
+        page_token: Optional[str] = None
+        while True:
+            page = self.list_records(
+                app_token=app_token,
+                table_id=table_id,
+                page_size=500,
+                page_token=page_token,
+            )
+            for record in page.records:
+                record_fields = record.fields or {}
+                previous_title = _bitable_field_text(record_fields.get("投递记录"))
+                company = _bitable_field_text(record_fields.get("公司"))
+                role = _bitable_field_text(record_fields.get("岗位"))
+                readable_title = _build_bitable_application_title(company, role)
+                updates: Dict[str, Any] = {"投递记录": readable_title}
+                if (
+                    previous_title.startswith("app_")
+                    and _bitable_field_text(record_fields.get("投递状态")) == "待投递/待确认"
+                ):
+                    updates["投递状态"] = "已投递"
+                existing_internal_id = _bitable_field_text(
+                    record_fields.get("OfferPilot记录ID")
+                )
+                if not existing_internal_id and previous_title.startswith("app_"):
+                    updates["OfferPilot记录ID"] = previous_title
+                if record.record_id:
+                    self.update_record(
+                        app_token=app_token,
+                        table_id=table_id,
+                        record_id=record.record_id,
+                        fields=updates,
+                    )
+                    updated_records += 1
+            if not page.has_more or not page.page_token:
+                break
+            page_token = page.page_token
+
+        status_value_field = fields_by_name.get("状态值")
+        if status_value_field is not None:
+            self.delete_field(
+                app_token=app_token,
+                table_id=table_id,
+                field_id=str(status_value_field.get("field_id") or ""),
+            )
+            deleted_fields += 1
+
+        return {
+            "renamed_fields": renamed_fields,
+            "created_fields": created_fields,
+            "deleted_fields": deleted_fields,
+            "updated_records": updated_records,
+        }
+
+    # 列出数据表字段。
+    def list_fields(self, app_token: str, table_id: str) -> List[Dict[str, Any]]:
+        token = self.get_tenant_access_token_sync()
+        fields: List[Dict[str, Any]] = []
+        page_token: Optional[str] = None
+        while True:
+            params = {"page_size": "100"}
+            if page_token:
+                params["page_token"] = page_token
+            response_data = self._get_json_sync(
+                path=f"/bitable/v1/apps/{app_token}/tables/{table_id}/fields",
+                headers={"Authorization": f"Bearer {token}"},
+                params=params,
+            )
+            self._raise_for_feishu_code(response_data)
+            data = response_data.get("data")
+            items = data.get("items") if isinstance(data, dict) else None
+            fields.extend(item for item in items or [] if isinstance(item, dict))
+            has_more = bool(data.get("has_more")) if isinstance(data, dict) else False
+            next_page_token = data.get("page_token") if isinstance(data, dict) else None
+            if not has_more or not isinstance(next_page_token, str) or not next_page_token:
+                return fields
+            page_token = next_page_token
+
+    # 新增数据表字段。
+    def create_field(
+        self,
+        app_token: str,
+        table_id: str,
+        field_name: str,
+        field_type: int,
+    ) -> Dict[str, Any]:
+        token = self.get_tenant_access_token_sync()
+        response_data = self._post_json_sync(
+            path=f"/bitable/v1/apps/{app_token}/tables/{table_id}/fields",
+            payload={"field_name": field_name, "type": field_type},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self._raise_for_feishu_code(response_data)
+        return response_data
+
+    # 更新数据表字段名称或类型。
+    def update_field(
+        self,
+        app_token: str,
+        table_id: str,
+        field_id: str,
+        field_name: str,
+        field_type: int,
+    ) -> Dict[str, Any]:
+        if not field_id:
+            raise FeishuRequestError("Feishu bitable field id is missing.")
+        token = self.get_tenant_access_token_sync()
+        response_data = self._put_json_sync(
+            path=f"/bitable/v1/apps/{app_token}/tables/{table_id}/fields/{field_id}",
+            payload={"field_name": field_name, "type": field_type},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self._raise_for_feishu_code(response_data)
+        return response_data
+
+    # 删除不再需要展示的数据表字段。
+    def delete_field(
+        self,
+        app_token: str,
+        table_id: str,
+        field_id: str,
+    ) -> Dict[str, Any]:
+        if not field_id:
+            raise FeishuRequestError("Feishu bitable field id is missing.")
+        token = self.get_tenant_access_token_sync()
+        response_data = self._delete_json_sync(
+            path=f"/bitable/v1/apps/{app_token}/tables/{table_id}/fields/{field_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self._raise_for_feishu_code(response_data)
+        return response_data
 
     # 在飞书多维表格中创建记录。
     def create_record(
@@ -1302,6 +1478,28 @@ def _extract_bitable_app_token(response_data: Dict[str, Any]) -> Optional[str]:
         if isinstance(data.get("app_token"), str):
             return data["app_token"]
     return None
+
+
+# 将多维表格文本字段响应转换为普通字符串。
+def _bitable_field_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "".join(_bitable_field_text(item) for item in value).strip()
+    if isinstance(value, dict):
+        for key in ("text", "name", "value"):
+            if key in value:
+                return _bitable_field_text(value[key])
+    return str(value).strip()
+
+
+# 构造投递记录的用户可读主标题。
+def _build_bitable_application_title(company: str, role: str) -> str:
+    if company and role:
+        return f"{company}｜{role}"
+    return company or role or "未命名投递"
 
 
 # 从输入数据中提取 bitable table id。

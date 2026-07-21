@@ -211,7 +211,7 @@ def test_orchestrator_confirms_application_update_and_records_schedule() -> None
     )
     assert first.action == AgentActionName.UPDATE_APPLICATION
     assert first.need_confirmation is True
-    assert repository.applications[0].status.value == "planned"
+    assert repository.applications[0].status.value == "submitted"
 
     second = asyncio.run(
         orchestrator.handle_message(
@@ -264,7 +264,7 @@ def test_orchestrator_asks_for_specific_interview_time_before_update() -> None:
     assert result.need_confirmation is False
     assert result.missing_slots == ["interview_time"]
     assert "具体面试时间" in result.reply
-    assert repository.applications[0].status.value == "planned"
+    assert repository.applications[0].status.value == "submitted"
     assert repository.interview_schedules == []
 
 
@@ -919,7 +919,7 @@ def test_orchestrator_requires_candidate_selection_before_updating_application()
     assert executed.tool_result.success is True
     assert repository.list_applications()[0].status.value == "rejected"
     assert repository.list_applications()[1].id == second_application.id
-    assert repository.list_applications()[1].status.value == "planned"
+    assert repository.list_applications()[1].status.value == "submitted"
 
 
 def test_orchestrator_reschedules_and_cancels_interview_with_rule_planner() -> None:

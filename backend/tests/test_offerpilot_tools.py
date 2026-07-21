@@ -169,16 +169,18 @@ def test_offerpilot_tools_syncs_created_application_to_bitable() -> None:
     ]
     assert bitable_service.created_records[0]["app_token"] == "bascn_offerpilot"
     assert bitable_service.created_records[0]["table_id"] == "tbl_applications"
+    assert bitable_service.created_records[0]["fields"]["投递记录"] == "腾讯｜AI 应用开发"
     assert bitable_service.created_records[0]["fields"]["OfferPilot记录ID"] == "app_1"
     assert bitable_service.created_records[0]["fields"]["公司"] == "腾讯"
     assert bitable_service.created_records[0]["fields"]["岗位"] == "AI 应用开发"
-    assert bitable_service.created_records[0]["fields"]["投递状态"] == "待投递/待确认"
+    assert bitable_service.created_records[0]["fields"]["投递状态"] == "已投递"
+    assert "状态值" not in bitable_service.created_records[0]["fields"]
     assert bitable_service.created_records[0]["fields"]["优先级"] == "高"
     assert bitable_service.created_records[0]["fields"]["来源"] == "飞书助手"
-    assert bitable_service.created_records[0]["fields"]["下一步"] == "确认投递信息，补充投递渠道或 JD 关键词"
+    assert bitable_service.created_records[0]["fields"]["下一步"] == "等待反馈，超过 7 天可跟进"
     assert repository.get_runtime_setting("feishu.offerpilot_bitable_app_token") == "bascn_offerpilot"
     assert repository.get_runtime_setting("feishu.offerpilot_bitable_table_id") == "tbl_applications"
-    assert repository.get_runtime_setting("feishu.offerpilot_bitable_schema_version") == "v2"
+    assert repository.get_runtime_setting("feishu.offerpilot_bitable_schema_version") == "v3"
     assert repository.get_runtime_setting("feishu.offerpilot_bitable_record_id.tbl_applications.app_1") == "rec_app_1"
     assert repository.get_runtime_setting("feishu.offerpilot_bitable_collaborator.bascn_offerpilot.ou_test") == "ou_test"
     assert bitable_service.collaborator_calls == [
@@ -306,11 +308,11 @@ def test_offerpilot_tools_updates_existing_bitable_record_for_application_progre
             "table_id": "tbl_applications",
             "record_id": "rec_app_1",
             "fields": {
+                "投递记录": "腾讯｜AI 应用开发",
                 "OfferPilot记录ID": "app_1",
                 "公司": "腾讯",
                 "岗位": "AI 应用开发",
                 "投递状态": "一面阶段",
-                "状态值": "interview_1",
                 "优先级": "高",
                 "来源": "飞书助手",
                 "下一步": "准备 一面，时间：后天下午三点",
