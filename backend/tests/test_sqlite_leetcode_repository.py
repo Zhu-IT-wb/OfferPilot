@@ -1,6 +1,10 @@
 from datetime import date
 
-from app.models.leetcode import LeetCodePracticeResult, LeetCodeSubscription
+from app.models.leetcode import (
+    LeetCodeDeliveryType,
+    LeetCodePracticeResult,
+    LeetCodeSubscription,
+)
 from app.repositories.sqlite_leetcode_repository import SQLiteLeetCodeRepository
 from app.services.leetcode_recommendation import LeetCodeRecommendationWorkflow
 
@@ -21,8 +25,8 @@ def test_sqlite_leetcode_state_survives_restart_and_is_owner_isolated(tmp_path) 
     repository.save_subscription(
         LeetCodeSubscription(owner_id="feishu:ou_1", feishu_open_id="ou_1")
     )
-    repository.record_delivery("feishu:ou_1", today, "morning")
-    repository.record_delivery_attempt("feishu:ou_1", today, "evening")
+    repository.record_delivery("feishu:ou_1", today, LeetCodeDeliveryType.MORNING)
+    repository.record_delivery_attempt("feishu:ou_1", today, LeetCodeDeliveryType.EVENING)
 
     reopened = SQLiteLeetCodeRepository(str(database))
 
@@ -33,5 +37,9 @@ def test_sqlite_leetcode_state_survives_restart_and_is_owner_isolated(tmp_path) 
     assert persisted_progress is not None
     assert persisted_progress.next_review_on == feedback.progress.next_review_on
     assert reopened.get_subscription("feishu:ou_1").feishu_open_id == "ou_1"
-    assert reopened.has_delivery("feishu:ou_1", today, "morning") is True
-    assert reopened.get_delivery_attempts("feishu:ou_1", today, "evening") == 1
+    assert reopened.has_delivery(
+        "feishu:ou_1", today, LeetCodeDeliveryType.MORNING
+    ) is True
+    assert reopened.get_delivery_attempts(
+        "feishu:ou_1", today, LeetCodeDeliveryType.EVENING
+    ) == 1

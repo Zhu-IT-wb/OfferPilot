@@ -120,6 +120,7 @@ class FeishuMessageService:
         receive_id: str,
         text: str,
         receive_id_type: str = "open_id",
+        idempotency_key: Optional[str] = None,
     ) -> FeishuMessageResult:
         token = await self.get_tenant_access_token()
         payload = {
@@ -127,6 +128,8 @@ class FeishuMessageService:
             "msg_type": "text",
             "content": json.dumps({"text": text}, ensure_ascii=False),
         }
+        if idempotency_key:
+            payload["uuid"] = idempotency_key
         response_data = await self._post_json(
             path="/im/v1/messages",
             payload=payload,

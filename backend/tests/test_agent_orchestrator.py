@@ -78,7 +78,20 @@ def test_orchestrator_plans_today_tasks_read_action() -> None:
                 slots={},
             )
 
-    orchestrator = AgentOrchestrator(intent_classifier=FakeIntentClassifier())
+    from app.repositories.leetcode_repository import InMemoryLeetCodeRepository
+    from app.services.leetcode_catalog import load_hot100_snapshot
+
+    orchestrator = AgentOrchestrator(
+        intent_classifier=FakeIntentClassifier(),
+        tool_registry=build_offerpilot_tool_registry(
+            InMemoryOfferPilotRepository(),
+            calendar_service=None,
+            bitable_service=None,
+            leetcode_repository=InMemoryLeetCodeRepository(
+                problems=load_hot100_snapshot().problems
+            ),
+        ),
+    )
 
     result = asyncio.run(orchestrator.handle_message("今天任务是什么？"))
 
@@ -962,7 +975,7 @@ def test_orchestrator_reschedules_and_cancels_interview_with_rule_planner() -> N
 def test_scenario_one_application_schedule_reschedule_cancel_end_to_end() -> None:
     class RuleIntentClassifier:
         async def classify(self, message):
-            return IntentClassifier()._classify_by_rules(message)
+            return IntentClassifier().classify_by_rules(message)
 
     class FakeCalendarService:
         calendar_id = "primary"
@@ -1051,9 +1064,9 @@ def test_orchestrator_enables_leetcode_plan_and_records_explicit_feedback(monkey
 
     class RuleIntentClassifier:
         async def classify(self, message):
-            return IntentClassifier()._classify_by_rules(message)
+            return IntentClassifier().classify_by_rules(message)
 
-    monkeypatch.setattr("app.tools.offerpilot_tools._today_in_shanghai", lambda: date(2026, 7, 22))
+    monkeypatch.setattr("app.tools.leetcode_tools.today_in_shanghai", lambda: date(2026, 7, 22))
     leetcode_repository = InMemoryLeetCodeRepository(problems=load_hot100_snapshot().problems)
     orchestrator = AgentOrchestrator(
         intent_classifier=RuleIntentClassifier(),

@@ -87,6 +87,7 @@ def test_feishu_service_sends_text_message(monkeypatch) -> None:
         service.send_text_message(
             receive_id="ou_test",
             text="今天的任务：1. LeetCode 206. 反转链表",
+            idempotency_key="3d0e89f8-0180-52bd-b975-7fd07845af58",
         )
     )
 
@@ -97,6 +98,7 @@ def test_feishu_service_sends_text_message(monkeypatch) -> None:
             "receive_id": "ou_test",
             "msg_type": "text",
             "content": '{"text": "今天的任务：1. LeetCode 206. 反转链表"}',
+            "uuid": "3d0e89f8-0180-52bd-b975-7fd07845af58",
         },
         "headers": {"Authorization": "Bearer tenant_token"},
         "params": {"receive_id_type": "open_id"},

@@ -2,6 +2,7 @@ from datetime import date, datetime, time, timedelta
 from typing import List, Optional
 
 from app.models.leetcode import (
+    LeetCodeAssignment,
     LeetCodeAssignmentType,
     LeetCodeAssignmentStatus,
     LeetCodeDifficulty,
@@ -72,12 +73,30 @@ class LeetCodeRecommendationWorkflow:
                 else LeetCodeAssignmentStatus.POSTPONED
             )
             self.repository.save_assignment(assignment)
-            return LeetCodeFeedback(assignment=assignment, progress=None)
+            progress = self._record_non_attempt_result(
+                assignment=assignment,
+                result=(
+                    LeetCodePracticeResult.SKIPPED
+                    if assignment.status == LeetCodeAssignmentStatus.SKIPPED
+                    else result
+                ),
+                next_review_on=(
+                    None
+                    if assignment.status == LeetCodeAssignmentStatus.SKIPPED
+                    else practiced_on + timedelta(days=1)
+                ),
+            )
+            return LeetCodeFeedback(assignment=assignment, progress=progress)
         if result == LeetCodePracticeResult.SKIPPED:
             assignment.result = result
             assignment.status = LeetCodeAssignmentStatus.SKIPPED
             self.repository.save_assignment(assignment)
-            return LeetCodeFeedback(assignment=assignment, progress=None)
+            progress = self._record_non_attempt_result(
+                assignment=assignment,
+                result=result,
+                next_review_on=None,
+            )
+            return LeetCodeFeedback(assignment=assignment, progress=progress)
 
         assignment.result = result
         assignment.status = LeetCodeAssignmentStatus.COMPLETED
@@ -107,6 +126,23 @@ class LeetCodeRecommendationWorkflow:
             progress.next_review_on = practiced_on + timedelta(days=review_days)
         self.repository.save_progress(progress)
         return LeetCodeFeedback(assignment=assignment, progress=progress)
+
+    def _record_non_attempt_result(
+        self,
+        assignment: LeetCodeAssignment,
+        result: LeetCodePracticeResult,
+        next_review_on: Optional[date],
+    ) -> LeetCodeProgress:
+        progress = self.repository.get_progress(
+            assignment.owner_id, assignment.problem_id
+        ) or LeetCodeProgress(
+            owner_id=assignment.owner_id,
+            problem_id=assignment.problem_id,
+        )
+        progress.last_result = result
+        progress.next_review_on = next_review_on
+        self.repository.save_progress(progress)
+        return progress
 
     def _create_today_assignments(self, owner_id: str, today: date) -> None:
         all_assignments = self.repository.list_assignments(owner_id=owner_id)

@@ -583,10 +583,11 @@ class SQLiteOfferPilotRepository:
         self._execute(
             """
             DELETE FROM tasks
-            WHERE title = ? AND task_type = ? AND priority = ?
+            WHERE id = ? AND title = ? AND task_type = ? AND priority = ?
               AND status IN (?, ?, ?)
             """,
             (
+                "task_1",
                 "LeetCode 206. 反转链表",
                 TaskType.LEETCODE.value,
                 TaskPriority.HIGH.value,

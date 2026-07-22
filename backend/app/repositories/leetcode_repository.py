@@ -6,6 +6,7 @@ from app.models.leetcode import (
     LeetCodeAssignment,
     LeetCodeAssignmentStatus,
     LeetCodeAssignmentType,
+    LeetCodeDeliveryType,
     LeetCodePracticeResult,
     LeetCodeProblem,
     LeetCodeProgress,
@@ -36,10 +37,18 @@ class LeetCodeRepository(Protocol):
     def save_subscription(self, subscription: LeetCodeSubscription) -> None: ...
     def get_subscription(self, owner_id: str) -> Optional[LeetCodeSubscription]: ...
     def list_enabled_subscriptions(self) -> List[LeetCodeSubscription]: ...
-    def has_delivery(self, owner_id: str, delivery_on: date, delivery_type: str) -> bool: ...
-    def record_delivery(self, owner_id: str, delivery_on: date, delivery_type: str) -> None: ...
-    def get_delivery_attempts(self, owner_id: str, delivery_on: date, delivery_type: str) -> int: ...
-    def record_delivery_attempt(self, owner_id: str, delivery_on: date, delivery_type: str) -> None: ...
+    def has_delivery(
+        self, owner_id: str, delivery_on: date, delivery_type: LeetCodeDeliveryType
+    ) -> bool: ...
+    def record_delivery(
+        self, owner_id: str, delivery_on: date, delivery_type: LeetCodeDeliveryType
+    ) -> None: ...
+    def get_delivery_attempts(
+        self, owner_id: str, delivery_on: date, delivery_type: LeetCodeDeliveryType
+    ) -> int: ...
+    def record_delivery_attempt(
+        self, owner_id: str, delivery_on: date, delivery_type: LeetCodeDeliveryType
+    ) -> None: ...
 
 
 @dataclass
@@ -48,8 +57,10 @@ class InMemoryLeetCodeRepository:
     assignments: List[LeetCodeAssignment] = field(default_factory=list)
     progress: Dict[Tuple[str, str], LeetCodeProgress] = field(default_factory=dict)
     subscriptions: Dict[str, LeetCodeSubscription] = field(default_factory=dict)
-    deliveries: set[Tuple[str, date, str]] = field(default_factory=set)
-    delivery_attempts: Dict[Tuple[str, date, str], int] = field(default_factory=dict)
+    deliveries: set[Tuple[str, date, LeetCodeDeliveryType]] = field(default_factory=set)
+    delivery_attempts: Dict[Tuple[str, date, LeetCodeDeliveryType], int] = field(
+        default_factory=dict
+    )
 
     def upsert_problems(self, problems: List[LeetCodeProblem]) -> None:
         incoming_sources = {problem.source for problem in problems}
@@ -123,15 +134,23 @@ class InMemoryLeetCodeRepository:
     def list_enabled_subscriptions(self) -> List[LeetCodeSubscription]:
         return [subscription for subscription in self.subscriptions.values() if subscription.enabled]
 
-    def has_delivery(self, owner_id: str, delivery_on: date, delivery_type: str) -> bool:
+    def has_delivery(
+        self, owner_id: str, delivery_on: date, delivery_type: LeetCodeDeliveryType
+    ) -> bool:
         return (owner_id, delivery_on, delivery_type) in self.deliveries
 
-    def record_delivery(self, owner_id: str, delivery_on: date, delivery_type: str) -> None:
+    def record_delivery(
+        self, owner_id: str, delivery_on: date, delivery_type: LeetCodeDeliveryType
+    ) -> None:
         self.deliveries.add((owner_id, delivery_on, delivery_type))
 
-    def get_delivery_attempts(self, owner_id: str, delivery_on: date, delivery_type: str) -> int:
+    def get_delivery_attempts(
+        self, owner_id: str, delivery_on: date, delivery_type: LeetCodeDeliveryType
+    ) -> int:
         return self.delivery_attempts.get((owner_id, delivery_on, delivery_type), 0)
 
-    def record_delivery_attempt(self, owner_id: str, delivery_on: date, delivery_type: str) -> None:
+    def record_delivery_attempt(
+        self, owner_id: str, delivery_on: date, delivery_type: LeetCodeDeliveryType
+    ) -> None:
         key = (owner_id, delivery_on, delivery_type)
         self.delivery_attempts[key] = self.delivery_attempts.get(key, 0) + 1

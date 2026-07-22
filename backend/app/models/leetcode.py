@@ -32,6 +32,11 @@ class LeetCodePracticeResult(str, Enum):
     SKIPPED = "skipped"
 
 
+class LeetCodeDeliveryType(str, Enum):
+    MORNING = "morning"
+    EVENING = "evening"
+
+
 class LeetCodeMasteryStatus(str, Enum):
     LEARNING = "learning"
     REVIEWING = "reviewing"

@@ -9,6 +9,7 @@ from app.models.leetcode import (
     LeetCodeAssignment,
     LeetCodeAssignmentStatus,
     LeetCodeAssignmentType,
+    LeetCodeDeliveryType,
     LeetCodeDifficulty,
     LeetCodePracticeResult,
     LeetCodeProblem,
@@ -269,37 +270,45 @@ class SQLiteLeetCodeRepository:
         )
         return [self._subscription_from_row(row) for row in rows]
 
-    def has_delivery(self, owner_id: str, delivery_on: date, delivery_type: str) -> bool:
+    def has_delivery(
+        self, owner_id: str, delivery_on: date, delivery_type: LeetCodeDeliveryType
+    ) -> bool:
         rows = self._fetch_all(
             """
             SELECT 1 FROM leetcode_deliveries
             WHERE owner_id = ? AND delivery_on = ? AND delivery_type = ?
             """,
-            (owner_id, delivery_on.isoformat(), delivery_type),
+            (owner_id, delivery_on.isoformat(), delivery_type.value),
         )
         return bool(rows)
 
-    def record_delivery(self, owner_id: str, delivery_on: date, delivery_type: str) -> None:
+    def record_delivery(
+        self, owner_id: str, delivery_on: date, delivery_type: LeetCodeDeliveryType
+    ) -> None:
         self._execute(
             """
             INSERT OR IGNORE INTO leetcode_deliveries (
                 owner_id, delivery_on, delivery_type, delivered_at
             ) VALUES (?, ?, ?, ?)
             """,
-            (owner_id, delivery_on.isoformat(), delivery_type, datetime.now().isoformat()),
+            (owner_id, delivery_on.isoformat(), delivery_type.value, datetime.now().isoformat()),
         )
 
-    def get_delivery_attempts(self, owner_id: str, delivery_on: date, delivery_type: str) -> int:
+    def get_delivery_attempts(
+        self, owner_id: str, delivery_on: date, delivery_type: LeetCodeDeliveryType
+    ) -> int:
         rows = self._fetch_all(
             """
             SELECT attempt_count FROM leetcode_delivery_attempts
             WHERE owner_id = ? AND delivery_on = ? AND delivery_type = ?
             """,
-            (owner_id, delivery_on.isoformat(), delivery_type),
+            (owner_id, delivery_on.isoformat(), delivery_type.value),
         )
         return int(rows[0]["attempt_count"]) if rows else 0
 
-    def record_delivery_attempt(self, owner_id: str, delivery_on: date, delivery_type: str) -> None:
+    def record_delivery_attempt(
+        self, owner_id: str, delivery_on: date, delivery_type: LeetCodeDeliveryType
+    ) -> None:
         self._execute(
             """
             INSERT INTO leetcode_delivery_attempts (
@@ -309,7 +318,7 @@ class SQLiteLeetCodeRepository:
                 attempt_count = leetcode_delivery_attempts.attempt_count + 1,
                 updated_at = excluded.updated_at
             """,
-            (owner_id, delivery_on.isoformat(), delivery_type, datetime.now().isoformat()),
+            (owner_id, delivery_on.isoformat(), delivery_type.value, datetime.now().isoformat()),
         )
 
     def _initialize(self) -> None:

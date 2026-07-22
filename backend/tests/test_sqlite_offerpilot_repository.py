@@ -20,15 +20,17 @@ def test_sqlite_repository_seeds_default_tasks(tmp_path) -> None:
 
 def test_sqlite_repository_removes_only_unfinished_legacy_leetcode_sample(tmp_path) -> None:
     db_path = tmp_path / "offerpilot.db"
-    repository = SQLiteOfferPilotRepository(str(db_path))
+    SQLiteOfferPilotRepository(str(db_path))
     with sqlite3.connect(db_path) as connection:
+        connection.execute("DELETE FROM tasks WHERE id = ?", ("task_1",))
         connection.executemany(
             """
             INSERT INTO tasks (id, owner_id, title, task_type, status, priority)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
-                ("legacy_pending", "user_1", "LeetCode 206. 反转链表", "leetcode", "pending", "high"),
+                ("task_1", "local_user", "LeetCode 206. 反转链表", "leetcode", "pending", "high"),
+                ("user_created", "user_1", "LeetCode 206. 反转链表", "leetcode", "pending", "high"),
                 ("legacy_passed", "user_1", "LeetCode 206. 反转链表", "leetcode", "passed", "high"),
             ],
         )
@@ -41,7 +43,7 @@ def test_sqlite_repository_removes_only_unfinished_legacy_leetcode_sample(tmp_pa
             "SELECT id FROM tasks WHERE owner_id = ? ORDER BY id",
             ("user_1",),
         ).fetchall()
-    assert rows == [("legacy_passed",)]
+    assert rows == [("legacy_passed",), ("user_created",)]
 
 
 def test_sqlite_repository_persists_runtime_setting(tmp_path) -> None:

@@ -1,11 +1,16 @@
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import List, Optional
 from zoneinfo import ZoneInfo
 
-from app.models.leetcode import LeetCodeAssignmentStatus, LeetCodeRecommendation
+from app.models.leetcode import (
+    LeetCodeAssignmentStatus,
+    LeetCodeDeliveryType,
+    LeetCodeRecommendation,
+)
 from app.repositories.leetcode_repository import LeetCodeRepository
 from app.services.feishu_service import (
     FeishuConfigurationError,
@@ -83,29 +88,35 @@ class LeetCodePushService:
 
             if (
                 current_time >= subscription.morning_time
-                and not self.repository.has_delivery(subscription.owner_id, today, "morning")
+                and not self.repository.has_delivery(
+                    subscription.owner_id, today, LeetCodeDeliveryType.MORNING
+                )
                 and self.repository.get_delivery_attempts(
-                    subscription.owner_id, today, "morning"
+                    subscription.owner_id, today, LeetCodeDeliveryType.MORNING
                 ) < self.max_attempts
             ):
                 sent = await self._send_with_retry(
                     owner_id=subscription.owner_id,
                     delivery_on=today,
-                    delivery_type="morning",
+                    delivery_type=LeetCodeDeliveryType.MORNING,
                     receive_id=subscription.feishu_open_id,
                     text=format_leetcode_recommendations(recommendations),
                 )
                 if sent:
-                    self.repository.record_delivery(subscription.owner_id, today, "morning")
+                    self.repository.record_delivery(
+                        subscription.owner_id, today, LeetCodeDeliveryType.MORNING
+                    )
                     morning_sent += 1
                 else:
                     failed += 1
 
             if (
                 current_time >= subscription.evening_time
-                and not self.repository.has_delivery(subscription.owner_id, today, "evening")
+                and not self.repository.has_delivery(
+                    subscription.owner_id, today, LeetCodeDeliveryType.EVENING
+                )
                 and self.repository.get_delivery_attempts(
-                    subscription.owner_id, today, "evening"
+                    subscription.owner_id, today, LeetCodeDeliveryType.EVENING
                 ) < self.max_attempts
             ):
                 pending = [
@@ -114,12 +125,14 @@ class LeetCodePushService:
                     if item.assignment.status == LeetCodeAssignmentStatus.PENDING
                 ]
                 if not pending:
-                    self.repository.record_delivery(subscription.owner_id, today, "evening")
+                    self.repository.record_delivery(
+                        subscription.owner_id, today, LeetCodeDeliveryType.EVENING
+                    )
                     continue
                 sent = await self._send_with_retry(
                     owner_id=subscription.owner_id,
                     delivery_on=today,
-                    delivery_type="evening",
+                    delivery_type=LeetCodeDeliveryType.EVENING,
                     receive_id=subscription.feishu_open_id,
                     text=format_leetcode_feedback_reminder(recommendations),
                 )
@@ -127,7 +140,9 @@ class LeetCodePushService:
                     for item in pending:
                         item.assignment.feedback_reminded_at = local_now
                         self.repository.save_assignment(item.assignment)
-                    self.repository.record_delivery(subscription.owner_id, today, "evening")
+                    self.repository.record_delivery(
+                        subscription.owner_id, today, LeetCodeDeliveryType.EVENING
+                    )
                     evening_sent += 1
                 else:
                     failed += 1
@@ -141,7 +156,7 @@ class LeetCodePushService:
         self,
         owner_id: str,
         delivery_on: date,
-        delivery_type: str,
+        delivery_type: LeetCodeDeliveryType,
         receive_id: str,
         text: str,
     ) -> bool:
@@ -149,9 +164,14 @@ class LeetCodePushService:
             owner_id, delivery_on, delivery_type
         )
         remaining_attempts = self.max_attempts - previous_attempts
+        idempotency_key = _delivery_idempotency_key(owner_id, delivery_on, delivery_type)
         for attempt in range(remaining_attempts):
             try:
-                await self.message_service.send_text_message(receive_id=receive_id, text=text)
+                await self.message_service.send_text_message(
+                    receive_id=receive_id,
+                    text=text,
+                    idempotency_key=idempotency_key,
+                )
                 return True
             except (FeishuConfigurationError, FeishuRequestError) as exc:
                 self.repository.record_delivery_attempt(owner_id, delivery_on, delivery_type)
@@ -162,3 +182,14 @@ class LeetCodePushService:
                     exc,
                 )
         return False
+
+
+def _delivery_idempotency_key(
+    owner_id: str,
+    delivery_on: date,
+    delivery_type: LeetCodeDeliveryType,
+) -> str:
+    source = (
+        f"offerpilot://leetcode/{owner_id}/{delivery_on.isoformat()}/{delivery_type.value}"
+    )
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, source))

@@ -13,6 +13,7 @@ from app.agents.conversation import (
 )
 from app.agents.general_responder import GeneralResponder
 from app.agents.intent_classifier import IntentClassifier
+from app.agents import leetcode_language
 from app.agents.message_router import MessageRouter, MessageRoute, MessageRouteName
 from app.agents.planner import AgentPlanner, AgentPlannerContext
 from app.schemas.agent import AgentActionName, AgentResponse
@@ -824,6 +825,16 @@ class AgentOrchestrator:
             round_match = re.search(r"(笔试|一面|二面|三面|hr\s*面|HR\s*面)", text, flags=re.IGNORECASE)
             if round_match:
                 updates["round"] = round_match.group(1)
+
+        if "problem_index" in missing_slots:
+            problem_index = leetcode_language.extract_problem_index(text)
+            if problem_index is not None:
+                updates["problem_index"] = problem_index
+
+        if "result" in missing_slots:
+            result = leetcode_language.extract_result(text)
+            if result is not None:
+                updates["result"] = result
 
         return {key: value for key, value in updates.items() if value}
 

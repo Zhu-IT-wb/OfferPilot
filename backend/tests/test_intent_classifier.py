@@ -173,7 +173,7 @@ def test_intent_classifier_rule_extracts_application_update_schedule() -> None:
 def test_intent_classifier_rule_extracts_interview_reschedule() -> None:
     classifier = IntentClassifier()
 
-    result = classifier._classify_by_rules("美团一面改到后天下午四点")
+    result = classifier.classify_by_rules("美团一面改到后天下午四点")
 
     assert result.intent == IntentName.UPDATE_APPLICATION
     assert result.slots["update_type"] == "reschedule_interview"
@@ -185,9 +185,9 @@ def test_intent_classifier_rule_extracts_interview_reschedule() -> None:
 def test_intent_classifier_rule_extracts_leetcode_plan_and_feedback() -> None:
     classifier = IntentClassifier()
 
-    enabled = classifier._classify_by_rules("开启每日刷题")
-    today = classifier._classify_by_rules("今天刷什么")
-    feedback = classifier._classify_by_rules("第1题看题解完成")
+    enabled = classifier.classify_by_rules("开启每日刷题")
+    today = classifier.classify_by_rules("今天刷什么")
+    feedback = classifier.classify_by_rules("第1题看题解完成")
 
     assert enabled.intent == IntentName.ENABLE_LEETCODE_PLAN
     assert today.intent == IntentName.GET_TODAY_LEETCODE
@@ -198,7 +198,7 @@ def test_intent_classifier_rule_extracts_leetcode_plan_and_feedback() -> None:
 def test_intent_classifier_rule_extracts_interview_cancellation() -> None:
     classifier = IntentClassifier()
 
-    result = classifier._classify_by_rules("取消美团一面")
+    result = classifier.classify_by_rules("取消美团一面")
 
     assert result.intent == IntentName.UPDATE_APPLICATION
     assert result.slots["update_type"] == "cancel_interview"

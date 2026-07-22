@@ -2,6 +2,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from app.agents import leetcode_language
 
 # 枚举消息路由的可选类型。
 class MessageRouteName(str, Enum):
@@ -93,20 +94,7 @@ class MessageRouter:
     def _looks_like_job_action(compact: str) -> bool:
         if compact in {"/today", "today"}:
             return True
-        if any(
-            phrase in compact
-            for phrase in (
-                "开启每日刷题",
-                "关闭每日刷题",
-                "停止每日刷题",
-                "今天刷什么",
-                "今日刷什么",
-                "独立完成",
-                "提示后完成",
-                "看题解",
-                "没做出来",
-            )
-        ):
+        if leetcode_language.looks_like_action(compact):
             return True
         if ("今天" in compact or "今日" in compact) and any(
             word in compact for word in ("任务", "安排", "计划")

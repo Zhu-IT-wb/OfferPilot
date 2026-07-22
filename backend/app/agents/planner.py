@@ -530,7 +530,7 @@ AgentPlan JSON 字段：
         context: AgentPlannerContext,
         tool_specs: List[ToolSpec],
     ) -> Optional[AgentPlan]:
-        rule_classification = IntentClassifier()._classify_by_rules(message)
+        rule_classification = IntentClassifier().classify_by_rules(message)
         if rule_classification.intent in {
             IntentName.ENABLE_LEETCODE_PLAN,
             IntentName.DISABLE_LEETCODE_PLAN,

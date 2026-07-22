@@ -7,7 +7,7 @@ from app.tools.offerpilot_tools import build_offerpilot_tool_registry
 
 
 def test_leetcode_tools_enable_list_and_record_explicit_feedback(monkeypatch) -> None:
-    monkeypatch.setattr("app.tools.offerpilot_tools._today_in_shanghai", lambda: date(2026, 7, 22))
+    monkeypatch.setattr("app.tools.leetcode_tools.today_in_shanghai", lambda: date(2026, 7, 22))
     leetcode_repository = InMemoryLeetCodeRepository(problems=load_hot100_snapshot().problems)
     registry = build_offerpilot_tool_registry(
         InMemoryOfferPilotRepository(),
@@ -30,6 +30,7 @@ def test_leetcode_tools_enable_list_and_record_explicit_feedback(monkeypatch) ->
             "result": "with_solution",
         },
     )
+    disabled = registry.run("disable_leetcode_plan", {"owner_id": "feishu:ou_1"})
 
     assert enabled.success is True
     assert len(enabled.data["recommendations"]) == 3
@@ -39,10 +40,15 @@ def test_leetcode_tools_enable_list_and_record_explicit_feedback(monkeypatch) ->
     assert feedback.success is True
     assert feedback.data["assignment"]["result"] == "with_solution"
     assert feedback.data["progress"]["next_review_on"] == "2026-07-23"
+    assert disabled.success is True
+    assert leetcode_repository.get_subscription("feishu:ou_1").enabled is False
+    assert leetcode_repository.get_progress(
+        "feishu:ou_1", feedback.data["problem"]["id"]
+    ) is not None
 
 
 def test_leetcode_feedback_requires_a_problem_when_multiple_are_pending(monkeypatch) -> None:
-    monkeypatch.setattr("app.tools.offerpilot_tools._today_in_shanghai", lambda: date(2026, 7, 22))
+    monkeypatch.setattr("app.tools.leetcode_tools.today_in_shanghai", lambda: date(2026, 7, 22))
     leetcode_repository = InMemoryLeetCodeRepository(problems=load_hot100_snapshot().problems)
     registry = build_offerpilot_tool_registry(
         InMemoryOfferPilotRepository(),
@@ -63,7 +69,7 @@ def test_leetcode_feedback_requires_a_problem_when_multiple_are_pending(monkeypa
 
 
 def test_today_tasks_combines_leetcode_and_other_job_search_tasks(monkeypatch) -> None:
-    monkeypatch.setattr("app.tools.offerpilot_tools._today_in_shanghai", lambda: date(2026, 7, 22))
+    monkeypatch.setattr("app.tools.leetcode_tools.today_in_shanghai", lambda: date(2026, 7, 22))
     leetcode_repository = InMemoryLeetCodeRepository(problems=load_hot100_snapshot().problems)
     registry = build_offerpilot_tool_registry(
         InMemoryOfferPilotRepository(),

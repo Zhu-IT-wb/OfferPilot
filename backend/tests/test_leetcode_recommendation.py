@@ -140,11 +140,15 @@ def test_feedback_results_update_assignment_and_review_schedule() -> None:
         assert feedback.progress.next_review_on == today + timedelta(days=review_days)
 
 
-def test_postponed_and_skipped_results_do_not_mark_problem_as_practiced() -> None:
+def test_postponed_and_skipped_results_update_progress_without_counting_an_attempt() -> None:
     today = date(2026, 7, 22)
-    for result, expected_status in [
-        (LeetCodePracticeResult.POSTPONED, LeetCodeAssignmentStatus.POSTPONED),
-        (LeetCodePracticeResult.SKIPPED, LeetCodeAssignmentStatus.SKIPPED),
+    for result, expected_status, expected_review_on in [
+        (
+            LeetCodePracticeResult.POSTPONED,
+            LeetCodeAssignmentStatus.POSTPONED,
+            today + timedelta(days=1),
+        ),
+        (LeetCodePracticeResult.SKIPPED, LeetCodeAssignmentStatus.SKIPPED, None),
     ]:
         repository = InMemoryLeetCodeRepository(
             problems=[_problem("1", "Two Sum", LeetCodeDifficulty.EASY, 0, 1)]
@@ -155,8 +159,10 @@ def test_postponed_and_skipped_results_do_not_mark_problem_as_practiced() -> Non
         feedback = workflow.record_result("owner", assignment.id, result, today)
 
         assert feedback.assignment.status == expected_status
-        assert feedback.progress is None
-        assert repository.get_progress("owner", assignment.problem_id) is None
+        assert feedback.progress is not None
+        assert feedback.progress.attempt_count == 0
+        assert feedback.progress.last_result == result
+        assert feedback.progress.next_review_on == expected_review_on
 
 
 def test_three_consecutive_independent_results_mark_problem_mastered() -> None:
