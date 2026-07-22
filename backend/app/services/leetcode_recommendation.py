@@ -158,12 +158,16 @@ class LeetCodeRecommendationWorkflow:
             ],
             key=lambda assignment: (assignment.assigned_on, assignment.id),
         )
+        prior_pending_problem_ids = {
+            assignment.problem_id for assignment in prior_pending
+        }
         review_candidates = sorted(
             [
                 progress
                 for progress in self.repository.list_progress(owner_id)
                 if progress.mastery_status != LeetCodeMasteryStatus.MASTERED
                 and progress.next_review_on is not None
+                and progress.problem_id not in prior_pending_problem_ids
             ],
             key=lambda progress: (
                 progress.next_review_on or today,
@@ -188,8 +192,9 @@ class LeetCodeRecommendationWorkflow:
         problem_by_id = {problem.id: problem for problem in problems}
         selected_problem_ids = set()
         new_slot_count = 2 if due_progress else 3
+        carryover_slot_count = min(2, new_slot_count)
 
-        for previous in prior_pending[:new_slot_count]:
+        for previous in prior_pending[:carryover_slot_count]:
             previous.status = LeetCodeAssignmentStatus.SKIPPED
             self.repository.save_assignment(previous)
             carried = self.repository.create_assignment(

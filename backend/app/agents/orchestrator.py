@@ -830,6 +830,10 @@ class AgentOrchestrator:
             problem_index = leetcode_language.extract_problem_index(text)
             if problem_index is not None:
                 updates["problem_index"] = problem_index
+            else:
+                problem_title = leetcode_language.extract_problem_title(text)
+                if problem_title:
+                    updates["problem_title"] = problem_title
 
         if "result" in missing_slots:
             result = leetcode_language.extract_result(text)

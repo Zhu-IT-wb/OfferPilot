@@ -195,6 +195,29 @@ def test_intent_classifier_rule_extracts_leetcode_plan_and_feedback() -> None:
     assert feedback.slots == {"problem_index": 1, "result": "with_solution"}
 
 
+def test_intent_classifier_rule_recognizes_hot100_title_feedback() -> None:
+    classifier = IntentClassifier()
+
+    independent = classifier.classify_by_rules("两数之和独立完成")
+    failed = classifier.classify_by_rules("移动零没做出来")
+    postponed = classifier.classify_by_rules("反转链表延期")
+
+    assert independent.intent == IntentName.RECORD_LEETCODE_RESULT
+    assert independent.slots == {"problem_title": "两数之和", "result": "independent"}
+    assert failed.intent == IntentName.RECORD_LEETCODE_RESULT
+    assert failed.slots == {"problem_title": "移动零", "result": "failed"}
+    assert postponed.intent == IntentName.RECORD_LEETCODE_RESULT
+    assert postponed.slots == {"problem_title": "反转链表", "result": "postponed"}
+
+
+def test_intent_classifier_does_not_treat_an_ordinary_delayed_task_as_leetcode() -> None:
+    classifier = IntentClassifier()
+
+    result = classifier.classify_by_rules("简历修改延期")
+
+    assert result.intent == IntentName.POSTPONE_TASK
+
+
 def test_intent_classifier_rule_extracts_interview_cancellation() -> None:
     classifier = IntentClassifier()
 

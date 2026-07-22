@@ -223,6 +223,64 @@ def test_three_postponements_auto_skip_and_release_next_day_slot() -> None:
     assert carried_problem_id not in {item.problem.id for item in following}
 
 
+def test_postponed_problem_is_carryover_not_a_duplicate_due_review() -> None:
+    repository = InMemoryLeetCodeRepository(
+        problems=[
+            _problem(str(index), f"Problem {index}", LeetCodeDifficulty.EASY, 0, index)
+            for index in range(1, 7)
+        ]
+    )
+    workflow = LeetCodeRecommendationWorkflow(repository)
+    first_day = date(2026, 7, 22)
+    first = workflow.get_today("owner", first_day)
+    workflow.record_result(
+        "owner",
+        first[0].assignment.id,
+        LeetCodePracticeResult.POSTPONED,
+        first_day,
+    )
+    for recommendation in first[1:]:
+        workflow.record_result(
+            "owner",
+            recommendation.assignment.id,
+            LeetCodePracticeResult.SKIPPED,
+            first_day,
+        )
+
+    recommendations = workflow.get_today("owner", first_day + timedelta(days=1))
+
+    assert len(recommendations) == 3
+    assert [item.assignment.assignment_type for item in recommendations].count(
+        LeetCodeAssignmentType.CARRYOVER
+    ) == 1
+    assert [item.assignment.assignment_type for item in recommendations].count(
+        LeetCodeAssignmentType.NEW
+    ) == 2
+    assert len({item.problem.id for item in recommendations}) == 3
+
+
+def test_carryover_uses_at_most_two_slots_when_no_review_is_due() -> None:
+    repository = InMemoryLeetCodeRepository(
+        problems=[
+            _problem(str(index), f"Problem {index}", LeetCodeDifficulty.EASY, 0, index)
+            for index in range(1, 8)
+        ]
+    )
+    workflow = LeetCodeRecommendationWorkflow(repository)
+    first_day = date(2026, 7, 22)
+    workflow.get_today("owner", first_day)
+
+    recommendations = workflow.get_today("owner", first_day + timedelta(days=1))
+
+    assert len(recommendations) == 3
+    assert [item.assignment.assignment_type for item in recommendations].count(
+        LeetCodeAssignmentType.CARRYOVER
+    ) == 2
+    assert [item.assignment.assignment_type for item in recommendations].count(
+        LeetCodeAssignmentType.NEW
+    ) == 1
+
+
 def test_hot100_exhaustion_returns_fewer_than_three_without_duplicates() -> None:
     repository = InMemoryLeetCodeRepository(
         problems=[

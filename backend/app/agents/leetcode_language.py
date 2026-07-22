@@ -1,4 +1,5 @@
 import re
+from functools import lru_cache
 from typing import Any, Dict, Optional
 
 
@@ -41,9 +42,10 @@ def is_today_query(compact: str) -> bool:
 
 
 def is_feedback(compact: str) -> bool:
+    normalized = _normalize_title(compact)
     has_locator = extract_problem_index(compact) is not None or any(
         word in compact for word in ("leetcode", "力扣", "lru")
-    )
+    ) or any(title in normalized for title in hot100_problem_titles())
     has_result = extract_result(compact) is not None or any(
         word in compact for word in AMBIGUOUS_COMPLETION_PHRASES
     )
@@ -54,13 +56,7 @@ def looks_like_action(compact: str) -> bool:
     if is_enable_command(compact) or is_disable_command(compact) or is_today_query(compact):
         return True
     return any(
-        phrase in compact
-        for phrase in (
-            "独立完成",
-            "提示后完成",
-            "看题解",
-            "没做出来",
-        )
+        phrase in compact for phrases, _ in FEEDBACK_RESULT_PATTERNS for phrase in phrases
     )
 
 
@@ -74,15 +70,21 @@ def extract_feedback_slots(text: str) -> Dict[str, Any]:
     if result is not None:
         slots["result"] = result
     if problem_index is None:
-        title = re.split(
-            r"独立完成|提示后完成|提示完成|看题解(?:后)?完成?|没做出来|未完成|延期|跳过",
-            text,
-            maxsplit=1,
-        )[0].strip(" ，,。；;")
-        title = re.sub(r"^(?:leetcode|力扣)", "", title, flags=re.IGNORECASE).strip()
+        title = extract_problem_title(text)
         if title:
             slots["problem_title"] = title
     return slots
+
+
+def extract_problem_title(text: str) -> str:
+    title = re.split(
+        r"独立完成|提示后完成|提示完成|看题解(?:后)?完成?|没做出来|未完成|失败|延期|明天再做|跳过",
+        text,
+        maxsplit=1,
+    )[0].strip(" ，,。；;")
+    title = re.sub(r"^(?:leetcode|力扣)", "", title, flags=re.IGNORECASE).strip()
+    title = re.sub(r"^(?:题目(?:名称)?|名称)[是为:：]?", "", title).strip()
+    return title
 
 
 def extract_problem_index(text: str) -> Optional[int]:
@@ -102,3 +104,20 @@ def extract_result(text: str) -> Optional[str]:
         if any(word in compact for word in words):
             return result
     return None
+
+
+@lru_cache(maxsize=1)
+def hot100_problem_titles() -> tuple[str, ...]:
+    from app.services.leetcode_catalog import load_hot100_snapshot
+
+    titles = {
+        normalized
+        for problem in load_hot100_snapshot().problems
+        for title in (problem.title_zh, problem.title_en)
+        if (normalized := _normalize_title(title))
+    }
+    return tuple(sorted(titles, key=len, reverse=True))
+
+
+def _normalize_title(value: str) -> str:
+    return re.sub(r"[\s\-—_·:：，,。()（）]+", "", value).lower()
