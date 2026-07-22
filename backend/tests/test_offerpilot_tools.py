@@ -725,7 +725,7 @@ def test_offerpilot_tools_complete_seed_task() -> None:
 
     result = registry.run(
         AgentActionName.COMPLETE_TASK.value,
-        {"task_title": "反转链表"},
+        {"task_title": "HashMap"},
     )
 
     assert result.success is True

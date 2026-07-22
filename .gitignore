@@ -23,4 +23,6 @@ backend/data/
 *.sqlite3
 docs/
 data/
+!backend/app/data/
+!backend/app/data/leetcode_hot100.json
 CONTEXT.md

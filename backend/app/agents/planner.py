@@ -52,6 +52,46 @@ class RuleBasedAgentPlanner:
                 reason="read_today_tasks",
             )
 
+        if intent == IntentName.ENABLE_LEETCODE_PLAN:
+            return self._plan(
+                classification=classification,
+                action=AgentActionName.ENABLE_LEETCODE_PLAN,
+                reply="正在开启每日 LeetCode 推送。",
+                reason="enable_leetcode_plan",
+            )
+
+        if intent == IntentName.DISABLE_LEETCODE_PLAN:
+            return self._plan(
+                classification=classification,
+                action=AgentActionName.DISABLE_LEETCODE_PLAN,
+                reply="正在关闭每日 LeetCode 推送。",
+                reason="disable_leetcode_plan",
+            )
+
+        if intent == IntentName.GET_TODAY_LEETCODE:
+            return self._plan(
+                classification=classification,
+                action=AgentActionName.GET_TODAY_LEETCODE,
+                reply="我来读取今天的 LeetCode 推荐。",
+                reason="get_today_leetcode",
+            )
+
+        if intent == IntentName.RECORD_LEETCODE_RESULT:
+            if not slots.get("result"):
+                return self._plan(
+                    classification=classification,
+                    action=AgentActionName.ASK_CLARIFICATION,
+                    reply="请说明结果：独立完成、提示后完成、看题解完成、未完成、延期或跳过。",
+                    missing_slots=["result"],
+                    reason="missing_leetcode_result",
+                )
+            return self._plan(
+                classification=classification,
+                action=AgentActionName.RECORD_LEETCODE_RESULT,
+                reply="正在记录 LeetCode 训练结果。",
+                reason="record_leetcode_result",
+            )
+
         if intent == IntentName.ADD_APPLICATION:
             return self._plan_add_application(classification)
 
@@ -384,6 +424,10 @@ class AgentPlanner:
 
 可选 intent:
 - get_today_tasks
+- enable_leetcode_plan
+- disable_leetcode_plan
+- get_today_leetcode
+- record_leetcode_result
 - complete_task
 - postpone_task
 - add_application
@@ -398,6 +442,10 @@ class AgentPlanner:
 
 可选 action:
 - list_today_tasks
+- enable_leetcode_plan
+- disable_leetcode_plan
+- get_today_leetcode
+- record_leetcode_result
 - create_application
 - query_application
 - update_application
@@ -427,6 +475,8 @@ class AgentPlanner:
 10. 普通问候、你是谁、你能做什么，使用 answer_help，不要进入写操作。
 11. 如果用户追问“先准备哪个/哪个更急/怎么排序”，并且 recent_context.tool_result 里有近期面试列表，使用 answer_help，直接基于最近工具结果给优先级建议，不要追问 tasks_to_prioritize 之类不存在的字段。
 12. 如果需要追问，action 使用 ask_clarification，steps 为空，missing_slots 只能使用后端已定义的槽位，例如 company、role、round、interview_time、task_title、task_type。不要创造新槽位。
+13. “开启每日刷题/关闭每日刷题/今天刷什么”分别使用对应 LeetCode action。
+14. 用户明确回复“第1题独立完成/提示后完成/看题解完成/没做出来/延期/跳过”时，使用 record_leetcode_result，抽取 problem_index 和 result，回复本身就是确认，不再二次确认。
 
 AgentPlan JSON 字段：
 {
@@ -480,6 +530,14 @@ AgentPlan JSON 字段：
         context: AgentPlannerContext,
         tool_specs: List[ToolSpec],
     ) -> Optional[AgentPlan]:
+        rule_classification = IntentClassifier()._classify_by_rules(message)
+        if rule_classification.intent in {
+            IntentName.ENABLE_LEETCODE_PLAN,
+            IntentName.DISABLE_LEETCODE_PLAN,
+            IntentName.GET_TODAY_LEETCODE,
+            IntentName.RECORD_LEETCODE_RESULT,
+        }:
+            return self.rule_planner.plan(rule_classification)
         if not self.llm_planner_enabled:
             return None
         if isinstance(self.llm_service, LLMService) and not self.llm_service.api_key:
@@ -770,6 +828,8 @@ AgentPlan JSON 字段：
     ) -> List[str]:
         if action == AgentActionName.CREATE_APPLICATION:
             return ["company", "role"]
+        if action == AgentActionName.RECORD_LEETCODE_RESULT:
+            return ["result"]
         if action == AgentActionName.UPDATE_APPLICATION:
             required = []
             if not any(slots.get(slot) for slot in ("company", "application_id")):
@@ -816,6 +876,8 @@ AgentPlan JSON 字段：
             }
         if plan.action in {AgentActionName.COMPLETE_TASK, AgentActionName.POSTPONE_TASK}:
             return {"task_title", "task_type"}
+        if plan.action == AgentActionName.RECORD_LEETCODE_RESULT:
+            return {"assignment_id", "problem_index", "problem_title", "result"}
         if plan.action == AgentActionName.CREATE_INTERVIEW_REVIEW:
             return {"company", "round", "topics"}
         return set(self._required_slots_for_action(plan.action, slots, tool_map))
@@ -1051,6 +1113,9 @@ AgentPlan JSON 字段：
                 "interview_time": "具体面试时间（例如明天下午三点）",
                 "task_title": "任务名称",
                 "task_type": "任务类型",
+                "problem_index": "第几题",
+                "problem_title": "题目名称",
+                "result": "做题结果",
             }
             missing = "、".join(labels.get(slot, slot) for slot in missing_slots)
             reply = f"我识别到你想执行这个秋招动作，但还缺少{missing}。请补充后我再继续。"

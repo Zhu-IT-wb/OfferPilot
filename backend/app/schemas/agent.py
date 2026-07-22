@@ -10,6 +10,10 @@ from app.schemas.tool import ToolResult
 # 枚举 AgentActionName 的可选值。
 class AgentActionName(str, Enum):
     LIST_TODAY_TASKS = "list_today_tasks"
+    ENABLE_LEETCODE_PLAN = "enable_leetcode_plan"
+    DISABLE_LEETCODE_PLAN = "disable_leetcode_plan"
+    GET_TODAY_LEETCODE = "get_today_leetcode"
+    RECORD_LEETCODE_RESULT = "record_leetcode_result"
     CREATE_APPLICATION = "create_application"
     QUERY_APPLICATION = "query_application"
     UPDATE_APPLICATION = "update_application"

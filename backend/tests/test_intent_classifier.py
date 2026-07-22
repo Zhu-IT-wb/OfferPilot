@@ -182,6 +182,19 @@ def test_intent_classifier_rule_extracts_interview_reschedule() -> None:
     assert result.slots["interview_time"] == "后天下午四点"
 
 
+def test_intent_classifier_rule_extracts_leetcode_plan_and_feedback() -> None:
+    classifier = IntentClassifier()
+
+    enabled = classifier._classify_by_rules("开启每日刷题")
+    today = classifier._classify_by_rules("今天刷什么")
+    feedback = classifier._classify_by_rules("第1题看题解完成")
+
+    assert enabled.intent == IntentName.ENABLE_LEETCODE_PLAN
+    assert today.intent == IntentName.GET_TODAY_LEETCODE
+    assert feedback.intent == IntentName.RECORD_LEETCODE_RESULT
+    assert feedback.slots == {"problem_index": 1, "result": "with_solution"}
+
+
 def test_intent_classifier_rule_extracts_interview_cancellation() -> None:
     classifier = IntentClassifier()
 

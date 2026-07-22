@@ -1,0 +1,1824 @@
+{
+  "source_url": "https://leetcode.cn/studyplan/top-100-liked/",
+  "source_version": "2026-07-22",
+  "problems": [
+    {
+      "id": "leetcode_1",
+      "frontend_id": "1",
+      "title_zh": "两数之和",
+      "title_en": "Two Sum",
+      "slug": "two-sum",
+      "difficulty": "easy",
+      "topics": [
+        "数组",
+        "哈希表"
+      ],
+      "category": "哈希",
+      "category_order": 0,
+      "problem_order": 1,
+      "url": "https://leetcode.cn/problems/two-sum/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_49",
+      "frontend_id": "49",
+      "title_zh": "字母异位词分组",
+      "title_en": "Group Anagrams",
+      "slug": "group-anagrams",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "哈希表",
+        "字符串",
+        "排序"
+      ],
+      "category": "哈希",
+      "category_order": 0,
+      "problem_order": 2,
+      "url": "https://leetcode.cn/problems/group-anagrams/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_128",
+      "frontend_id": "128",
+      "title_zh": "最长连续序列",
+      "title_en": "Longest Consecutive Sequence",
+      "slug": "longest-consecutive-sequence",
+      "difficulty": "medium",
+      "topics": [
+        "并查集",
+        "数组",
+        "哈希表"
+      ],
+      "category": "哈希",
+      "category_order": 0,
+      "problem_order": 3,
+      "url": "https://leetcode.cn/problems/longest-consecutive-sequence/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_283",
+      "frontend_id": "283",
+      "title_zh": "移动零",
+      "title_en": "Move Zeroes",
+      "slug": "move-zeroes",
+      "difficulty": "easy",
+      "topics": [
+        "数组",
+        "双指针"
+      ],
+      "category": "双指针",
+      "category_order": 1,
+      "problem_order": 4,
+      "url": "https://leetcode.cn/problems/move-zeroes/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_11",
+      "frontend_id": "11",
+      "title_zh": "盛最多水的容器",
+      "title_en": "Container With Most Water",
+      "slug": "container-with-most-water",
+      "difficulty": "medium",
+      "topics": [
+        "贪心",
+        "数组",
+        "双指针"
+      ],
+      "category": "双指针",
+      "category_order": 1,
+      "problem_order": 5,
+      "url": "https://leetcode.cn/problems/container-with-most-water/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_15",
+      "frontend_id": "15",
+      "title_zh": "三数之和",
+      "title_en": "3Sum",
+      "slug": "3sum",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "双指针",
+        "排序"
+      ],
+      "category": "双指针",
+      "category_order": 1,
+      "problem_order": 6,
+      "url": "https://leetcode.cn/problems/3sum/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_42",
+      "frontend_id": "42",
+      "title_zh": "接雨水",
+      "title_en": "Trapping Rain Water",
+      "slug": "trapping-rain-water",
+      "difficulty": "hard",
+      "topics": [
+        "栈",
+        "数组",
+        "双指针",
+        "动态规划",
+        "单调栈"
+      ],
+      "category": "双指针",
+      "category_order": 1,
+      "problem_order": 7,
+      "url": "https://leetcode.cn/problems/trapping-rain-water/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_3",
+      "frontend_id": "3",
+      "title_zh": "无重复字符的最长子串",
+      "title_en": "Longest Substring Without Repeating Characters",
+      "slug": "longest-substring-without-repeating-characters",
+      "difficulty": "medium",
+      "topics": [
+        "哈希表",
+        "字符串",
+        "滑动窗口"
+      ],
+      "category": "滑动窗口",
+      "category_order": 2,
+      "problem_order": 8,
+      "url": "https://leetcode.cn/problems/longest-substring-without-repeating-characters/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_438",
+      "frontend_id": "438",
+      "title_zh": "找到字符串中所有字母异位词",
+      "title_en": "Find All Anagrams in a String",
+      "slug": "find-all-anagrams-in-a-string",
+      "difficulty": "medium",
+      "topics": [
+        "哈希表",
+        "字符串",
+        "滑动窗口"
+      ],
+      "category": "滑动窗口",
+      "category_order": 2,
+      "problem_order": 9,
+      "url": "https://leetcode.cn/problems/find-all-anagrams-in-a-string/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_560",
+      "frontend_id": "560",
+      "title_zh": "和为 K 的子数组",
+      "title_en": "Subarray Sum Equals K",
+      "slug": "subarray-sum-equals-k",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "哈希表",
+        "前缀和"
+      ],
+      "category": "子串",
+      "category_order": 3,
+      "problem_order": 10,
+      "url": "https://leetcode.cn/problems/subarray-sum-equals-k/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_239",
+      "frontend_id": "239",
+      "title_zh": "滑动窗口最大值",
+      "title_en": "Sliding Window Maximum",
+      "slug": "sliding-window-maximum",
+      "difficulty": "hard",
+      "topics": [
+        "队列",
+        "数组",
+        "滑动窗口",
+        "单调队列",
+        "堆（优先队列）"
+      ],
+      "category": "子串",
+      "category_order": 3,
+      "problem_order": 11,
+      "url": "https://leetcode.cn/problems/sliding-window-maximum/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_76",
+      "frontend_id": "76",
+      "title_zh": "最小覆盖子串",
+      "title_en": "Minimum Window Substring",
+      "slug": "minimum-window-substring",
+      "difficulty": "hard",
+      "topics": [
+        "哈希表",
+        "字符串",
+        "滑动窗口"
+      ],
+      "category": "子串",
+      "category_order": 3,
+      "problem_order": 12,
+      "url": "https://leetcode.cn/problems/minimum-window-substring/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_53",
+      "frontend_id": "53",
+      "title_zh": "最大子数组和",
+      "title_en": "Maximum Subarray",
+      "slug": "maximum-subarray",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "分治",
+        "动态规划"
+      ],
+      "category": "普通数组",
+      "category_order": 4,
+      "problem_order": 13,
+      "url": "https://leetcode.cn/problems/maximum-subarray/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_56",
+      "frontend_id": "56",
+      "title_zh": "合并区间",
+      "title_en": "Merge Intervals",
+      "slug": "merge-intervals",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "排序"
+      ],
+      "category": "普通数组",
+      "category_order": 4,
+      "problem_order": 14,
+      "url": "https://leetcode.cn/problems/merge-intervals/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_189",
+      "frontend_id": "189",
+      "title_zh": "轮转数组",
+      "title_en": "Rotate Array",
+      "slug": "rotate-array",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "数学",
+        "双指针"
+      ],
+      "category": "普通数组",
+      "category_order": 4,
+      "problem_order": 15,
+      "url": "https://leetcode.cn/problems/rotate-array/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_238",
+      "frontend_id": "238",
+      "title_zh": "除了自身以外数组的乘积",
+      "title_en": "Product of Array Except Self",
+      "slug": "product-of-array-except-self",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "前缀和"
+      ],
+      "category": "普通数组",
+      "category_order": 4,
+      "problem_order": 16,
+      "url": "https://leetcode.cn/problems/product-of-array-except-self/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_41",
+      "frontend_id": "41",
+      "title_zh": "缺失的第一个正数",
+      "title_en": "First Missing Positive",
+      "slug": "first-missing-positive",
+      "difficulty": "hard",
+      "topics": [
+        "数组",
+        "哈希表"
+      ],
+      "category": "普通数组",
+      "category_order": 4,
+      "problem_order": 17,
+      "url": "https://leetcode.cn/problems/first-missing-positive/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_73",
+      "frontend_id": "73",
+      "title_zh": "矩阵置零",
+      "title_en": "Set Matrix Zeroes",
+      "slug": "set-matrix-zeroes",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "哈希表",
+        "矩阵"
+      ],
+      "category": "矩阵",
+      "category_order": 5,
+      "problem_order": 18,
+      "url": "https://leetcode.cn/problems/set-matrix-zeroes/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_54",
+      "frontend_id": "54",
+      "title_zh": "螺旋矩阵",
+      "title_en": "Spiral Matrix",
+      "slug": "spiral-matrix",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "矩阵",
+        "模拟"
+      ],
+      "category": "矩阵",
+      "category_order": 5,
+      "problem_order": 19,
+      "url": "https://leetcode.cn/problems/spiral-matrix/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_48",
+      "frontend_id": "48",
+      "title_zh": "旋转图像",
+      "title_en": "Rotate Image",
+      "slug": "rotate-image",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "数学",
+        "矩阵"
+      ],
+      "category": "矩阵",
+      "category_order": 5,
+      "problem_order": 20,
+      "url": "https://leetcode.cn/problems/rotate-image/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_240",
+      "frontend_id": "240",
+      "title_zh": "搜索二维矩阵 II",
+      "title_en": "Search a 2D Matrix II",
+      "slug": "search-a-2d-matrix-ii",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "二分查找",
+        "分治",
+        "矩阵"
+      ],
+      "category": "矩阵",
+      "category_order": 5,
+      "problem_order": 21,
+      "url": "https://leetcode.cn/problems/search-a-2d-matrix-ii/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_160",
+      "frontend_id": "160",
+      "title_zh": "相交链表",
+      "title_en": "Intersection of Two Linked Lists",
+      "slug": "intersection-of-two-linked-lists",
+      "difficulty": "easy",
+      "topics": [
+        "哈希表",
+        "链表",
+        "双指针"
+      ],
+      "category": "链表",
+      "category_order": 6,
+      "problem_order": 22,
+      "url": "https://leetcode.cn/problems/intersection-of-two-linked-lists/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_206",
+      "frontend_id": "206",
+      "title_zh": "反转链表",
+      "title_en": "Reverse Linked List",
+      "slug": "reverse-linked-list",
+      "difficulty": "easy",
+      "topics": [
+        "递归",
+        "链表"
+      ],
+      "category": "链表",
+      "category_order": 6,
+      "problem_order": 23,
+      "url": "https://leetcode.cn/problems/reverse-linked-list/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_234",
+      "frontend_id": "234",
+      "title_zh": "回文链表",
+      "title_en": "Palindrome Linked List",
+      "slug": "palindrome-linked-list",
+      "difficulty": "easy",
+      "topics": [
+        "栈",
+        "递归",
+        "链表",
+        "双指针"
+      ],
+      "category": "链表",
+      "category_order": 6,
+      "problem_order": 24,
+      "url": "https://leetcode.cn/problems/palindrome-linked-list/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_141",
+      "frontend_id": "141",
+      "title_zh": "环形链表",
+      "title_en": "Linked List Cycle",
+      "slug": "linked-list-cycle",
+      "difficulty": "easy",
+      "topics": [
+        "哈希表",
+        "链表",
+        "双指针"
+      ],
+      "category": "链表",
+      "category_order": 6,
+      "problem_order": 25,
+      "url": "https://leetcode.cn/problems/linked-list-cycle/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_142",
+      "frontend_id": "142",
+      "title_zh": "环形链表 II",
+      "title_en": "Linked List Cycle II",
+      "slug": "linked-list-cycle-ii",
+      "difficulty": "medium",
+      "topics": [
+        "哈希表",
+        "链表",
+        "双指针"
+      ],
+      "category": "链表",
+      "category_order": 6,
+      "problem_order": 26,
+      "url": "https://leetcode.cn/problems/linked-list-cycle-ii/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_21",
+      "frontend_id": "21",
+      "title_zh": "合并两个有序链表",
+      "title_en": "Merge Two Sorted Lists",
+      "slug": "merge-two-sorted-lists",
+      "difficulty": "easy",
+      "topics": [
+        "递归",
+        "链表"
+      ],
+      "category": "链表",
+      "category_order": 6,
+      "problem_order": 27,
+      "url": "https://leetcode.cn/problems/merge-two-sorted-lists/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_2",
+      "frontend_id": "2",
+      "title_zh": "两数相加",
+      "title_en": "Add Two Numbers",
+      "slug": "add-two-numbers",
+      "difficulty": "medium",
+      "topics": [
+        "递归",
+        "链表",
+        "数学"
+      ],
+      "category": "链表",
+      "category_order": 6,
+      "problem_order": 28,
+      "url": "https://leetcode.cn/problems/add-two-numbers/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_19",
+      "frontend_id": "19",
+      "title_zh": "删除链表的倒数第 N 个结点",
+      "title_en": "Remove Nth Node From End of List",
+      "slug": "remove-nth-node-from-end-of-list",
+      "difficulty": "medium",
+      "topics": [
+        "链表",
+        "双指针"
+      ],
+      "category": "链表",
+      "category_order": 6,
+      "problem_order": 29,
+      "url": "https://leetcode.cn/problems/remove-nth-node-from-end-of-list/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_24",
+      "frontend_id": "24",
+      "title_zh": "两两交换链表中的节点",
+      "title_en": "Swap Nodes in Pairs",
+      "slug": "swap-nodes-in-pairs",
+      "difficulty": "medium",
+      "topics": [
+        "递归",
+        "链表"
+      ],
+      "category": "链表",
+      "category_order": 6,
+      "problem_order": 30,
+      "url": "https://leetcode.cn/problems/swap-nodes-in-pairs/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_25",
+      "frontend_id": "25",
+      "title_zh": "K 个一组翻转链表",
+      "title_en": "Reverse Nodes in k-Group",
+      "slug": "reverse-nodes-in-k-group",
+      "difficulty": "hard",
+      "topics": [
+        "递归",
+        "链表"
+      ],
+      "category": "链表",
+      "category_order": 6,
+      "problem_order": 31,
+      "url": "https://leetcode.cn/problems/reverse-nodes-in-k-group/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_138",
+      "frontend_id": "138",
+      "title_zh": "随机链表的复制",
+      "title_en": "Copy List with Random Pointer",
+      "slug": "copy-list-with-random-pointer",
+      "difficulty": "medium",
+      "topics": [
+        "哈希表",
+        "链表"
+      ],
+      "category": "链表",
+      "category_order": 6,
+      "problem_order": 32,
+      "url": "https://leetcode.cn/problems/copy-list-with-random-pointer/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_148",
+      "frontend_id": "148",
+      "title_zh": "排序链表",
+      "title_en": "Sort List",
+      "slug": "sort-list",
+      "difficulty": "medium",
+      "topics": [
+        "链表",
+        "双指针",
+        "分治",
+        "排序",
+        "归并排序"
+      ],
+      "category": "链表",
+      "category_order": 6,
+      "problem_order": 33,
+      "url": "https://leetcode.cn/problems/sort-list/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_23",
+      "frontend_id": "23",
+      "title_zh": "合并 K 个升序链表",
+      "title_en": "Merge k Sorted Lists",
+      "slug": "merge-k-sorted-lists",
+      "difficulty": "hard",
+      "topics": [
+        "链表",
+        "分治",
+        "堆（优先队列）",
+        "归并排序"
+      ],
+      "category": "链表",
+      "category_order": 6,
+      "problem_order": 34,
+      "url": "https://leetcode.cn/problems/merge-k-sorted-lists/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_146",
+      "frontend_id": "146",
+      "title_zh": "LRU 缓存",
+      "title_en": "LRU Cache",
+      "slug": "lru-cache",
+      "difficulty": "medium",
+      "topics": [
+        "设计",
+        "哈希表",
+        "链表",
+        "双向链表"
+      ],
+      "category": "链表",
+      "category_order": 6,
+      "problem_order": 35,
+      "url": "https://leetcode.cn/problems/lru-cache/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_94",
+      "frontend_id": "94",
+      "title_zh": "二叉树的中序遍历",
+      "title_en": "Binary Tree Inorder Traversal",
+      "slug": "binary-tree-inorder-traversal",
+      "difficulty": "easy",
+      "topics": [
+        "栈",
+        "树",
+        "深度优先搜索",
+        "二叉树"
+      ],
+      "category": "二叉树",
+      "category_order": 7,
+      "problem_order": 36,
+      "url": "https://leetcode.cn/problems/binary-tree-inorder-traversal/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_104",
+      "frontend_id": "104",
+      "title_zh": "二叉树的最大深度",
+      "title_en": "Maximum Depth of Binary Tree",
+      "slug": "maximum-depth-of-binary-tree",
+      "difficulty": "easy",
+      "topics": [
+        "树",
+        "深度优先搜索",
+        "广度优先搜索",
+        "二叉树"
+      ],
+      "category": "二叉树",
+      "category_order": 7,
+      "problem_order": 37,
+      "url": "https://leetcode.cn/problems/maximum-depth-of-binary-tree/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_226",
+      "frontend_id": "226",
+      "title_zh": "翻转二叉树",
+      "title_en": "Invert Binary Tree",
+      "slug": "invert-binary-tree",
+      "difficulty": "easy",
+      "topics": [
+        "树",
+        "深度优先搜索",
+        "广度优先搜索",
+        "二叉树"
+      ],
+      "category": "二叉树",
+      "category_order": 7,
+      "problem_order": 38,
+      "url": "https://leetcode.cn/problems/invert-binary-tree/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_101",
+      "frontend_id": "101",
+      "title_zh": "对称二叉树",
+      "title_en": "Symmetric Tree",
+      "slug": "symmetric-tree",
+      "difficulty": "easy",
+      "topics": [
+        "树",
+        "深度优先搜索",
+        "广度优先搜索",
+        "二叉树"
+      ],
+      "category": "二叉树",
+      "category_order": 7,
+      "problem_order": 39,
+      "url": "https://leetcode.cn/problems/symmetric-tree/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_543",
+      "frontend_id": "543",
+      "title_zh": "二叉树的直径",
+      "title_en": "Diameter of Binary Tree",
+      "slug": "diameter-of-binary-tree",
+      "difficulty": "easy",
+      "topics": [
+        "树",
+        "深度优先搜索",
+        "二叉树"
+      ],
+      "category": "二叉树",
+      "category_order": 7,
+      "problem_order": 40,
+      "url": "https://leetcode.cn/problems/diameter-of-binary-tree/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_102",
+      "frontend_id": "102",
+      "title_zh": "二叉树的层序遍历",
+      "title_en": "Binary Tree Level Order Traversal",
+      "slug": "binary-tree-level-order-traversal",
+      "difficulty": "medium",
+      "topics": [
+        "树",
+        "广度优先搜索",
+        "二叉树"
+      ],
+      "category": "二叉树",
+      "category_order": 7,
+      "problem_order": 41,
+      "url": "https://leetcode.cn/problems/binary-tree-level-order-traversal/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_108",
+      "frontend_id": "108",
+      "title_zh": "将有序数组转换为二叉搜索树",
+      "title_en": "Convert Sorted Array to Binary Search Tree",
+      "slug": "convert-sorted-array-to-binary-search-tree",
+      "difficulty": "easy",
+      "topics": [
+        "树",
+        "二叉搜索树",
+        "数组",
+        "分治",
+        "二叉树"
+      ],
+      "category": "二叉树",
+      "category_order": 7,
+      "problem_order": 42,
+      "url": "https://leetcode.cn/problems/convert-sorted-array-to-binary-search-tree/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_98",
+      "frontend_id": "98",
+      "title_zh": "验证二叉搜索树",
+      "title_en": "Validate Binary Search Tree",
+      "slug": "validate-binary-search-tree",
+      "difficulty": "medium",
+      "topics": [
+        "树",
+        "深度优先搜索",
+        "二叉搜索树",
+        "二叉树"
+      ],
+      "category": "二叉树",
+      "category_order": 7,
+      "problem_order": 43,
+      "url": "https://leetcode.cn/problems/validate-binary-search-tree/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_230",
+      "frontend_id": "230",
+      "title_zh": "二叉搜索树中第 K 小的元素",
+      "title_en": "Kth Smallest Element in a BST",
+      "slug": "kth-smallest-element-in-a-bst",
+      "difficulty": "medium",
+      "topics": [
+        "树",
+        "深度优先搜索",
+        "二叉搜索树",
+        "二叉树"
+      ],
+      "category": "二叉树",
+      "category_order": 7,
+      "problem_order": 44,
+      "url": "https://leetcode.cn/problems/kth-smallest-element-in-a-bst/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_199",
+      "frontend_id": "199",
+      "title_zh": "二叉树的右视图",
+      "title_en": "Binary Tree Right Side View",
+      "slug": "binary-tree-right-side-view",
+      "difficulty": "medium",
+      "topics": [
+        "树",
+        "深度优先搜索",
+        "广度优先搜索",
+        "二叉树"
+      ],
+      "category": "二叉树",
+      "category_order": 7,
+      "problem_order": 45,
+      "url": "https://leetcode.cn/problems/binary-tree-right-side-view/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_114",
+      "frontend_id": "114",
+      "title_zh": "二叉树展开为链表",
+      "title_en": "Flatten Binary Tree to Linked List",
+      "slug": "flatten-binary-tree-to-linked-list",
+      "difficulty": "medium",
+      "topics": [
+        "栈",
+        "树",
+        "深度优先搜索",
+        "链表",
+        "二叉树"
+      ],
+      "category": "二叉树",
+      "category_order": 7,
+      "problem_order": 46,
+      "url": "https://leetcode.cn/problems/flatten-binary-tree-to-linked-list/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_105",
+      "frontend_id": "105",
+      "title_zh": "从前序与中序遍历序列构造二叉树",
+      "title_en": "Construct Binary Tree from Preorder and Inorder Traversal",
+      "slug": "construct-binary-tree-from-preorder-and-inorder-traversal",
+      "difficulty": "medium",
+      "topics": [
+        "树",
+        "数组",
+        "哈希表",
+        "分治",
+        "二叉树"
+      ],
+      "category": "二叉树",
+      "category_order": 7,
+      "problem_order": 47,
+      "url": "https://leetcode.cn/problems/construct-binary-tree-from-preorder-and-inorder-traversal/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_437",
+      "frontend_id": "437",
+      "title_zh": "路径总和 III",
+      "title_en": "Path Sum III",
+      "slug": "path-sum-iii",
+      "difficulty": "medium",
+      "topics": [
+        "树",
+        "深度优先搜索",
+        "二叉树"
+      ],
+      "category": "二叉树",
+      "category_order": 7,
+      "problem_order": 48,
+      "url": "https://leetcode.cn/problems/path-sum-iii/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_236",
+      "frontend_id": "236",
+      "title_zh": "二叉树的最近公共祖先",
+      "title_en": "Lowest Common Ancestor of a Binary Tree",
+      "slug": "lowest-common-ancestor-of-a-binary-tree",
+      "difficulty": "medium",
+      "topics": [
+        "树",
+        "深度优先搜索",
+        "二叉树"
+      ],
+      "category": "二叉树",
+      "category_order": 7,
+      "problem_order": 49,
+      "url": "https://leetcode.cn/problems/lowest-common-ancestor-of-a-binary-tree/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_124",
+      "frontend_id": "124",
+      "title_zh": "二叉树中的最大路径和",
+      "title_en": "Binary Tree Maximum Path Sum",
+      "slug": "binary-tree-maximum-path-sum",
+      "difficulty": "hard",
+      "topics": [
+        "树",
+        "深度优先搜索",
+        "动态规划",
+        "二叉树"
+      ],
+      "category": "二叉树",
+      "category_order": 7,
+      "problem_order": 50,
+      "url": "https://leetcode.cn/problems/binary-tree-maximum-path-sum/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_200",
+      "frontend_id": "200",
+      "title_zh": "岛屿数量",
+      "title_en": "Number of Islands",
+      "slug": "number-of-islands",
+      "difficulty": "medium",
+      "topics": [
+        "深度优先搜索",
+        "广度优先搜索",
+        "并查集",
+        "数组",
+        "矩阵"
+      ],
+      "category": "图论",
+      "category_order": 8,
+      "problem_order": 51,
+      "url": "https://leetcode.cn/problems/number-of-islands/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_994",
+      "frontend_id": "994",
+      "title_zh": "腐烂的橘子",
+      "title_en": "Rotting Oranges",
+      "slug": "rotting-oranges",
+      "difficulty": "medium",
+      "topics": [
+        "广度优先搜索",
+        "数组",
+        "矩阵"
+      ],
+      "category": "图论",
+      "category_order": 8,
+      "problem_order": 52,
+      "url": "https://leetcode.cn/problems/rotting-oranges/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_207",
+      "frontend_id": "207",
+      "title_zh": "课程表",
+      "title_en": "Course Schedule",
+      "slug": "course-schedule",
+      "difficulty": "medium",
+      "topics": [
+        "深度优先搜索",
+        "广度优先搜索",
+        "图",
+        "拓扑排序"
+      ],
+      "category": "图论",
+      "category_order": 8,
+      "problem_order": 53,
+      "url": "https://leetcode.cn/problems/course-schedule/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_208",
+      "frontend_id": "208",
+      "title_zh": "实现 Trie (前缀树)",
+      "title_en": "Implement Trie (Prefix Tree)",
+      "slug": "implement-trie-prefix-tree",
+      "difficulty": "medium",
+      "topics": [
+        "设计",
+        "字典树",
+        "哈希表",
+        "字符串"
+      ],
+      "category": "图论",
+      "category_order": 8,
+      "problem_order": 54,
+      "url": "https://leetcode.cn/problems/implement-trie-prefix-tree/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_46",
+      "frontend_id": "46",
+      "title_zh": "全排列",
+      "title_en": "Permutations",
+      "slug": "permutations",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "回溯"
+      ],
+      "category": "回溯",
+      "category_order": 9,
+      "problem_order": 55,
+      "url": "https://leetcode.cn/problems/permutations/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_78",
+      "frontend_id": "78",
+      "title_zh": "子集",
+      "title_en": "Subsets",
+      "slug": "subsets",
+      "difficulty": "medium",
+      "topics": [
+        "位运算",
+        "数组",
+        "回溯"
+      ],
+      "category": "回溯",
+      "category_order": 9,
+      "problem_order": 56,
+      "url": "https://leetcode.cn/problems/subsets/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_17",
+      "frontend_id": "17",
+      "title_zh": "电话号码的字母组合",
+      "title_en": "Letter Combinations of a Phone Number",
+      "slug": "letter-combinations-of-a-phone-number",
+      "difficulty": "medium",
+      "topics": [
+        "哈希表",
+        "字符串",
+        "回溯"
+      ],
+      "category": "回溯",
+      "category_order": 9,
+      "problem_order": 57,
+      "url": "https://leetcode.cn/problems/letter-combinations-of-a-phone-number/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_39",
+      "frontend_id": "39",
+      "title_zh": "组合总和",
+      "title_en": "Combination Sum",
+      "slug": "combination-sum",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "回溯"
+      ],
+      "category": "回溯",
+      "category_order": 9,
+      "problem_order": 58,
+      "url": "https://leetcode.cn/problems/combination-sum/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_22",
+      "frontend_id": "22",
+      "title_zh": "括号生成",
+      "title_en": "Generate Parentheses",
+      "slug": "generate-parentheses",
+      "difficulty": "medium",
+      "topics": [
+        "字符串",
+        "动态规划",
+        "回溯"
+      ],
+      "category": "回溯",
+      "category_order": 9,
+      "problem_order": 59,
+      "url": "https://leetcode.cn/problems/generate-parentheses/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_79",
+      "frontend_id": "79",
+      "title_zh": "单词搜索",
+      "title_en": "Word Search",
+      "slug": "word-search",
+      "difficulty": "medium",
+      "topics": [
+        "深度优先搜索",
+        "数组",
+        "字符串",
+        "回溯",
+        "矩阵"
+      ],
+      "category": "回溯",
+      "category_order": 9,
+      "problem_order": 60,
+      "url": "https://leetcode.cn/problems/word-search/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_131",
+      "frontend_id": "131",
+      "title_zh": "分割回文串",
+      "title_en": "Palindrome Partitioning",
+      "slug": "palindrome-partitioning",
+      "difficulty": "medium",
+      "topics": [
+        "字符串",
+        "动态规划",
+        "回溯"
+      ],
+      "category": "回溯",
+      "category_order": 9,
+      "problem_order": 61,
+      "url": "https://leetcode.cn/problems/palindrome-partitioning/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_51",
+      "frontend_id": "51",
+      "title_zh": "N 皇后",
+      "title_en": "N-Queens",
+      "slug": "n-queens",
+      "difficulty": "hard",
+      "topics": [
+        "数组",
+        "回溯"
+      ],
+      "category": "回溯",
+      "category_order": 9,
+      "problem_order": 62,
+      "url": "https://leetcode.cn/problems/n-queens/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_35",
+      "frontend_id": "35",
+      "title_zh": "搜索插入位置",
+      "title_en": "Search Insert Position",
+      "slug": "search-insert-position",
+      "difficulty": "easy",
+      "topics": [
+        "数组",
+        "二分查找"
+      ],
+      "category": "二分查找",
+      "category_order": 10,
+      "problem_order": 63,
+      "url": "https://leetcode.cn/problems/search-insert-position/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_74",
+      "frontend_id": "74",
+      "title_zh": "搜索二维矩阵",
+      "title_en": "Search a 2D Matrix",
+      "slug": "search-a-2d-matrix",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "二分查找",
+        "矩阵"
+      ],
+      "category": "二分查找",
+      "category_order": 10,
+      "problem_order": 64,
+      "url": "https://leetcode.cn/problems/search-a-2d-matrix/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_34",
+      "frontend_id": "34",
+      "title_zh": "在排序数组中查找元素的第一个和最后一个位置",
+      "title_en": "Find First and Last Position of Element in Sorted Array",
+      "slug": "find-first-and-last-position-of-element-in-sorted-array",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "二分查找"
+      ],
+      "category": "二分查找",
+      "category_order": 10,
+      "problem_order": 65,
+      "url": "https://leetcode.cn/problems/find-first-and-last-position-of-element-in-sorted-array/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_33",
+      "frontend_id": "33",
+      "title_zh": "搜索旋转排序数组",
+      "title_en": "Search in Rotated Sorted Array",
+      "slug": "search-in-rotated-sorted-array",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "二分查找"
+      ],
+      "category": "二分查找",
+      "category_order": 10,
+      "problem_order": 66,
+      "url": "https://leetcode.cn/problems/search-in-rotated-sorted-array/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_153",
+      "frontend_id": "153",
+      "title_zh": "寻找旋转排序数组中的最小值",
+      "title_en": "Find Minimum in Rotated Sorted Array",
+      "slug": "find-minimum-in-rotated-sorted-array",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "二分查找"
+      ],
+      "category": "二分查找",
+      "category_order": 10,
+      "problem_order": 67,
+      "url": "https://leetcode.cn/problems/find-minimum-in-rotated-sorted-array/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_4",
+      "frontend_id": "4",
+      "title_zh": "寻找两个正序数组的中位数",
+      "title_en": "Median of Two Sorted Arrays",
+      "slug": "median-of-two-sorted-arrays",
+      "difficulty": "hard",
+      "topics": [
+        "数组",
+        "二分查找",
+        "分治"
+      ],
+      "category": "二分查找",
+      "category_order": 10,
+      "problem_order": 68,
+      "url": "https://leetcode.cn/problems/median-of-two-sorted-arrays/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_20",
+      "frontend_id": "20",
+      "title_zh": "有效的括号",
+      "title_en": "Valid Parentheses",
+      "slug": "valid-parentheses",
+      "difficulty": "easy",
+      "topics": [
+        "栈",
+        "字符串"
+      ],
+      "category": "栈",
+      "category_order": 11,
+      "problem_order": 69,
+      "url": "https://leetcode.cn/problems/valid-parentheses/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_155",
+      "frontend_id": "155",
+      "title_zh": "最小栈",
+      "title_en": "Min Stack",
+      "slug": "min-stack",
+      "difficulty": "medium",
+      "topics": [
+        "栈",
+        "设计"
+      ],
+      "category": "栈",
+      "category_order": 11,
+      "problem_order": 70,
+      "url": "https://leetcode.cn/problems/min-stack/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_394",
+      "frontend_id": "394",
+      "title_zh": "字符串解码",
+      "title_en": "Decode String",
+      "slug": "decode-string",
+      "difficulty": "medium",
+      "topics": [
+        "栈",
+        "递归",
+        "字符串"
+      ],
+      "category": "栈",
+      "category_order": 11,
+      "problem_order": 71,
+      "url": "https://leetcode.cn/problems/decode-string/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_739",
+      "frontend_id": "739",
+      "title_zh": "每日温度",
+      "title_en": "Daily Temperatures",
+      "slug": "daily-temperatures",
+      "difficulty": "medium",
+      "topics": [
+        "栈",
+        "数组",
+        "单调栈"
+      ],
+      "category": "栈",
+      "category_order": 11,
+      "problem_order": 72,
+      "url": "https://leetcode.cn/problems/daily-temperatures/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_84",
+      "frontend_id": "84",
+      "title_zh": "柱状图中最大的矩形",
+      "title_en": "Largest Rectangle in Histogram",
+      "slug": "largest-rectangle-in-histogram",
+      "difficulty": "hard",
+      "topics": [
+        "栈",
+        "数组",
+        "单调栈"
+      ],
+      "category": "栈",
+      "category_order": 11,
+      "problem_order": 73,
+      "url": "https://leetcode.cn/problems/largest-rectangle-in-histogram/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_215",
+      "frontend_id": "215",
+      "title_zh": "数组中的第K个最大元素",
+      "title_en": "Kth Largest Element in an Array",
+      "slug": "kth-largest-element-in-an-array",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "分治",
+        "快速选择",
+        "排序",
+        "堆（优先队列）"
+      ],
+      "category": "堆",
+      "category_order": 12,
+      "problem_order": 74,
+      "url": "https://leetcode.cn/problems/kth-largest-element-in-an-array/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_347",
+      "frontend_id": "347",
+      "title_zh": "前 K 个高频元素",
+      "title_en": "Top K Frequent Elements",
+      "slug": "top-k-frequent-elements",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "哈希表",
+        "分治",
+        "桶排序",
+        "计数",
+        "快速选择",
+        "排序",
+        "堆（优先队列）"
+      ],
+      "category": "堆",
+      "category_order": 12,
+      "problem_order": 75,
+      "url": "https://leetcode.cn/problems/top-k-frequent-elements/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_295",
+      "frontend_id": "295",
+      "title_zh": "数据流的中位数",
+      "title_en": "Find Median from Data Stream",
+      "slug": "find-median-from-data-stream",
+      "difficulty": "hard",
+      "topics": [
+        "设计",
+        "双指针",
+        "数据流",
+        "排序",
+        "堆（优先队列）"
+      ],
+      "category": "堆",
+      "category_order": 12,
+      "problem_order": 76,
+      "url": "https://leetcode.cn/problems/find-median-from-data-stream/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_121",
+      "frontend_id": "121",
+      "title_zh": "买卖股票的最佳时机",
+      "title_en": "Best Time to Buy and Sell Stock",
+      "slug": "best-time-to-buy-and-sell-stock",
+      "difficulty": "easy",
+      "topics": [
+        "数组",
+        "动态规划"
+      ],
+      "category": "贪心算法",
+      "category_order": 13,
+      "problem_order": 77,
+      "url": "https://leetcode.cn/problems/best-time-to-buy-and-sell-stock/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_55",
+      "frontend_id": "55",
+      "title_zh": "跳跃游戏",
+      "title_en": "Jump Game",
+      "slug": "jump-game",
+      "difficulty": "medium",
+      "topics": [
+        "贪心",
+        "数组",
+        "动态规划"
+      ],
+      "category": "贪心算法",
+      "category_order": 13,
+      "problem_order": 78,
+      "url": "https://leetcode.cn/problems/jump-game/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_45",
+      "frontend_id": "45",
+      "title_zh": "跳跃游戏 II",
+      "title_en": "Jump Game II",
+      "slug": "jump-game-ii",
+      "difficulty": "medium",
+      "topics": [
+        "贪心",
+        "数组",
+        "动态规划"
+      ],
+      "category": "贪心算法",
+      "category_order": 13,
+      "problem_order": 79,
+      "url": "https://leetcode.cn/problems/jump-game-ii/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_763",
+      "frontend_id": "763",
+      "title_zh": "划分字母区间",
+      "title_en": "Partition Labels",
+      "slug": "partition-labels",
+      "difficulty": "medium",
+      "topics": [
+        "贪心",
+        "哈希表",
+        "双指针",
+        "字符串"
+      ],
+      "category": "贪心算法",
+      "category_order": 13,
+      "problem_order": 80,
+      "url": "https://leetcode.cn/problems/partition-labels/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_70",
+      "frontend_id": "70",
+      "title_zh": "爬楼梯",
+      "title_en": "Climbing Stairs",
+      "slug": "climbing-stairs",
+      "difficulty": "easy",
+      "topics": [
+        "记忆化",
+        "数学",
+        "动态规划"
+      ],
+      "category": "动态规划",
+      "category_order": 14,
+      "problem_order": 81,
+      "url": "https://leetcode.cn/problems/climbing-stairs/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_118",
+      "frontend_id": "118",
+      "title_zh": "杨辉三角",
+      "title_en": "Pascal's Triangle",
+      "slug": "pascals-triangle",
+      "difficulty": "easy",
+      "topics": [
+        "数组",
+        "动态规划"
+      ],
+      "category": "动态规划",
+      "category_order": 14,
+      "problem_order": 82,
+      "url": "https://leetcode.cn/problems/pascals-triangle/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_198",
+      "frontend_id": "198",
+      "title_zh": "打家劫舍",
+      "title_en": "House Robber",
+      "slug": "house-robber",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "动态规划"
+      ],
+      "category": "动态规划",
+      "category_order": 14,
+      "problem_order": 83,
+      "url": "https://leetcode.cn/problems/house-robber/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_279",
+      "frontend_id": "279",
+      "title_zh": "完全平方数",
+      "title_en": "Perfect Squares",
+      "slug": "perfect-squares",
+      "difficulty": "medium",
+      "topics": [
+        "广度优先搜索",
+        "数学",
+        "动态规划"
+      ],
+      "category": "动态规划",
+      "category_order": 14,
+      "problem_order": 84,
+      "url": "https://leetcode.cn/problems/perfect-squares/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_322",
+      "frontend_id": "322",
+      "title_zh": "零钱兑换",
+      "title_en": "Coin Change",
+      "slug": "coin-change",
+      "difficulty": "medium",
+      "topics": [
+        "广度优先搜索",
+        "数组",
+        "动态规划"
+      ],
+      "category": "动态规划",
+      "category_order": 14,
+      "problem_order": 85,
+      "url": "https://leetcode.cn/problems/coin-change/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_139",
+      "frontend_id": "139",
+      "title_zh": "单词拆分",
+      "title_en": "Word Break",
+      "slug": "word-break",
+      "difficulty": "medium",
+      "topics": [
+        "字典树",
+        "记忆化",
+        "数组",
+        "哈希表",
+        "字符串",
+        "动态规划"
+      ],
+      "category": "动态规划",
+      "category_order": 14,
+      "problem_order": 86,
+      "url": "https://leetcode.cn/problems/word-break/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_300",
+      "frontend_id": "300",
+      "title_zh": "最长递增子序列",
+      "title_en": "Longest Increasing Subsequence",
+      "slug": "longest-increasing-subsequence",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "二分查找",
+        "动态规划"
+      ],
+      "category": "动态规划",
+      "category_order": 14,
+      "problem_order": 87,
+      "url": "https://leetcode.cn/problems/longest-increasing-subsequence/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_152",
+      "frontend_id": "152",
+      "title_zh": "乘积最大子数组",
+      "title_en": "Maximum Product Subarray",
+      "slug": "maximum-product-subarray",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "动态规划"
+      ],
+      "category": "动态规划",
+      "category_order": 14,
+      "problem_order": 88,
+      "url": "https://leetcode.cn/problems/maximum-product-subarray/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_416",
+      "frontend_id": "416",
+      "title_zh": "分割等和子集",
+      "title_en": "Partition Equal Subset Sum",
+      "slug": "partition-equal-subset-sum",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "动态规划"
+      ],
+      "category": "动态规划",
+      "category_order": 14,
+      "problem_order": 89,
+      "url": "https://leetcode.cn/problems/partition-equal-subset-sum/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_32",
+      "frontend_id": "32",
+      "title_zh": "最长有效括号",
+      "title_en": "Longest Valid Parentheses",
+      "slug": "longest-valid-parentheses",
+      "difficulty": "hard",
+      "topics": [
+        "栈",
+        "字符串",
+        "动态规划"
+      ],
+      "category": "动态规划",
+      "category_order": 14,
+      "problem_order": 90,
+      "url": "https://leetcode.cn/problems/longest-valid-parentheses/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_62",
+      "frontend_id": "62",
+      "title_zh": "不同路径",
+      "title_en": "Unique Paths",
+      "slug": "unique-paths",
+      "difficulty": "medium",
+      "topics": [
+        "数学",
+        "动态规划",
+        "组合数学"
+      ],
+      "category": "多维动态规划",
+      "category_order": 15,
+      "problem_order": 91,
+      "url": "https://leetcode.cn/problems/unique-paths/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_64",
+      "frontend_id": "64",
+      "title_zh": "最小路径和",
+      "title_en": "Minimum Path Sum",
+      "slug": "minimum-path-sum",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "动态规划",
+        "矩阵"
+      ],
+      "category": "多维动态规划",
+      "category_order": 15,
+      "problem_order": 92,
+      "url": "https://leetcode.cn/problems/minimum-path-sum/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_5",
+      "frontend_id": "5",
+      "title_zh": "最长回文子串",
+      "title_en": "Longest Palindromic Substring",
+      "slug": "longest-palindromic-substring",
+      "difficulty": "medium",
+      "topics": [
+        "双指针",
+        "字符串",
+        "动态规划"
+      ],
+      "category": "多维动态规划",
+      "category_order": 15,
+      "problem_order": 93,
+      "url": "https://leetcode.cn/problems/longest-palindromic-substring/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_1143",
+      "frontend_id": "1143",
+      "title_zh": "最长公共子序列",
+      "title_en": "Longest Common Subsequence",
+      "slug": "longest-common-subsequence",
+      "difficulty": "medium",
+      "topics": [
+        "字符串",
+        "动态规划"
+      ],
+      "category": "多维动态规划",
+      "category_order": 15,
+      "problem_order": 94,
+      "url": "https://leetcode.cn/problems/longest-common-subsequence/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_72",
+      "frontend_id": "72",
+      "title_zh": "编辑距离",
+      "title_en": "Edit Distance",
+      "slug": "edit-distance",
+      "difficulty": "medium",
+      "topics": [
+        "字符串",
+        "动态规划"
+      ],
+      "category": "多维动态规划",
+      "category_order": 15,
+      "problem_order": 95,
+      "url": "https://leetcode.cn/problems/edit-distance/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_136",
+      "frontend_id": "136",
+      "title_zh": "只出现一次的数字",
+      "title_en": "Single Number",
+      "slug": "single-number",
+      "difficulty": "easy",
+      "topics": [
+        "位运算",
+        "数组"
+      ],
+      "category": "技巧",
+      "category_order": 16,
+      "problem_order": 96,
+      "url": "https://leetcode.cn/problems/single-number/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_169",
+      "frontend_id": "169",
+      "title_zh": "多数元素",
+      "title_en": "Majority Element",
+      "slug": "majority-element",
+      "difficulty": "easy",
+      "topics": [
+        "数组",
+        "哈希表",
+        "分治",
+        "计数",
+        "排序"
+      ],
+      "category": "技巧",
+      "category_order": 16,
+      "problem_order": 97,
+      "url": "https://leetcode.cn/problems/majority-element/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_75",
+      "frontend_id": "75",
+      "title_zh": "颜色分类",
+      "title_en": "Sort Colors",
+      "slug": "sort-colors",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "双指针",
+        "排序"
+      ],
+      "category": "技巧",
+      "category_order": 16,
+      "problem_order": 98,
+      "url": "https://leetcode.cn/problems/sort-colors/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_31",
+      "frontend_id": "31",
+      "title_zh": "下一个排列",
+      "title_en": "Next Permutation",
+      "slug": "next-permutation",
+      "difficulty": "medium",
+      "topics": [
+        "数组",
+        "双指针"
+      ],
+      "category": "技巧",
+      "category_order": 16,
+      "problem_order": 99,
+      "url": "https://leetcode.cn/problems/next-permutation/",
+      "source": "leetcode_hot_100"
+    },
+    {
+      "id": "leetcode_287",
+      "frontend_id": "287",
+      "title_zh": "寻找重复数",
+      "title_en": "Find the Duplicate Number",
+      "slug": "find-the-duplicate-number",
+      "difficulty": "medium",
+      "topics": [
+        "位运算",
+        "数组",
+        "双指针",
+        "二分查找"
+      ],
+      "category": "技巧",
+      "category_order": 16,
+      "problem_order": 100,
+      "url": "https://leetcode.cn/problems/find-the-duplicate-number/",
+      "source": "leetcode_hot_100"
+    }
+  ]
+}

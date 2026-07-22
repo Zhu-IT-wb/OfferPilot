@@ -555,6 +555,7 @@ class SQLiteOfferPilotRepository:
         self._ensure_column("interview_schedules", "owner_id", "TEXT NOT NULL DEFAULT 'local_user'")
         self._ensure_column("interview_schedules", "start_at", "TEXT")
         self._migrate_confirmed_planned_applications()
+        self._remove_legacy_leetcode_sample_task()
         self._ensure_indexes()
         self._seed_default_tasks()
 
@@ -576,6 +577,24 @@ class SQLiteOfferPilotRepository:
             (ApplicationStatus.SUBMITTED.value, ApplicationStatus.PLANNED.value),
         )
         self.set_runtime_setting(_PLANNED_APPLICATION_MIGRATION_SETTING, "complete")
+
+    # 只移除旧版本仍未完成的固定示例，不影响用户已完成或自行创建的任务。
+    def _remove_legacy_leetcode_sample_task(self) -> None:
+        self._execute(
+            """
+            DELETE FROM tasks
+            WHERE title = ? AND task_type = ? AND priority = ?
+              AND status IN (?, ?, ?)
+            """,
+            (
+                "LeetCode 206. 反转链表",
+                TaskType.LEETCODE.value,
+                TaskPriority.HIGH.value,
+                TaskStatus.PENDING.value,
+                TaskStatus.IN_PROGRESS.value,
+                TaskStatus.POSTPONED.value,
+            ),
+        )
 
     # 创建常用 owner 查询索引，保证多用户后查询不退化。
     def _ensure_indexes(self) -> None:

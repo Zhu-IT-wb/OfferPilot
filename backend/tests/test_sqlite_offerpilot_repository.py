@@ -13,9 +13,35 @@ def test_sqlite_repository_seeds_default_tasks(tmp_path) -> None:
 
     tasks = repository.list_today_tasks()
 
-    assert len(tasks) == 3
+    assert len(tasks) == 2
     assert tasks[0].id == "task_1"
-    assert tasks[0].to_dict()["task_type"] == "leetcode"
+    assert tasks[0].to_dict()["task_type"] == "interview_question"
+
+
+def test_sqlite_repository_removes_only_unfinished_legacy_leetcode_sample(tmp_path) -> None:
+    db_path = tmp_path / "offerpilot.db"
+    repository = SQLiteOfferPilotRepository(str(db_path))
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO tasks (id, owner_id, title, task_type, status, priority)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("legacy_pending", "user_1", "LeetCode 206. 反转链表", "leetcode", "pending", "high"),
+                ("legacy_passed", "user_1", "LeetCode 206. 反转链表", "leetcode", "passed", "high"),
+            ],
+        )
+        connection.commit()
+
+    SQLiteOfferPilotRepository(str(db_path))
+
+    with sqlite3.connect(db_path) as connection:
+        rows = connection.execute(
+            "SELECT id FROM tasks WHERE owner_id = ? ORDER BY id",
+            ("user_1",),
+        ).fetchall()
+    assert rows == [("legacy_passed",)]
 
 
 def test_sqlite_repository_persists_runtime_setting(tmp_path) -> None:
@@ -234,12 +260,12 @@ def test_sqlite_repository_can_clear_application_interview_fields_by_id(tmp_path
 def test_sqlite_repository_completes_task_by_title(tmp_path) -> None:
     repository = SQLiteOfferPilotRepository(str(tmp_path / "offerpilot.db"))
 
-    task = repository.complete_task(task_title="反转链表")
+    task = repository.complete_task(task_title="HashMap")
 
     assert task is not None
     assert task.id == "task_1"
     assert task.status == TaskStatus.PASSED
-    assert len(repository.list_today_tasks()) == 2
+    assert len(repository.list_today_tasks()) == 1
 
 
 def test_sqlite_repository_creates_interview_review(tmp_path) -> None:

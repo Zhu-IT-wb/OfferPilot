@@ -87,7 +87,8 @@ def test_orchestrator_plans_today_tasks_read_action() -> None:
     assert "今天的任务" in result.reply
     assert result.tool_result is not None
     assert result.tool_result.success is True
-    assert len(result.tool_result.data["tasks"]) == 3
+    assert len(result.tool_result.data["tasks"]) == 2
+    assert len(result.tool_result.data["leetcode_recommendations"]) == 3
 
 
 def test_orchestrator_executes_application_query_without_confirmation() -> None:
@@ -1040,6 +1041,44 @@ def test_scenario_one_application_schedule_reschedule_cancel_end_to_end() -> Non
     assert len(calendar_service.deleted) == 1
     assert bitable_service.updates[-1]["面试时间文本"] is None
     assert repository.interview_schedules[0].status.value == "cancelled"
+
+
+def test_orchestrator_enables_leetcode_plan_and_records_explicit_feedback(monkeypatch) -> None:
+    from datetime import date
+
+    from app.repositories.leetcode_repository import InMemoryLeetCodeRepository
+    from app.services.leetcode_catalog import load_hot100_snapshot
+
+    class RuleIntentClassifier:
+        async def classify(self, message):
+            return IntentClassifier()._classify_by_rules(message)
+
+    monkeypatch.setattr("app.tools.offerpilot_tools._today_in_shanghai", lambda: date(2026, 7, 22))
+    leetcode_repository = InMemoryLeetCodeRepository(problems=load_hot100_snapshot().problems)
+    orchestrator = AgentOrchestrator(
+        intent_classifier=RuleIntentClassifier(),
+        tool_registry=build_offerpilot_tool_registry(
+            InMemoryOfferPilotRepository(),
+            calendar_service=None,
+            bitable_service=None,
+            leetcode_repository=leetcode_repository,
+        ),
+        conversation_store=InMemoryConversationStore(),
+    )
+
+    enabled = asyncio.run(
+        orchestrator.handle_message("开启每日刷题", user_id="ou_1", source="feishu")
+    )
+    feedback = asyncio.run(
+        orchestrator.handle_message("第1题看题解完成", user_id="ou_1", source="feishu")
+    )
+
+    assert enabled.need_confirmation is False
+    assert enabled.tool_result is not None and enabled.tool_result.success is True
+    assert len(enabled.tool_result.data["recommendations"]) == 3
+    assert feedback.need_confirmation is False
+    assert feedback.tool_result is not None and feedback.tool_result.success is True
+    assert feedback.tool_result.data["assignment"]["result"] == "with_solution"
 
 
 def test_debug_agent_route_returns_orchestrated_response(monkeypatch) -> None:

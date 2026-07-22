@@ -7,6 +7,10 @@ from pydantic import BaseModel, Field
 # 枚举 IntentName 的可选值。
 class IntentName(str, Enum):
     GET_TODAY_TASKS = "get_today_tasks"
+    ENABLE_LEETCODE_PLAN = "enable_leetcode_plan"
+    DISABLE_LEETCODE_PLAN = "disable_leetcode_plan"
+    GET_TODAY_LEETCODE = "get_today_leetcode"
+    RECORD_LEETCODE_RESULT = "record_leetcode_result"
     COMPLETE_TASK = "complete_task"
     POSTPONE_TASK = "postpone_task"
     ADD_APPLICATION = "add_application"

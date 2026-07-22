@@ -17,6 +17,10 @@ message into one of the allowed intents and extract only useful slots.
 
 Allowed intents:
 - get_today_tasks: user wants today's tasks or schedule.
+- enable_leetcode_plan: user explicitly enables daily LeetCode pushes.
+- disable_leetcode_plan: user disables daily LeetCode pushes.
+- get_today_leetcode: user asks specifically for today's LeetCode problems.
+- record_leetcode_result: user reports an explicit result for a recommended LeetCode problem.
 - complete_task: user reports finishing a task, LeetCode problem, review item, or drill.
 - postpone_task: user wants to postpone, skip, or delay a task.
 - add_application: user wants to add a new job application or interview arrangement.
@@ -103,6 +107,19 @@ Slot guidance:
         text = message.strip()
         compact = re.sub(r"\s+", "", text).lower()
 
+        if self._is_enable_leetcode_plan(compact):
+            return self._result(IntentName.ENABLE_LEETCODE_PLAN, 0.98)
+        if self._is_disable_leetcode_plan(compact):
+            return self._result(IntentName.DISABLE_LEETCODE_PLAN, 0.98)
+        if self._is_leetcode_feedback(compact):
+            return self._result(
+                IntentName.RECORD_LEETCODE_RESULT,
+                0.94,
+                self._extract_leetcode_feedback_slots(text),
+            )
+        if self._is_today_leetcode_query(compact):
+            return self._result(IntentName.GET_TODAY_LEETCODE, 0.95)
+
         if self._is_today_task_query(compact):
             return self._result(IntentName.GET_TODAY_TASKS, 0.72)
 
@@ -185,6 +202,71 @@ Slot guidance:
         return compact in {"/today", "today"} or (
             ("今天" in compact or "今日" in compact) and any(word in compact for word in ("任务", "安排", "计划"))
         )
+
+    @staticmethod
+    def _is_enable_leetcode_plan(compact: str) -> bool:
+        return any(
+            phrase in compact
+            for phrase in ("开启每日刷题", "开启刷题计划", "开启leetcode计划", "开启力扣计划")
+        )
+
+    @staticmethod
+    def _is_disable_leetcode_plan(compact: str) -> bool:
+        return any(
+            phrase in compact
+            for phrase in ("关闭每日刷题", "停止每日刷题", "关闭leetcode推送", "停止力扣推送")
+        )
+
+    @staticmethod
+    def _is_today_leetcode_query(compact: str) -> bool:
+        return compact in {"今天刷什么", "今日刷什么"} or (
+            any(word in compact for word in ("今天", "今日"))
+            and any(word in compact for word in ("leetcode", "力扣", "算法题", "刷题"))
+        )
+
+    @staticmethod
+    def _is_leetcode_feedback(compact: str) -> bool:
+        has_locator = bool(re.search(r"第[一二三123]题", compact)) or any(
+            word in compact for word in ("leetcode", "力扣", "lru")
+        )
+        has_result = any(
+            word in compact
+            for word in ("独立完成", "提示后完成", "看题解", "没做出来", "未完成", "延期", "跳过")
+        )
+        return has_locator and has_result
+
+    @staticmethod
+    def _extract_leetcode_feedback_slots(text: str) -> Dict[str, Any]:
+        compact = re.sub(r"\s+", "", text).lower()
+        slots: Dict[str, Any] = {}
+        index_match = re.search(r"第([一二三123])题", compact)
+        if index_match:
+            slots["problem_index"] = {"一": 1, "二": 2, "三": 3}.get(
+                index_match.group(1),
+                int(index_match.group(1)) if index_match.group(1).isdigit() else None,
+            )
+        result_patterns = (
+            (("看题解", "题解后"), "with_solution"),
+            (("提示后", "提示完成"), "with_hint"),
+            (("没做出来", "未完成", "失败"), "failed"),
+            (("延期", "明天再做"), "postponed"),
+            (("跳过",), "skipped"),
+            (("独立完成",), "independent"),
+        )
+        for words, result in result_patterns:
+            if any(word in compact for word in words):
+                slots["result"] = result
+                break
+        if "problem_index" not in slots:
+            title = re.split(
+                r"独立完成|提示后完成|提示完成|看题解(?:后)?完成?|没做出来|未完成|延期|跳过",
+                text,
+                maxsplit=1,
+            )[0].strip(" ，,。；;")
+            title = re.sub(r"^(?:leetcode|力扣)", "", title, flags=re.IGNORECASE).strip()
+            if title:
+                slots["problem_title"] = title
+        return slots
 
     # 判断 add application 是否成立。
     @staticmethod

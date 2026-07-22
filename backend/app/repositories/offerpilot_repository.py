@@ -155,20 +155,13 @@ def _default_tasks() -> List[Task]:
     return [
         Task(
             id="task_1",
-            title="LeetCode 206. 反转链表",
-            task_type=TaskType.LEETCODE,
-            status=TaskStatus.PENDING,
-            priority=TaskPriority.HIGH,
-        ),
-        Task(
-            id="task_2",
             title="HashMap 扩容机制",
             task_type=TaskType.INTERVIEW_QUESTION,
             status=TaskStatus.PENDING,
             priority=TaskPriority.MEDIUM,
         ),
         Task(
-            id="task_3",
+            id="task_2",
             title="云聚图库 Caffeine + Redis 两级缓存设计",
             task_type=TaskType.PROJECT_DEEP_DIVE,
             status=TaskStatus.PENDING,

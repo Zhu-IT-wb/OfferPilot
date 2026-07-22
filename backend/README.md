@@ -34,6 +34,7 @@ http://127.0.0.1:8000/api/health
 - `/api/debug/intent` 意图识别调试接口，仅用于本地/开发环境；
 - `/api/debug/agent` Agent 编排调试接口，仅用于本地/开发环境；
 - 本地内存版工具执行，包括今日任务、投递创建、任务完成等；
+- LeetCode Hot 100 本地目录、每日推荐、反馈、间隔复习与飞书定时推送；
 - 领域模型与 repository 边界，当前以内存实现承载数据；
 - 基础配置模块；
 - 后续模块目录预留。
@@ -169,7 +170,7 @@ curl -X POST http://127.0.0.1:8000/api/debug/agent \
   -d '{"message":"新增投递深信服开发实习，明天下午三点一面","confirmed":true}'
 ```
 
-当前工具执行结果通过 repository 写入进程内存，服务重启后会清空。后续可以把 repository 实现替换为 SQLite、PostgreSQL 或飞书多维表格。
+工具执行结果通过 repository 保存；使用 `memory` 时服务重启后会清空，使用 `sqlite` 时会持久化恢复。
 
 ## Storage Backend
 
@@ -187,3 +188,31 @@ OFFERPILOT_SQLITE_PATH=./data/offerpilot.db
 ```
 
 `memory` 适合跑测试和快速调试，服务重启后数据会清空。`sqlite` 会把任务、投递和面试复盘写入本地 SQLite 文件，服务重启后仍然保留。
+
+## LeetCode Hot 100
+
+在飞书中发送以下命令使用第一版刷题计划：
+
+```text
+开启每日刷题
+今天刷什么
+第1题独立完成
+LRU 看题解完成
+第2题没做出来
+第3题延期
+关闭每日刷题
+```
+
+开启后默认在 `Asia/Shanghai` 时区 09:00 推送题目，21:00 合并提醒仍未反馈的题目。每日推荐由确定性工作流生成，不消耗 LLM Token；正常为两道新题和一道到期复习题，没有到期复习时推荐三道新题。
+
+运行时只读取 `app/data/leetcode_hot100.json`，不会访问力扣。手动更新公开元数据快照：
+
+```bash
+.venv/bin/python scripts/sync_leetcode_hot100.py
+```
+
+也可以用已经下载的页面离线验证解析器；只有解析到恰好 100 道唯一题目时才会原子替换旧快照：
+
+```bash
+.venv/bin/python scripts/sync_leetcode_hot100.py --html /path/to/top-100-liked.html
+```

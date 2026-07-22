@@ -38,6 +38,7 @@ OfferPilot 不是一个只负责回答问题的聊天机器人，而是一个围
 | Feishu Bot | 支持飞书事件回调、URL verification、文本消息提取、Agent 回复发送和事件审计。 |
 | Feishu Bitable | 支持多维表格自动创建、记录推送同步、记录拉取同步、事件订阅和协作者授权。 |
 | Feishu Calendar | 支持 OfferPilot 专属日历、面试日程创建、参与人同步和提醒确认。 |
+| LeetCode Hot 100 | 内置官方公开元数据快照，确定性生成每日推荐，支持间隔复习、结果反馈、09:00 推送与 21:00 提醒。 |
 | Persistence | Repository 边界清晰，支持内存存储与 SQLite 本地持久化。 |
 | Quality | 后端测试覆盖 Agent、Planner、Feishu 事件、多维表格同步、工具层和 Repository。 |
 | Documentation | `docs/` 下保留阶段性编码报告和产品技术方案，便于追踪架构演进。 |
@@ -69,6 +70,7 @@ OfferPilot 不是一个只负责回答问题的聊天机器人，而是一个围
 |  Tool Layer                                         |
 |    - Application tools                              |
 |    - Task tools                                     |
+|    - LeetCode plan / feedback tools                 |
 |    - Interview review tools                         |
 |    - Feishu calendar / bitable sync tools           |
 |                                                     |
@@ -183,6 +185,15 @@ curl -X POST http://127.0.0.1:8000/api/agent/message \
   -d '{"message":"新增投递字节跳动后端开发实习，明天下午三点一面"}'
 ```
 
+在飞书中发送“开启每日刷题”即可订阅；“今天刷什么”只返回 LeetCode 推荐，“今天任务是什么”会同时返回刷题与其他秋招任务。明确反馈可直接回复“第1题独立完成”“LRU 看题解完成”“第2题没做出来”或“第3题延期”。
+
+题库运行时只读取仓库内快照，不访问力扣。需要人工更新公开元数据时执行：
+
+```bash
+cd backend
+.venv/bin/python scripts/sync_leetcode_hot100.py
+```
+
 ## Configuration Highlights
 
 | Variable | Purpose |
@@ -233,4 +244,3 @@ curl -X POST http://127.0.0.1:8000/api/agent/message \
 - [产品需求与技术方案](docs/OfferPilot-需求与技术方案.md)
 - [后端运行说明](backend/README.md)
 - `docs/` 下的阶段性编码报告记录了从后端骨架、Agent 编排、飞书事件、日历同步、多维表格同步到 LLM Planner 接入的演进过程。
-

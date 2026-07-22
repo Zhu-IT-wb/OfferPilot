@@ -1,7 +1,8 @@
 import hashlib
 import json
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from app.core.config import settings
 from app.models.application import (
@@ -13,11 +14,18 @@ from app.models.application import (
     application_status_from_round,
 )
 from app.models.interview_schedule import InterviewSchedule, InterviewScheduleStatus
+from app.models.leetcode import (
+    LeetCodePracticeResult,
+    LeetCodeRecommendation,
+    LeetCodeSubscription,
+)
+from app.repositories.leetcode_repository import InMemoryLeetCodeRepository, LeetCodeRepository
 from app.repositories.offerpilot_repository import (
     InMemoryOfferPilotRepository,
     OfferPilotRepository,
 )
 from app.repositories.sqlite_offerpilot_repository import SQLiteOfferPilotRepository
+from app.repositories.sqlite_leetcode_repository import SQLiteLeetCodeRepository
 from app.schemas.agent import AgentActionName
 from app.schemas.tool import ToolResult
 from app.services.bitable_event_subscription_service import ensure_bitable_event_subscription
@@ -28,6 +36,9 @@ from app.services.feishu_service import (
     FeishuRequestError,
     parse_chinese_datetime,
 )
+from app.services.leetcode_catalog import load_hot100_snapshot
+from app.services.leetcode_messages import format_leetcode_recommendations
+from app.services.leetcode_recommendation import LeetCodeRecommendationWorkflow
 from app.tools.registry import ToolRegistry
 
 
@@ -51,6 +62,12 @@ def build_default_offerpilot_repository() -> OfferPilotRepository:
     return InMemoryOfferPilotRepository()
 
 
+def build_default_leetcode_repository() -> LeetCodeRepository:
+    if settings.storage_backend.strip().lower() == "sqlite":
+        return SQLiteLeetCodeRepository(settings.sqlite_path)
+    return InMemoryLeetCodeRepository(problems=load_hot100_snapshot().problems)
+
+
 # 根据配置创建飞书日历服务实例。
 def build_default_feishu_calendar_service() -> Optional[FeishuCalendarService]:
     if not settings.feishu_calendar_sync_enabled:
@@ -70,6 +87,7 @@ def build_offerpilot_tool_registry(
     repository: Optional[OfferPilotRepository] = None,
     calendar_service: Any = _DEFAULT_EXTERNAL_SERVICE,
     bitable_service: Any = _DEFAULT_EXTERNAL_SERVICE,
+    leetcode_repository: Optional[LeetCodeRepository] = None,
 ) -> ToolRegistry:
     selected_repository = repository or build_default_offerpilot_repository()
     selected_calendar_service = (
@@ -82,14 +100,49 @@ def build_offerpilot_tool_registry(
         if bitable_service is _DEFAULT_EXTERNAL_SERVICE
         else bitable_service
     )
+    selected_leetcode_repository = leetcode_repository or build_default_leetcode_repository()
     registry = ToolRegistry()
 
     registry.register(
         AgentActionName.LIST_TODAY_TASKS.value,
-        lambda arguments: list_today_tasks(selected_repository, arguments),
+        lambda arguments: list_today_tasks(
+            selected_repository,
+            arguments,
+            leetcode_repository=selected_leetcode_repository,
+        ),
         description="查看今天的 LeetCode、八股、项目深挖和投递相关任务。",
         mutating=False,
         examples=["今天任务是什么", "查看今日任务", "/today"],
+    )
+    registry.register(
+        AgentActionName.ENABLE_LEETCODE_PLAN.value,
+        lambda arguments: enable_leetcode_plan(selected_leetcode_repository, arguments),
+        description="开启每天 09:00 的 LeetCode 推荐和 21:00 未反馈提醒。",
+        mutating=True,
+        examples=["开启每日刷题", "开启 LeetCode 计划"],
+    )
+    registry.register(
+        AgentActionName.DISABLE_LEETCODE_PLAN.value,
+        lambda arguments: disable_leetcode_plan(selected_leetcode_repository, arguments),
+        description="关闭 LeetCode 主动推送，保留历史训练进度。",
+        mutating=True,
+        examples=["关闭每日刷题", "停止 LeetCode 推送"],
+    )
+    registry.register(
+        AgentActionName.GET_TODAY_LEETCODE.value,
+        lambda arguments: get_today_leetcode(selected_leetcode_repository, arguments),
+        description="读取或生成今天的三道 LeetCode 推荐题。",
+        mutating=False,
+        examples=["今天刷什么", "查看今天的力扣题"],
+    )
+    registry.register(
+        AgentActionName.RECORD_LEETCODE_RESULT.value,
+        lambda arguments: record_leetcode_result(selected_leetcode_repository, arguments),
+        description="记录明确的 LeetCode 训练结果并计算下次复习日期。",
+        mutating=True,
+        required_slots=["result"],
+        optional_slots=["assignment_id", "problem_index", "problem_title"],
+        examples=["第1题独立完成", "LRU 看题解完成", "第2题没做出来"],
     )
     registry.register(
         AgentActionName.CREATE_APPLICATION.value,
@@ -211,28 +264,227 @@ def build_offerpilot_tool_registry(
 
 
 # 查询并格式化今天的秋招任务。
-def list_today_tasks(repository: OfferPilotRepository, arguments: Optional[Dict[str, Any]] = None) -> ToolResult:
+def list_today_tasks(
+    repository: OfferPilotRepository,
+    arguments: Optional[Dict[str, Any]] = None,
+    leetcode_repository: Optional[LeetCodeRepository] = None,
+) -> ToolResult:
     owner_id = _owner_id_from_arguments(arguments or {})
     tasks = repository.list_today_tasks(owner_id=owner_id)
     task_data = [task.to_dict() for task in tasks]
-    if not task_data:
+    recommendations = (
+        LeetCodeRecommendationWorkflow(leetcode_repository).get_today(
+            owner_id=owner_id,
+            today=_today_in_shanghai(),
+        )
+        if leetcode_repository is not None
+        else []
+    )
+    recommendation_data = [_recommendation_to_dict(item) for item in recommendations]
+    if not task_data and not recommendation_data:
         return ToolResult(
             tool_name=AgentActionName.LIST_TODAY_TASKS.value,
             success=True,
             message="今天暂时没有待办任务。",
-            data={"tasks": []},
+            data={"tasks": [], "leetcode_recommendations": []},
         )
 
-    lines = [
-        f"{index}. {task.title}（{task.task_type.value}，{task.priority.value}）"
-        for index, task in enumerate(tasks, start=1)
-    ]
+    sections = []
+    if recommendations:
+        sections.append(format_leetcode_recommendations(recommendations))
+    if tasks:
+        lines = [
+            f"{index}. {task.title}（{task.task_type.value}，{task.priority.value}）"
+            for index, task in enumerate(tasks, start=1)
+        ]
+        sections.append("其他秋招任务：\n" + "\n".join(lines))
     return ToolResult(
         tool_name=AgentActionName.LIST_TODAY_TASKS.value,
         success=True,
-        message="今天的任务：\n" + "\n".join(lines),
-        data={"tasks": task_data},
+        message="今天的任务：\n\n" + "\n\n".join(sections),
+        data={
+            "tasks": task_data,
+            "leetcode_recommendations": recommendation_data,
+        },
     )
+
+
+def enable_leetcode_plan(
+    repository: LeetCodeRepository,
+    arguments: Dict[str, Any],
+) -> ToolResult:
+    owner_id = _owner_id_from_arguments(arguments)
+    feishu_open_id = str(arguments.get("attendee_user_id") or "").strip()
+    if not feishu_open_id:
+        return ToolResult(
+            tool_name=AgentActionName.ENABLE_LEETCODE_PLAN.value,
+            success=False,
+            message="请在飞书中发送“开启每日刷题”，这样我才能保存推送目标。",
+            data={"missing_slots": ["attendee_user_id"]},
+        )
+    repository.save_subscription(
+        LeetCodeSubscription(owner_id=owner_id, feishu_open_id=feishu_open_id, enabled=True)
+    )
+    recommendations = LeetCodeRecommendationWorkflow(repository).get_today(
+        owner_id=owner_id,
+        today=_today_in_shanghai(),
+    )
+    return ToolResult(
+        tool_name=AgentActionName.ENABLE_LEETCODE_PLAN.value,
+        success=True,
+        message=(
+            "已开启每日刷题：09:00 推送，21:00 提醒未反馈题目。\n\n"
+            + format_leetcode_recommendations(recommendations)
+        ),
+        data={"recommendations": [_recommendation_to_dict(item) for item in recommendations]},
+    )
+
+
+def disable_leetcode_plan(
+    repository: LeetCodeRepository,
+    arguments: Dict[str, Any],
+) -> ToolResult:
+    owner_id = _owner_id_from_arguments(arguments)
+    subscription = repository.get_subscription(owner_id)
+    if subscription is None:
+        return ToolResult(
+            tool_name=AgentActionName.DISABLE_LEETCODE_PLAN.value,
+            success=True,
+            message="每日刷题推送当前未开启。",
+            data={"enabled": False},
+        )
+    subscription.enabled = False
+    repository.save_subscription(subscription)
+    return ToolResult(
+        tool_name=AgentActionName.DISABLE_LEETCODE_PLAN.value,
+        success=True,
+        message="已关闭 LeetCode 主动推送，历史训练进度会继续保留。",
+        data={"enabled": False},
+    )
+
+
+def get_today_leetcode(
+    repository: LeetCodeRepository,
+    arguments: Dict[str, Any],
+) -> ToolResult:
+    recommendations = LeetCodeRecommendationWorkflow(repository).get_today(
+        owner_id=_owner_id_from_arguments(arguments),
+        today=_today_in_shanghai(),
+    )
+    return ToolResult(
+        tool_name=AgentActionName.GET_TODAY_LEETCODE.value,
+        success=True,
+        message=format_leetcode_recommendations(recommendations),
+        data={"recommendations": [_recommendation_to_dict(item) for item in recommendations]},
+    )
+
+
+def record_leetcode_result(
+    repository: LeetCodeRepository,
+    arguments: Dict[str, Any],
+) -> ToolResult:
+    owner_id = _owner_id_from_arguments(arguments)
+    today = _today_in_shanghai()
+    workflow = LeetCodeRecommendationWorkflow(repository)
+    recommendations = workflow.get_today(owner_id=owner_id, today=today)
+    recommendation = _resolve_leetcode_assignment(recommendations, arguments)
+    if recommendation is None:
+        return ToolResult(
+            tool_name=AgentActionName.RECORD_LEETCODE_RESULT.value,
+            success=False,
+            message="今天有多道 LeetCode 任务，请说明第几题或题目名称。",
+            data={
+                "missing_slots": ["problem_index"],
+                "candidates": [_recommendation_to_dict(item) for item in recommendations],
+            },
+        )
+    try:
+        result = LeetCodePracticeResult(str(arguments.get("result") or ""))
+    except ValueError:
+        return ToolResult(
+            tool_name=AgentActionName.RECORD_LEETCODE_RESULT.value,
+            success=False,
+            message="请说明结果：独立完成、提示后完成、看题解完成、未完成、延期或跳过。",
+            data={"missing_slots": ["result"]},
+        )
+    try:
+        feedback = workflow.record_result(
+            owner_id=owner_id,
+            assignment_id=recommendation.assignment.id,
+            result=result,
+            practiced_on=today,
+        )
+    except ValueError:
+        return ToolResult(
+            tool_name=AgentActionName.RECORD_LEETCODE_RESULT.value,
+            success=False,
+            message="这道题今天已经记录了其他结果；第一版暂不支持覆盖，请明天继续按计划反馈。",
+            data={"assignment": recommendation.assignment.to_dict()},
+        )
+    next_review = feedback.progress.next_review_on if feedback.progress else None
+    message = (
+        f"已记录：{recommendation.problem.frontend_id}. {recommendation.problem.title_zh}，"
+        f"{_LEETCODE_RESULT_LABELS[result]}。"
+    )
+    if next_review:
+        message += f" 下次复习：{next_review.isoformat()}。"
+    elif feedback.progress and feedback.progress.mastery_status.value == "mastered":
+        message += " 已通过三次间隔验证，标记为已掌握。"
+    return ToolResult(
+        tool_name=AgentActionName.RECORD_LEETCODE_RESULT.value,
+        success=True,
+        message=message,
+        data={
+            "assignment": feedback.assignment.to_dict(),
+            "progress": feedback.progress.to_dict() if feedback.progress else None,
+            "problem": recommendation.problem.to_dict(),
+        },
+    )
+
+
+_LEETCODE_RESULT_LABELS = {
+    LeetCodePracticeResult.INDEPENDENT: "独立完成",
+    LeetCodePracticeResult.WITH_HINT: "提示后完成",
+    LeetCodePracticeResult.WITH_SOLUTION: "看题解完成",
+    LeetCodePracticeResult.FAILED: "尝试但未完成",
+    LeetCodePracticeResult.POSTPONED: "延期",
+    LeetCodePracticeResult.SKIPPED: "跳过",
+}
+
+
+def _today_in_shanghai() -> date:
+    return datetime.now(ZoneInfo("Asia/Shanghai")).date()
+
+
+def _resolve_leetcode_assignment(
+    recommendations: List[LeetCodeRecommendation],
+    arguments: Dict[str, Any],
+) -> Optional[LeetCodeRecommendation]:
+    assignment_id = str(arguments.get("assignment_id") or "").strip()
+    if assignment_id:
+        return next((item for item in recommendations if item.assignment.id == assignment_id), None)
+    problem_index = arguments.get("problem_index")
+    if isinstance(problem_index, str) and problem_index.isdigit():
+        problem_index = int(problem_index)
+    if isinstance(problem_index, int) and 1 <= problem_index <= len(recommendations):
+        return recommendations[problem_index - 1]
+    title = _normalize_match_value(str(arguments.get("problem_title") or ""))
+    if title:
+        matches = [
+            item
+            for item in recommendations
+            if title in _normalize_match_value(item.problem.title_zh)
+            or title in _normalize_match_value(item.problem.title_en)
+        ]
+        return matches[0] if len(matches) == 1 else None
+    return recommendations[0] if len(recommendations) == 1 else None
+
+
+def _recommendation_to_dict(item: LeetCodeRecommendation) -> Dict[str, Any]:
+    return {
+        "assignment": item.assignment.to_dict(),
+        "problem": item.problem.to_dict(),
+    }
 
 
 # 创建投递记录，并按需同步面试日程和飞书多维表格。
@@ -2290,7 +2542,11 @@ def start_mock_interview(arguments: Dict[str, Any]) -> ToolResult:
 
 
 _default_repository = build_default_offerpilot_repository()
-_default_registry = build_offerpilot_tool_registry(_default_repository)
+_default_leetcode_repository = build_default_leetcode_repository()
+_default_registry = build_offerpilot_tool_registry(
+    _default_repository,
+    leetcode_repository=_default_leetcode_repository,
+)
 
 
 # 返回全局默认工具注册表。
@@ -2301,3 +2557,8 @@ def get_default_tool_registry() -> ToolRegistry:
 # 返回全局默认数据仓库实例。
 def get_default_offerpilot_repository() -> OfferPilotRepository:
     return _default_repository
+
+
+# 返回全局默认 LeetCode 数据仓库实例。
+def get_default_leetcode_repository() -> LeetCodeRepository:
+    return _default_leetcode_repository

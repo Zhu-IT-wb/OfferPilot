@@ -9,9 +9,9 @@ def test_repository_lists_default_today_tasks() -> None:
 
     tasks = repository.list_today_tasks()
 
-    assert len(tasks) == 3
+    assert len(tasks) == 2
     assert tasks[0].id == "task_1"
-    assert tasks[0].to_dict()["task_type"] == "leetcode"
+    assert tasks[0].to_dict()["task_type"] == "interview_question"
 
 
 def test_repository_saves_runtime_setting() -> None:
@@ -181,12 +181,12 @@ def test_repository_can_clear_application_interview_fields_by_id() -> None:
 def test_repository_completes_task_by_title() -> None:
     repository = InMemoryOfferPilotRepository()
 
-    task = repository.complete_task(task_title="反转链表")
+    task = repository.complete_task(task_title="HashMap")
 
     assert task is not None
     assert task.id == "task_1"
     assert task.status == TaskStatus.PASSED
-    assert len(repository.list_today_tasks()) == 2
+    assert len(repository.list_today_tasks()) == 1
 
 
 def test_repository_creates_interview_review() -> None:
