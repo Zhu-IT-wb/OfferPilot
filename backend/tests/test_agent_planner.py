@@ -376,3 +376,97 @@ def test_llm_planner_prioritizes_recent_interviews_from_previous_tool_result() -
     assert "tasks_to_prioritize" not in second.reply
     assert "美团" in second.reply
     assert "先准备" in second.reply
+
+
+def test_llm_planner_reuses_application_after_round_passed_follow_up() -> None:
+    class FakeLLMService:
+        def __init__(self):
+            self.calls = 0
+
+        async def generate_text(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                content = {
+                    "intent": "update_application",
+                    "confidence": 0.94,
+                    "action": "update_application",
+                    "reply": "准备记录一面通过。",
+                    "need_confirmation": True,
+                    "slots": {
+                        "company": "A公司",
+                        "role": "java开发",
+                        "round": "一面",
+                        "update_type": "pass_round",
+                        "status": "interview_1_passed",
+                    },
+                    "missing_slots": [],
+                    "steps": [],
+                    "reason": "passed first interview",
+                }
+            elif self.calls == 2:
+                content = {
+                    "intent": "ask_help",
+                    "confidence": 0.9,
+                    "action": "answer_help",
+                    "reply": "已经确认你一面通过了！",
+                    "need_confirmation": False,
+                    "slots": {},
+                    "missing_slots": [],
+                    "steps": [],
+                    "reason": "acknowledge previous update",
+                }
+            else:
+                content = {
+                    "intent": "update_application",
+                    "confidence": 0.93,
+                    "action": "update_application",
+                    "reply": "准备记录二面安排。",
+                    "need_confirmation": True,
+                    "slots": {
+                        "round": "二面",
+                        "interview_time": "明天下午三点",
+                        "update_type": "schedule_interview",
+                        "status": "interview_2",
+                    },
+                    "missing_slots": ["company"],
+                    "steps": [],
+                    "reason": "schedule second interview",
+                }
+
+            return LLMResult(
+                provider="fake",
+                model="fake",
+                content=json.dumps(content, ensure_ascii=False),
+                raw_response={},
+            )
+
+    from app.repositories.offerpilot_repository import InMemoryOfferPilotRepository
+
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="A公司", role="java开发", round_name="一面")
+    planner = AgentPlanner(llm_service=FakeLLMService(), llm_planner_enabled=True)
+    conversation_store = InMemoryConversationStore()
+    orchestrator = AgentOrchestrator(
+        planner=planner,
+        tool_registry=build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=None),
+        conversation_store=conversation_store,
+    )
+
+    passed_plan = asyncio.run(orchestrator.handle_message("A公司的java开发一面通过了", user_id="u1"))
+    passed = asyncio.run(orchestrator.handle_message("确认", user_id="u1"))
+    acknowledged = asyncio.run(orchestrator.handle_message("我已经一面通过了", user_id="u1"))
+    scheduled_plan = asyncio.run(
+        orchestrator.handle_message("我明天下午三点要进行二面", user_id="u1")
+    )
+
+    assert passed_plan.need_confirmation is True
+    assert passed.tool_result is not None and passed.tool_result.success is True
+    assert acknowledged.action == AgentActionName.ANSWER_HELP
+    recent_context = conversation_store.get_recent_context("api:u1")
+    assert recent_context is not None
+    assert recent_context.application_focus["application_id"] == application.id
+    assert scheduled_plan.action == AgentActionName.UPDATE_APPLICATION
+    assert scheduled_plan.need_confirmation is True
+    assert scheduled_plan.missing_slots == []
+    assert scheduled_plan.slots["application_id"] == application.id
+    assert scheduled_plan.slots["company"] == "A公司"

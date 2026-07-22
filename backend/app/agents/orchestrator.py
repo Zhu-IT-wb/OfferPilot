@@ -629,9 +629,10 @@ class AgentOrchestrator:
         response: AgentResponse,
         original_message: str,
     ) -> None:
+        previous = self.conversation_store.get_recent_context(conversation_id)
         self.conversation_store.set_recent_context(
             conversation_id,
-            RecentAgentContext.from_response(response, original_message),
+            RecentAgentContext.from_response(response, original_message, previous=previous),
         )
 
     # 把工具执行结果合并到 Agent 响应里。

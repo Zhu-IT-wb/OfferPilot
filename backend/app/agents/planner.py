@@ -565,11 +565,6 @@ AgentPlan JSON 字段：
         tool_map = {spec.name: spec for spec in tool_specs}
         slots = plan.slots.copy()
         action = plan.action
-        missing_slots = self._sanitize_missing_slots(
-            plan=plan,
-            slots=slots,
-            tool_map=tool_map,
-        )
 
         if self._is_interview_priority_follow_up(message):
             priority_plan = self._prioritize_recent_interviews_plan(
@@ -580,9 +575,6 @@ AgentPlan JSON 字段：
                 action in self._TOOL_LESS_ACTIONS or plan.missing_slots
             ):
                 return priority_plan
-
-        if action == AgentActionName.ASK_CLARIFICATION and plan.missing_slots and not missing_slots:
-            return self._unknown_missing_slot_plan(plan=plan, message=message)
 
         if action == AgentActionName.QUERY_APPLICATION:
             slots = self._normalize_query_slots(message=message, slots=slots)
@@ -596,6 +588,26 @@ AgentPlan JSON 字段：
             AgentActionName.CANCEL_INTERVIEW,
         }:
             slots = self._normalize_update_slots(message=message, slots=slots)
+
+        slots = self._inherit_recent_application_focus(
+            action=action,
+            slots=slots,
+            context=context,
+        )
+        missing_slots = self._sanitize_missing_slots(
+            plan=plan,
+            slots=slots,
+            tool_map=tool_map,
+        )
+        if any(slots.get(key) for key in ("company", "application_id", "schedule_id")):
+            missing_slots = [
+                slot
+                for slot in missing_slots
+                if slot not in {"company", "application_id", "schedule_id"}
+            ]
+
+        if action == AgentActionName.ASK_CLARIFICATION and plan.missing_slots and not missing_slots:
+            return self._unknown_missing_slot_plan(plan=plan, message=message)
 
         required_slots = self._required_slots_for_action(action=action, slots=slots, tool_map=tool_map)
         missing_slots.extend(
@@ -671,6 +683,32 @@ AgentPlan JSON 字段：
                 normalized["query_type"] = "company_status"
             else:
                 normalized["query_type"] = "list"
+        return normalized
+
+    # 用户省略公司时，沿用当前会话最近一次明确定位的投递记录。
+    @staticmethod
+    def _inherit_recent_application_focus(
+        action: AgentActionName,
+        slots: Dict[str, Any],
+        context: AgentPlannerContext,
+    ) -> Dict[str, Any]:
+        normalized = slots.copy()
+        if action not in {
+            AgentActionName.UPDATE_APPLICATION,
+            AgentActionName.RESCHEDULE_INTERVIEW,
+            AgentActionName.CANCEL_INTERVIEW,
+        }:
+            return normalized
+        if any(normalized.get(key) for key in ("company", "application_id", "schedule_id")):
+            return normalized
+        if context.recent_context is None:
+            return normalized
+
+        focus = context.recent_context.application_focus
+        for key in ("application_id", "company", "role"):
+            value = focus.get(key)
+            if value:
+                normalized[key] = value
         return normalized
 
     # 标准化新增投递类参数，修正 LLM 偶发的公司/岗位错槽位。

@@ -42,16 +42,47 @@ class RecentAgentContext:
     reply: str
     slots: Dict[str, Any]
     tool_result: Optional[Dict[str, Any]]
+    application_focus: Dict[str, Any]
 
     # 从 AgentResponse 中提取可序列化的短期上下文。
     @classmethod
-    def from_response(cls, response: AgentResponse, original_message: str) -> "RecentAgentContext":
+    def from_response(
+        cls,
+        response: AgentResponse,
+        original_message: str,
+        previous: Optional["RecentAgentContext"] = None,
+    ) -> "RecentAgentContext":
         tool_result = None
         if response.tool_result is not None:
             if hasattr(response.tool_result, "model_dump"):
                 tool_result = response.tool_result.model_dump()
             else:
                 tool_result = response.tool_result.dict()
+
+        application_focus = previous.application_focus.copy() if previous is not None else {}
+        if response.action in {
+            AgentActionName.CREATE_APPLICATION,
+            AgentActionName.QUERY_APPLICATION,
+            AgentActionName.UPDATE_APPLICATION,
+            AgentActionName.RESCHEDULE_INTERVIEW,
+            AgentActionName.CANCEL_INTERVIEW,
+        }:
+            for key in ("application_id", "company", "role"):
+                value = response.slots.get(key)
+                if value:
+                    application_focus[key] = value
+
+            tool_data = tool_result.get("data") if tool_result else None
+            application = tool_data.get("application") if isinstance(tool_data, dict) else None
+            if isinstance(application, dict):
+                for source_key, focus_key in (
+                    ("id", "application_id"),
+                    ("company", "company"),
+                    ("role", "role"),
+                ):
+                    value = application.get(source_key)
+                    if value:
+                        application_focus[focus_key] = value
 
         return cls(
             original_message=original_message,
@@ -60,6 +91,7 @@ class RecentAgentContext:
             reply=response.reply,
             slots=response.slots.copy(),
             tool_result=tool_result,
+            application_focus=application_focus,
         )
 
     # 转成 LLM Planner 可读的简洁上下文。
@@ -71,6 +103,7 @@ class RecentAgentContext:
             "reply": self.reply,
             "slots": self.slots,
             "tool_result": self.tool_result,
+            "application_focus": self.application_focus,
         }
 
 
