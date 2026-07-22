@@ -15,15 +15,15 @@ from app.services.leetcode_recommendation import LeetCodeRecommendationWorkflow
 from app.services.feishu_service import FeishuRequestError
 
 
-def test_leetcode_pushes_morning_once_and_reminds_only_pending_at_night() -> None:
+def test_leetcode_pushes_cards_at_eight_noon_and_six_for_pending_problems() -> None:
     class FakeMessageService:
         def __init__(self):
-            self.messages = []
+            self.cards = []
 
-        async def send_text_message(
-            self, receive_id, text, receive_id_type="open_id", idempotency_key=None
+        async def send_interactive_message(
+            self, receive_id, card, receive_id_type="open_id", idempotency_key=None
         ):
-            self.messages.append((receive_id, text, idempotency_key))
+            self.cards.append((receive_id, card, idempotency_key))
 
     repository = InMemoryLeetCodeRepository(problems=load_hot100_snapshot().problems)
     repository.save_subscription(
@@ -33,7 +33,7 @@ def test_leetcode_pushes_morning_once_and_reminds_only_pending_at_night() -> Non
     service = LeetCodePushService(repository=repository, message_service=messages)
     timezone = ZoneInfo("Asia/Shanghai")
 
-    morning = datetime(2026, 7, 22, 9, 0, tzinfo=timezone)
+    morning = datetime(2026, 7, 22, 8, 0, tzinfo=timezone)
     asyncio.run(service.run_due(morning))
     asyncio.run(service.run_due(morning))
     recommendations = LeetCodeRecommendationWorkflow(repository).get_today(
@@ -45,19 +45,26 @@ def test_leetcode_pushes_morning_once_and_reminds_only_pending_at_night() -> Non
         result=LeetCodePracticeResult.INDEPENDENT,
         practiced_on=morning.date(),
     )
-    asyncio.run(service.run_due(datetime(2026, 7, 22, 21, 0, tzinfo=timezone)))
-    asyncio.run(service.run_due(datetime(2026, 7, 22, 21, 1, tzinfo=timezone)))
+    asyncio.run(service.run_due(datetime(2026, 7, 22, 12, 0, tzinfo=timezone)))
+    asyncio.run(service.run_due(datetime(2026, 7, 22, 12, 1, tzinfo=timezone)))
+    asyncio.run(service.run_due(datetime(2026, 7, 22, 18, 0, tzinfo=timezone)))
+    asyncio.run(service.run_due(datetime(2026, 7, 22, 18, 1, tzinfo=timezone)))
 
-    assert len(messages.messages) == 2
-    assert "今日 LeetCode" in messages.messages[0][1]
-    assert recommendations[0].problem.title_zh not in messages.messages[1][1]
-    assert recommendations[1].problem.title_zh in messages.messages[1][1]
-    assert recommendations[2].problem.title_zh in messages.messages[1][1]
-    assert f"2. {recommendations[1].problem.frontend_id}." in messages.messages[1][1]
-    assert f"3. {recommendations[2].problem.frontend_id}." in messages.messages[1][1]
-    assert uuid.UUID(messages.messages[0][2]).version == 5
-    assert uuid.UUID(messages.messages[1][2]).version == 5
-    assert messages.messages[0][2] != messages.messages[1][2]
+    assert len(messages.cards) == 3
+    assert messages.cards[0][1]["header"]["title"]["content"] == "🎯 今日 LeetCode · 3 题"
+    assert messages.cards[1][1]["header"]["title"]["content"] == "⏰ 12:00 刷题进度提醒"
+    assert messages.cards[2][1]["header"]["title"]["content"] == "🔥 18:00 今日最后提醒"
+    noon_content = str(messages.cards[1][1])
+    evening_content = str(messages.cards[2][1])
+    assert recommendations[0].problem.title_zh not in noon_content
+    assert recommendations[1].problem.title_zh in noon_content
+    assert recommendations[2].problem.title_zh in noon_content
+    assert "明天会自动顺延" in evening_content
+    assert all(uuid.UUID(item[2]).version == 5 for item in messages.cards)
+    assert len({item[2] for item in messages.cards}) == 3
+    assert repository.has_delivery(
+        "feishu:ou_1", morning.date(), LeetCodeDeliveryType.NOON
+    ) is True
 
 
 def test_leetcode_push_stops_retrying_after_three_persisted_failures() -> None:
@@ -65,8 +72,8 @@ def test_leetcode_push_stops_retrying_after_three_persisted_failures() -> None:
         def __init__(self):
             self.attempts = 0
 
-        async def send_text_message(
-            self, receive_id, text, receive_id_type="open_id", idempotency_key=None
+        async def send_interactive_message(
+            self, receive_id, card, receive_id_type="open_id", idempotency_key=None
         ):
             self.attempts += 1
             raise FeishuRequestError("temporary failure")
@@ -77,7 +84,7 @@ def test_leetcode_push_stops_retrying_after_three_persisted_failures() -> None:
     )
     messages = FailingMessageService()
     service = LeetCodePushService(repository=repository, message_service=messages)
-    now = datetime(2026, 7, 22, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    now = datetime(2026, 7, 22, 8, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
     first = asyncio.run(service.run_due(now))
     second = asyncio.run(service.run_due(now))

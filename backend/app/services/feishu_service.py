@@ -145,6 +145,32 @@ class FeishuMessageService:
             raw_response=response_data,
         )
 
+    async def send_interactive_message(
+        self,
+        receive_id: str,
+        card: Dict[str, Any],
+        receive_id_type: str = "open_id",
+        idempotency_key: Optional[str] = None,
+    ) -> FeishuMessageResult:
+        token = await self.get_tenant_access_token()
+        payload = {
+            "receive_id": receive_id,
+            "msg_type": "interactive",
+            "content": json.dumps(card, ensure_ascii=False),
+        }
+        if idempotency_key:
+            payload["uuid"] = idempotency_key
+        response_data = await self._post_json(
+            path="/im/v1/messages",
+            payload=payload,
+            headers={"Authorization": f"Bearer {token}"},
+            params={"receive_id_type": receive_id_type},
+        )
+        self._raise_for_feishu_code(response_data)
+        data = response_data.get("data")
+        message_id = data.get("message_id") if isinstance(data, dict) else None
+        return FeishuMessageResult(message_id=message_id, raw_response=response_data)
+
     # 异步获取飞书 tenant_access_token。
     async def get_tenant_access_token(self) -> str:
         if not self.is_configured():

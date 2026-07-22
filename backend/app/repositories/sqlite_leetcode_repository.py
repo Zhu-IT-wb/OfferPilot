@@ -230,13 +230,15 @@ class SQLiteLeetCodeRepository:
         self._execute(
             """
             INSERT INTO leetcode_subscriptions (
-                owner_id, feishu_open_id, enabled, timezone, morning_time, evening_time, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                owner_id, feishu_open_id, enabled, timezone, morning_time, noon_time,
+                evening_time, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(owner_id) DO UPDATE SET
                 feishu_open_id = excluded.feishu_open_id,
                 enabled = excluded.enabled,
                 timezone = excluded.timezone,
                 morning_time = excluded.morning_time,
+                noon_time = excluded.noon_time,
                 evening_time = excluded.evening_time,
                 updated_at = excluded.updated_at
             """,
@@ -246,6 +248,7 @@ class SQLiteLeetCodeRepository:
                 int(subscription.enabled),
                 subscription.timezone,
                 subscription.morning_time,
+                subscription.noon_time,
                 subscription.evening_time,
                 datetime.now().isoformat(),
             ),
@@ -254,7 +257,8 @@ class SQLiteLeetCodeRepository:
     def get_subscription(self, owner_id: str) -> Optional[LeetCodeSubscription]:
         rows = self._fetch_all(
             """
-            SELECT owner_id, feishu_open_id, enabled, timezone, morning_time, evening_time
+            SELECT owner_id, feishu_open_id, enabled, timezone, morning_time, noon_time,
+                   evening_time
             FROM leetcode_subscriptions WHERE owner_id = ?
             """,
             (owner_id,),
@@ -264,7 +268,8 @@ class SQLiteLeetCodeRepository:
     def list_enabled_subscriptions(self) -> List[LeetCodeSubscription]:
         rows = self._fetch_all(
             """
-            SELECT owner_id, feishu_open_id, enabled, timezone, morning_time, evening_time
+            SELECT owner_id, feishu_open_id, enabled, timezone, morning_time, noon_time,
+                   evening_time
             FROM leetcode_subscriptions WHERE enabled = 1 ORDER BY owner_id
             """
         )
@@ -375,8 +380,9 @@ class SQLiteLeetCodeRepository:
                     feishu_open_id TEXT NOT NULL,
                     enabled INTEGER NOT NULL DEFAULT 1,
                     timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
-                    morning_time TEXT NOT NULL DEFAULT '09:00',
-                    evening_time TEXT NOT NULL DEFAULT '21:00',
+                    morning_time TEXT NOT NULL DEFAULT '08:00',
+                    noon_time TEXT NOT NULL DEFAULT '12:00',
+                    evening_time TEXT NOT NULL DEFAULT '18:00',
                     updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS leetcode_deliveries (
@@ -396,6 +402,23 @@ class SQLiteLeetCodeRepository:
                 );
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(leetcode_subscriptions)")
+            }
+            if "noon_time" not in columns:
+                connection.execute(
+                    "ALTER TABLE leetcode_subscriptions "
+                    "ADD COLUMN noon_time TEXT NOT NULL DEFAULT '12:00'"
+                )
+                connection.execute(
+                    "UPDATE leetcode_subscriptions SET morning_time = '08:00' "
+                    "WHERE morning_time = '09:00'"
+                )
+                connection.execute(
+                    "UPDATE leetcode_subscriptions SET evening_time = '18:00' "
+                    "WHERE evening_time = '21:00'"
+                )
             connection.commit()
 
     def _execute(self, query: str, parameters: tuple[Any, ...]) -> None:
@@ -470,5 +493,6 @@ class SQLiteLeetCodeRepository:
             enabled=bool(row["enabled"]),
             timezone=row["timezone"],
             morning_time=row["morning_time"],
+            noon_time=row["noon_time"],
             evening_time=row["evening_time"],
         )

@@ -259,7 +259,7 @@ def test_postponed_problem_is_carryover_not_a_duplicate_due_review() -> None:
     assert len({item.problem.id for item in recommendations}) == 3
 
 
-def test_carryover_uses_at_most_two_slots_when_no_review_is_due() -> None:
+def test_all_unfinished_problems_are_carried_to_the_next_day() -> None:
     repository = InMemoryLeetCodeRepository(
         problems=[
             _problem(str(index), f"Problem {index}", LeetCodeDifficulty.EASY, 0, index)
@@ -275,10 +275,11 @@ def test_carryover_uses_at_most_two_slots_when_no_review_is_due() -> None:
     assert len(recommendations) == 3
     assert [item.assignment.assignment_type for item in recommendations].count(
         LeetCodeAssignmentType.CARRYOVER
-    ) == 2
-    assert [item.assignment.assignment_type for item in recommendations].count(
-        LeetCodeAssignmentType.NEW
-    ) == 1
+    ) == 3
+    assert {item.problem.id for item in recommendations} == {
+        item.problem.id for item in workflow.get_today("owner", first_day)
+    }
+    assert all(item.assignment.postpone_count == 1 for item in recommendations)
 
 
 def test_hot100_exhaustion_returns_fewer_than_three_without_duplicates() -> None:

@@ -192,11 +192,16 @@ class LeetCodeRecommendationWorkflow:
         problem_by_id = {problem.id: problem for problem in problems}
         selected_problem_ids = set()
         new_slot_count = 2 if due_progress else 3
-        carryover_slot_count = min(2, new_slot_count)
+        carryover_slot_count = min(3, len(prior_pending))
 
         for previous in prior_pending[:carryover_slot_count]:
+            next_postpone_count = previous.postpone_count
+            if previous.status == LeetCodeAssignmentStatus.PENDING:
+                next_postpone_count += 1
             previous.status = LeetCodeAssignmentStatus.SKIPPED
             self.repository.save_assignment(previous)
+            if next_postpone_count >= 3:
+                continue
             carried = self.repository.create_assignment(
                 owner_id=owner_id,
                 problem_id=previous.problem_id,
@@ -204,11 +209,11 @@ class LeetCodeRecommendationWorkflow:
                 assignment_type=LeetCodeAssignmentType.CARRYOVER,
                 recommendation_reason="昨天尚未完成，今天优先继续。",
             )
-            carried.postpone_count = previous.postpone_count
+            carried.postpone_count = next_postpone_count
             self.repository.save_assignment(carried)
             selected_problem_ids.add(previous.problem_id)
 
-        remaining_new_slots = new_slot_count - len(selected_problem_ids)
+        remaining_new_slots = max(new_slot_count - len(selected_problem_ids), 0)
         new_problems = [item for item in problems if item.id not in seen_problem_ids]
         for problem in new_problems[:remaining_new_slots]:
             self.repository.create_assignment(

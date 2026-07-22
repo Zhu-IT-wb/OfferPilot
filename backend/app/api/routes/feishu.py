@@ -5,11 +5,13 @@ from datetime import datetime
 from hmac import compare_digest
 from pathlib import Path
 from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, status
 
 from app.agents.orchestrator import AgentOrchestrator
 from app.core.config import settings
+from app.schemas.agent import AgentActionName
 from app.schemas.feishu import FeishuEventProcessResponse
 from app.services.bitable_sync_service import sync_bitable_record_to_repository
 from app.services.feishu_service import (
@@ -19,7 +21,11 @@ from app.services.feishu_service import (
     FeishuRequestError,
 )
 from app.services.llm_service import LLMRequestError
-from app.tools.offerpilot_tools import get_default_offerpilot_repository
+from app.services.leetcode_card_service import LeetCodeCardService
+from app.tools.offerpilot_tools import (
+    get_default_leetcode_repository,
+    get_default_offerpilot_repository,
+)
 
 router = APIRouter(prefix="/feishu")
 logger = logging.getLogger(__name__)
@@ -49,6 +55,10 @@ async def handle_feishu_event(payload: Dict[str, Any]):
         )
 
     _audit_feishu_event(payload=payload, event_type=event_type, event_id=event_id)
+
+    card_action = _extract_card_action(payload)
+    if card_action is not None:
+        return _handle_leetcode_card_action(payload=payload, action=card_action)
 
     bitable_event_context = _extract_bitable_record_event_context(payload)
     if bitable_event_context is not None:
@@ -91,7 +101,11 @@ async def handle_feishu_event(payload: Dict[str, Any]):
             detail=str(exc),
         ) from exc
 
-    reply_status = await _send_agent_reply(user_id=user_id, text=agent_response.reply)
+    reply_status = await _send_agent_reply(
+        user_id=user_id,
+        text=agent_response.reply,
+        action=agent_response.action,
+    )
     if reply_status["sent"]:
         logger.info(
             "Feishu event handled: event_type=%s user_id_present=%s reply_sent=True reply_message_id_present=%s",
@@ -128,7 +142,11 @@ def _response(response: FeishuEventProcessResponse) -> Dict[str, Any]:
 
 
 # 处理 send_agent_reply 相关逻辑。
-async def _send_agent_reply(user_id: Optional[str], text: str) -> Dict[str, Any]:
+async def _send_agent_reply(
+    user_id: Optional[str],
+    text: str,
+    action: AgentActionName,
+) -> Dict[str, Any]:
     if not user_id:
         return {
             "sent": False,
@@ -143,7 +161,20 @@ async def _send_agent_reply(user_id: Optional[str], text: str) -> Dict[str, Any]
         }
 
     try:
-        result = await service.send_text_message(receive_id=user_id, text=text)
+        if action in {
+            AgentActionName.ENABLE_LEETCODE_PLAN,
+            AgentActionName.GET_TODAY_LEETCODE,
+        }:
+            card = LeetCodeCardService(get_default_leetcode_repository()).build_today_card(
+                owner_id=f"feishu:{user_id}",
+                today=datetime.now(ZoneInfo("Asia/Shanghai")).date(),
+            )
+            result = await service.send_interactive_message(
+                receive_id=user_id,
+                card=card,
+            )
+        else:
+            result = await service.send_text_message(receive_id=user_id, text=text)
     except (FeishuConfigurationError, FeishuRequestError) as exc:
         return {
             "sent": False,
@@ -154,6 +185,76 @@ async def _send_agent_reply(user_id: Optional[str], text: str) -> Dict[str, Any]
         "sent": True,
         "message_id": result.message_id,
     }
+
+
+def _handle_leetcode_card_action(
+    payload: Dict[str, Any],
+    action: Dict[str, Any],
+) -> Dict[str, Any]:
+    open_id = _extract_card_operator_open_id(payload)
+    if not open_id:
+        return _card_toast("error", "无法识别点击用户，请重新打开机器人后再试。")
+    value = action.get("value")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = None
+    if not isinstance(value, dict) or value.get("action") != "leetcode_result":
+        return _card_toast("error", "暂不支持这个卡片操作。")
+    assignment_id = str(value.get("assignment_id") or "").strip()
+    result = str(value.get("result") or "").strip()
+    if not assignment_id:
+        return _card_toast("error", "题目标识缺失，请刷新题目卡片后重试。")
+
+    owner_id = f"feishu:{open_id}"
+    tool_result = LeetCodeCardService(
+        get_default_leetcode_repository()
+    ).record_result(
+        owner_id=owner_id,
+        assignment_id=assignment_id,
+        result=result,
+    )
+    if not tool_result.success:
+        logger.info(
+            "LeetCode card action rejected: owner_id=%s assignment_id_present=%s message=%s",
+            owner_id,
+            bool(assignment_id),
+            tool_result.message,
+        )
+        return _card_toast("error", tool_result.message)
+    return _card_toast("success", tool_result.message)
+
+
+def _card_toast(toast_type: str, content: str) -> Dict[str, Any]:
+    return {"toast": {"type": toast_type, "content": content}}
+
+
+def _extract_card_action(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    event = payload.get("event")
+    if isinstance(event, dict) and isinstance(event.get("action"), dict):
+        return event["action"]
+    action = payload.get("action")
+    return action if isinstance(action, dict) else None
+
+
+def _extract_card_operator_open_id(payload: Dict[str, Any]) -> Optional[str]:
+    open_id = payload.get("open_id")
+    if isinstance(open_id, str) and open_id:
+        return open_id
+    event = payload.get("event")
+    if not isinstance(event, dict):
+        return None
+    operator = event.get("operator")
+    if not isinstance(operator, dict):
+        return None
+    operator_id = operator.get("operator_id")
+    if isinstance(operator_id, dict):
+        open_id = operator_id.get("open_id")
+        if isinstance(open_id, str) and open_id:
+            return open_id
+    open_id = operator.get("open_id")
+    return open_id if isinstance(open_id, str) and open_id else None
 
 
 # 压缩并说明 reply error。

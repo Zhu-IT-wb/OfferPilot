@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -103,6 +104,36 @@ def test_feishu_service_sends_text_message(monkeypatch) -> None:
         "headers": {"Authorization": "Bearer tenant_token"},
         "params": {"receive_id_type": "open_id"},
     }
+
+
+def test_feishu_service_sends_interactive_message(monkeypatch) -> None:
+    calls = []
+    service = FeishuMessageService(app_id="app_id", app_secret="app_secret")
+
+    async def fake_post_json(path, payload, headers=None, params=None):
+        calls.append({"path": path, "payload": payload, "headers": headers, "params": params})
+        if path == "/auth/v3/tenant_access_token/internal":
+            return {"code": 0, "tenant_access_token": "tenant_token", "expire": 7200}
+        return {"code": 0, "data": {"message_id": "om_card"}}
+
+    monkeypatch.setattr(service, "_post_json", fake_post_json)
+    card = {
+        "header": {"title": {"tag": "plain_text", "content": "今日 LeetCode"}},
+        "elements": [],
+    }
+
+    result = asyncio.run(
+        service.send_interactive_message(
+            receive_id="ou_test",
+            card=card,
+            idempotency_key="3d0e89f8-0180-52bd-b975-7fd07845af58",
+        )
+    )
+
+    assert result.message_id == "om_card"
+    assert calls[1]["payload"]["msg_type"] == "interactive"
+    assert json.loads(calls[1]["payload"]["content"]) == card
+    assert calls[1]["payload"]["uuid"] == "3d0e89f8-0180-52bd-b975-7fd07845af58"
 
 
 def test_feishu_service_raises_for_feishu_error_code() -> None:

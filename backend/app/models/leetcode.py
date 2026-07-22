@@ -34,6 +34,7 @@ class LeetCodePracticeResult(str, Enum):
 
 class LeetCodeDeliveryType(str, Enum):
     MORNING = "morning"
+    NOON = "noon"
     EVENING = "evening"
 
 
@@ -135,8 +136,9 @@ class LeetCodeSubscription:
     feishu_open_id: str
     enabled: bool = True
     timezone: str = "Asia/Shanghai"
-    morning_time: str = "09:00"
-    evening_time: str = "21:00"
+    morning_time: str = "08:00"
+    noon_time: str = "12:00"
+    evening_time: str = "18:00"
 
 
 @dataclass(frozen=True)

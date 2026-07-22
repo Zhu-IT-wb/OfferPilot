@@ -24,7 +24,7 @@ def register_leetcode_tools(
     registry.register(
         AgentActionName.ENABLE_LEETCODE_PLAN.value,
         lambda arguments: enable_leetcode_plan(repository, arguments),
-        description="开启每天 09:00 的 LeetCode 推荐和 21:00 未反馈提醒。",
+        description="开启每天 08:00 的 LeetCode 推荐，以及 12:00、18:00 未完成提醒。",
         mutating=True,
         examples=["开启每日刷题", "开启 LeetCode 计划"],
     )
@@ -74,7 +74,7 @@ def enable_leetcode_plan(
         tool_name=AgentActionName.ENABLE_LEETCODE_PLAN.value,
         success=True,
         message=(
-            "已开启每日刷题：09:00 推送，21:00 提醒未反馈题目。\n\n"
+            "已开启每日刷题：08:00 推送，12:00 和 18:00 提醒未完成题目。\n\n"
             + format_leetcode_recommendations(recommendations)
         ),
         data={"recommendations": recommendations_to_dict(recommendations)},
