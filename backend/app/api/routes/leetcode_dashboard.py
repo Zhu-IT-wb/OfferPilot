@@ -129,7 +129,10 @@ def _build_dashboard_payload(
 
 
 @router.get("/auth/start")
-async def start_leetcode_dashboard_auth(request: Request):
+async def start_leetcode_dashboard_auth(
+    request: Request,
+    redirect: str = Query(default="/leetcode/dashboard"),
+):
     app_settings = request.app.state.settings
     session_secret = app_settings.dashboard_session_secret or app_settings.feishu_app_secret
     if not app_settings.feishu_app_id or not session_secret:
@@ -138,10 +141,11 @@ async def start_leetcode_dashboard_auth(request: Request):
             detail="Feishu dashboard authentication is not configured.",
         )
     callback_url = _callback_url(request)
+    safe_redirect = _safe_dashboard_redirect(redirect)
     state_token = DashboardTokenSigner(session_secret).issue(
         purpose="feishu_oauth_state",
         claims={
-            "redirect": "/leetcode/dashboard",
+            "redirect": safe_redirect,
             "nonce": secrets.token_urlsafe(16),
         },
         ttl_seconds=10 * 60,
@@ -179,9 +183,7 @@ async def finish_leetcode_dashboard_auth(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(exc),
         ) from exc
-    redirect_path = state_payload.get("redirect")
-    if redirect_path != "/leetcode/dashboard":
-        redirect_path = "/leetcode/dashboard"
+    redirect_path = _safe_dashboard_redirect(state_payload.get("redirect"))
     session_token = DashboardTokenSigner(session_secret).issue(
         purpose="dashboard_session",
         claims={"open_id": open_id},
@@ -252,3 +254,8 @@ def _require_dashboard_open_id(request: Request) -> str:
             detail="Dashboard session is missing or expired.",
         )
     return open_id
+
+
+def _safe_dashboard_redirect(value: object) -> str:
+    allowed = {"/leetcode/dashboard", "/study/knowledge"}
+    return value if isinstance(value, str) and value in allowed else "/leetcode/dashboard"

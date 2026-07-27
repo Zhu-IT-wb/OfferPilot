@@ -21,7 +21,9 @@ backend/data/
 *.db
 *.sqlite
 *.sqlite3
-docs/
+# Keep generated/local docs ignored, but version the active coding checkpoint.
+docs/*
+!docs/编码任务4-八股学习中心编码实施与进度.md
 data/
 !backend/app/data/
 !backend/app/data/leetcode_hot100.json

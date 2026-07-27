@@ -205,7 +205,7 @@ LRU 看题解完成
 
 开启后默认在 `Asia/Shanghai` 时区 08:00 推送当天计划，12:00 和 18:00 只提醒仍未反馈的题目。每日推荐由确定性工作流生成，不消耗 LLM Token；正常为两道新题和一道到期复习题，没有到期复习时推荐三道新题。
 
-推荐与反馈的主界面是飞书应用顶部的“刷题计划”URL 标签页。定时消息只保留进度摘要和工作台入口，题目结果在标签页中点击记录；文本回复继续作为兼容入口。
+推荐与反馈的主界面是“刷题计划”网页。定时消息只保留进度摘要和工作台入口，题目结果在网页中点击记录；文本回复继续作为兼容入口。
 
 ```env
 OFFERPILOT_DASHBOARD_PUBLIC_BASE_URL=https://sculptor-jester-deskwork.ngrok-free.dev
@@ -213,17 +213,29 @@ OFFERPILOT_DASHBOARD_OAUTH_SCOPE=auth:user.id:read
 OFFERPILOT_DASHBOARD_SESSION_SECRET=replace-with-a-random-secret
 ```
 
-飞书标签页 URL：
+后端只负责提供该网页，不会通过代码自动创建飞书客户端标签页。开发测试时，可在
+OfferPilot 机器人会话顶部点击 `+`，添加网页链接并命名为“刷题计划”；或者在飞书
+开放平台为同一个应用添加“网页应用”能力，将桌面端主页和移动端主页都设为：
 
 ```text
 https://sculptor-jester-deskwork.ngrok-free.dev/leetcode/dashboard
 ```
+
+应用能力变更后需要创建版本并发布。
+
+`ngrok-free.dev` 只适合临时开发。ngrok 免费版会对首次浏览器访问显示
+`ERR_NGROK_6024` 安全确认页；手机端可点击 **Visit Site** 继续访问，但后端无法替
+飞书 WebView 添加 `ngrok-skip-browser-warning` 请求头。正式使用时应换成无访问确认
+页的稳定 HTTPS 域名（或付费 ngrok 域名）。
 
 飞书开放平台“安全设置”中的 OAuth 重定向 URL：
 
 ```text
 https://sculptor-jester-deskwork.ngrok-free.dev/leetcode/dashboard/auth/callback
 ```
+
+还需要把公网域名加入 H5 可信域名。域名变更时必须同步更新网页应用主页或会话标签页、
+OAuth 重定向 URL、H5 可信域名和 `OFFERPILOT_DASHBOARD_PUBLIC_BASE_URL`。
 
 运行时只读取 `app/data/leetcode_hot100.json`，不会访问力扣。手动更新公开元数据快照：
 
@@ -236,3 +248,15 @@ https://sculptor-jester-deskwork.ngrok-free.dev/leetcode/dashboard/auth/callback
 ```bash
 .venv/bin/python scripts/sync_leetcode_hot100.py --html /path/to/top-100-liked.html
 ```
+
+## 八股学习中心
+
+登录后的页面入口：
+
+```text
+https://your-public-domain.example/study/knowledge
+```
+
+页面提供左侧知识导航、一题一卡文字回答、AI 结构化评价、简答版和完整解析。首次打开页面会为当前飞书用户启用每日八股订阅；08:00 推送今日计划，12:00 和 18:00 只提醒未完成题目。薄弱题按掌握度自动进入后续复习队列。
+
+结构化题库位于 `app/data/interview_knowledge.json`。模型只识别命中的评分点和回答证据，最终分数、掌握状态与复习日期由服务端计算。

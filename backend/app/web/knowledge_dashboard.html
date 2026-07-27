@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>OfferPilot 八股复习</title>
+    <style>
+      :root { --bg:#f4f6f8; --surface:#fff; --text:#172033; --muted:#667085; --line:#e5e9f0; --brand:#1769e0; --soft:#edf4ff; --green:#16845b; --orange:#b45f06; --red:#c43d3d; --shadow:0 14px 40px rgba(28,48,78,.08); }
+      * { box-sizing:border-box; }
+      body { margin:0; min-width:320px; color:var(--text); background:var(--bg); font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,sans-serif; }
+      button, textarea, a { font:inherit; }
+      button { cursor:pointer; }
+      .app { display:grid; grid-template-columns:280px minmax(0,1fr); min-height:100vh; }
+      .sidebar { position:sticky; top:0; height:100vh; overflow:auto; padding:22px 16px; border-right:1px solid var(--line); background:#fbfcfe; }
+      .brand { display:flex; align-items:center; gap:11px; margin:0 8px 22px; }
+      .brand-mark { display:grid; width:38px; height:38px; place-items:center; border-radius:12px; color:#fff; background:linear-gradient(145deg,#0d58c7,#438ff8); }
+      .brand strong { display:block; }
+      .brand small { color:var(--muted); }
+      .nav-special, .chapter-button, .question-link { width:100%; border:0; text-align:left; color:inherit; background:transparent; }
+      .nav-special { padding:11px 12px; border-radius:10px; margin:2px 0; }
+      .nav-special.active, .nav-special:hover { background:var(--soft); color:var(--brand); }
+      .module { margin-top:17px; }
+      .module-title { margin:0 9px 8px; color:#344054; font-size:13px; font-weight:750; }
+      .chapter-button { display:flex; justify-content:space-between; padding:9px 12px; border-radius:9px; color:#475467; }
+      .chapter-button:hover { background:#f1f4f8; }
+      .chapter-questions { padding-left:8px; }
+      .question-link { display:flex; gap:8px; padding:7px 10px; color:var(--muted); font-size:12px; line-height:1.35; }
+      .question-link:hover { color:var(--brand); }
+      .dot { flex:0 0 auto; width:7px; height:7px; margin-top:5px; border-radius:50%; background:#cbd2dc; }
+      .dot.learning { background:var(--red); } .dot.reviewing { background:var(--orange); } .dot.mastered { background:var(--green); }
+      .main { min-width:0; padding:26px clamp(18px,4vw,54px) 60px; }
+      .topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; max-width:920px; margin:0 auto 20px; }
+      .topbar h1 { margin:0; font-size:22px; }
+      .mobile-menu { display:none; border:1px solid var(--line); border-radius:9px; padding:8px 11px; background:#fff; }
+      .view-tabs { display:flex; padding:4px; border:1px solid var(--line); border-radius:11px; background:#fff; }
+      .view-tabs button { border:0; border-radius:8px; padding:7px 12px; background:transparent; color:var(--muted); }
+      .view-tabs button.active { color:var(--brand); background:var(--soft); }
+      .workspace { max-width:920px; margin:0 auto; }
+      .hero { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:16px; padding:18px 20px; border:1px solid #dce7f7; border-radius:16px; background:linear-gradient(135deg,#fff,#f1f6ff); }
+      .hero p { margin:5px 0 0; color:var(--muted); font-size:13px; }
+      .progress { font-weight:750; color:var(--brand); }
+      .card { padding:clamp(20px,4vw,34px); border:1px solid var(--line); border-radius:20px; background:var(--surface); box-shadow:var(--shadow); }
+      .eyebrow { margin:0 0 12px; color:var(--brand); font-size:12px; font-weight:750; letter-spacing:.08em; }
+      .question { margin:0; font-size:clamp(22px,4vw,32px); line-height:1.35; letter-spacing:-.025em; }
+      .reason { margin:13px 0 22px; color:var(--muted); font-size:13px; }
+      textarea { width:100%; min-height:170px; resize:vertical; padding:16px; border:1px solid #d8dee8; border-radius:13px; outline:0; color:var(--text); background:#fbfcfe; line-height:1.65; }
+      textarea:focus { border-color:#7aabea; box-shadow:0 0 0 3px rgba(23,105,224,.12); background:#fff; }
+      .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:15px; }
+      .button { min-height:42px; padding:0 16px; border:1px solid var(--line); border-radius:11px; color:#344054; background:#fff; }
+      .button.primary { border-color:var(--brand); color:#fff; background:var(--brand); }
+      .button:disabled { opacity:.55; cursor:not-allowed; }
+      .hint { display:none; margin:16px 0 0; padding:13px 15px; border-radius:11px; color:#755000; background:#fff7db; }
+      .feedback { display:none; margin-top:22px; padding-top:22px; border-top:1px solid var(--line); }
+      .score-row { display:flex; align-items:center; gap:13px; margin-bottom:18px; }
+      .score { display:grid; width:64px; height:64px; place-items:center; border-radius:50%; color:#fff; background:var(--brand); font-size:20px; font-weight:800; }
+      .feedback h3 { margin:20px 0 8px; font-size:15px; }
+      .feedback ul { margin:0; padding-left:21px; color:#475467; line-height:1.7; }
+      .feedback-copy { padding:14px 16px; border-radius:12px; background:#f7f9fc; color:#475467; line-height:1.7; }
+      details { margin-top:12px; border:1px solid var(--line); border-radius:12px; background:#fff; }
+      summary { cursor:pointer; padding:14px 16px; font-weight:700; }
+      details p { margin:0; padding:0 16px 16px; color:#475467; line-height:1.75; }
+      .source { display:inline-block; margin-top:14px; color:var(--brand); text-decoration:none; }
+      .material-list { display:grid; gap:12px; }
+      .material { padding:18px; border:1px solid var(--line); border-radius:14px; background:#fff; }
+      .material h3 { margin:0 0 7px; font-size:16px; }
+      .material p { margin:0; color:var(--muted); }
+      .empty, .error { padding:45px 20px; text-align:center; color:var(--muted); }
+      .error { color:var(--red); }
+      @media (max-width:760px) {
+        .app { display:block; }
+        .sidebar { position:fixed; z-index:20; inset:0 auto 0 0; width:min(86vw,320px); transform:translateX(-105%); transition:transform .18s ease; box-shadow:var(--shadow); }
+        .sidebar.open { transform:translateX(0); }
+        .mobile-menu { display:block; }
+        .main { padding:18px 14px 44px; }
+        .topbar h1 { font-size:18px; }
+        .hero { padding:15px; }
+        .card { border-radius:16px; }
+        .actions .button { flex:1 1 40%; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand"><div class="brand-mark">◈</div><div><strong>OfferPilot</strong><small>八股复习</small></div></div>
+        <button class="nav-special active" id="today-nav">今日复习</button>
+        <button class="nav-special" id="weak-nav">薄弱题目</button>
+        <div id="catalog"></div>
+      </aside>
+      <main class="main">
+        <header class="topbar">
+          <div style="display:flex;align-items:center;gap:10px"><button class="mobile-menu" id="menu">☰</button><h1>OfferPilot 八股复习</h1></div>
+          <div class="view-tabs"><button class="active" data-view="practice">逐题练习</button><button data-view="material">原文资料</button></div>
+        </header>
+        <section class="workspace" id="workspace"><div class="card empty">正在加载今日计划…</div></section>
+      </main>
+    </div>
+    <script>
+      const TODAY_URL = "/api/study/knowledge/today";
+      const ANSWER_URL = "/api/study/knowledge/answers";
+      const MATERIALS_URL = "/api/study/knowledge/materials";
+      const PRACTICE_URL = "/api/study/knowledge/practice";
+      const state = { data:null, materials:null, index:0, view:"practice", submissionId:null, submissionAssignmentId:null };
+      const workspace = document.getElementById("workspace");
+      const esc = (value) => String(value ?? "").replace(/[&<>\"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'\"':"&quot;","'":"&#39;"}[c]));
+      const newSubmissionId = () => globalThis.crypto?.randomUUID?.() || `submission-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      async function load() {
+        try { const response = await fetch(TODAY_URL); if (!response.ok) throw new Error("加载失败，请重新登录或稍后重试。"); state.data = await response.json(); const pendingIndex=state.data.items.findIndex(item=>item.status!=="completed"); state.index=pendingIndex>=0?pendingIndex:Math.max(state.data.items.length-1,0); renderCatalog(); render(); }
+        catch (error) { workspace.innerHTML = `<div class="card error">${esc(error.message)}</div>`; }
+      }
+      function renderCatalog() {
+        document.getElementById("catalog").innerHTML = state.data.catalog.map(module => `<div class="module"><div class="module-title">${esc(module.title)}</div>${module.chapters.map(chapter => `<button class="chapter-button" data-chapter="${esc(chapter.id)}"><span>${esc(chapter.title)}</span><span>${chapter.questions.length}</span></button><div class="chapter-questions">${chapter.questions.map(question => `<button class="question-link" data-question="${question.id}"><span class="dot ${question.status}"></span><span>${esc(question.prompt)}</span></button>`).join("")}</div>`).join("")}</div>`).join("");
+        document.querySelectorAll("[data-chapter]").forEach(button=>button.onclick=()=>startPractice({chapter_id:button.dataset.chapter}));
+        document.querySelectorAll("[data-question]").forEach(button=>button.onclick=()=>startPractice({question_id:button.dataset.question}));
+      }
+      async function startPractice(selector){workspace.innerHTML='<div class="card empty">正在创建练习…</div>';try{const response=await fetch(PRACTICE_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(selector)});const payload=await response.json();if(!response.ok)throw new Error(payload.detail||"创建练习失败");state.data=payload;state.index=Math.max(0,state.data.items.findIndex(item=>item.question.id===payload.focus_question_id));state.view="practice";state.submissionId=null;state.submissionAssignmentId=null;renderCatalog();syncTabs();renderPractice();closeMenu();}catch(error){workspace.innerHTML=`<div class="card error">${esc(error.message)}</div>`;}}
+      function render() { state.view === "material" ? renderMaterials() : renderPractice(); }
+      function renderPractice() {
+        const items = state.data.items; if (!items.length) { workspace.innerHTML='<div class="card empty">今天没有待复习题目。</div>'; return; }
+        const item = items[Math.min(state.index, items.length-1)], q = item.question;
+        workspace.innerHTML = `<div class="hero"><div><strong>今日八股</strong><p>${esc(state.data.date)} · ${esc(q.module_title)} / ${esc(q.chapter_title)}</p></div><div class="progress">${state.data.summary.handled} / ${state.data.summary.total}</div></div><article class="card"><p class="eyebrow">今日第 ${state.index+1} / ${items.length} 题 · ${esc(item.assignment_type)}</p><h2 class="question">${esc(q.prompt)}</h2><p class="reason">${esc(item.recommendation_reason)}</p><textarea id="answer" placeholder="先不看答案，用自己的话回答。建议控制在 1～2 分钟的表达长度。"></textarea><div class="actions"><button class="button primary" id="submit">提交回答</button><button class="button" id="skip">我不会</button><button class="button" id="hint-button">给一点提示</button></div><div class="hint" id="hint">${esc(q.hint)}</div><section class="feedback" id="feedback"></section></article>`;
+        document.getElementById("hint-button").onclick = () => document.getElementById("hint").style.display="block";
+        document.getElementById("submit").onclick = () => submit("text");
+        document.getElementById("skip").onclick = () => submit("skipped");
+      }
+      async function submit(source) {
+        const item=state.data.items[state.index], answer=document.getElementById("answer").value.trim();
+        if (source==="text" && !answer) { document.getElementById("answer").focus(); return; }
+        if(state.submissionAssignmentId!==item.assignment_id){state.submissionId=newSubmissionId();state.submissionAssignmentId=item.assignment_id;}
+        document.querySelectorAll(".actions button").forEach(button=>button.disabled=true);
+        try { const response=await fetch(ANSWER_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({assignment_id:item.assignment_id,submission_id:state.submissionId,answer_text:answer,answer_source:source})}); const payload=await response.json(); if(!response.ok) throw new Error(payload.detail||"评价失败"); const firstCompletion=item.status!=="completed"; showFeedback(payload); item.status="completed"; if(firstCompletion) state.data.summary.handled += 1; }
+        catch(error){ document.getElementById("feedback").style.display="block"; document.getElementById("feedback").innerHTML=`<div class="error">${esc(error.message)}，你的答案已保留在输入框中，可以重试。</div>`; document.querySelectorAll(".actions button").forEach(button=>button.disabled=false); }
+      }
+      function showFeedback(payload) {
+        const evaluation=payload.evaluation, feedback=document.getElementById("feedback"); feedback.style.display="block";
+        const correct=[...(evaluation.matched_required_labels||[]),...(evaluation.matched_bonus_labels||[]).map(x=>`${x}（加分点）`)];
+        const mistakes=evaluation.misconception_labels||[];
+        feedback.innerHTML=`<div class="score-row"><div class="score">${payload.attempt.score}</div><div><strong>${payload.attempt.score>=80?"掌握较好":payload.attempt.score>=60?"基本理解":"需要复习"}</strong><div style="color:var(--muted);margin-top:4px">下次复习：${esc(payload.progress.next_review_on)}</div></div></div><h3>✅ 回答正确的点</h3><ul>${(correct.length?correct:["暂未命中核心评分点"]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul><h3>⚠️ 遗漏或错误</h3><ul>${[...(evaluation.missing_required_labels||[]),...mistakes.map(x=>`事实错误：${x}`)].concat((evaluation.missing_required_labels||[]).length||mistakes.length?[]:["没有核心遗漏或事实错误"]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul><h3>🎯 AI 建议</h3><div class="feedback-copy">${esc(evaluation.feedback)}<br>${esc(evaluation.suggested_improvement)}</div><details open><summary>30～60 秒参考答案</summary><p>${esc(payload.reference_answer.short)}</p></details><details><summary>完整解析</summary><p>${esc(payload.reference_answer.full)}</p></details>${payload.source.url?`<a class="source" href="${esc(payload.source.url)}" target="_blank" rel="noopener">查看原文 · ${esc(payload.source.chapter||payload.source.title)} ↗</a>`:""}<div class="actions"><button class="button primary" id="next">下一题</button><button class="button" id="retry">重新回答</button></div>`;
+        document.getElementById("next").onclick=()=>{ state.index=Math.min(state.index+1,state.data.items.length-1); state.submissionId=null; state.submissionAssignmentId=null; renderPractice(); };
+        document.getElementById("retry").onclick=()=>{ state.submissionId=newSubmissionId(); state.submissionAssignmentId=state.data.items[state.index].assignment_id; feedback.style.display="none"; document.querySelectorAll("article.card > .actions button").forEach(button=>button.disabled=false); document.getElementById("answer").focus(); };
+      }
+      async function renderMaterials() {
+        workspace.innerHTML='<div class="card empty">正在加载资料库…</div>';
+        try { if(!state.materials){const response=await fetch(MATERIALS_URL);if(!response.ok)throw new Error("资料库加载失败");state.materials=(await response.json()).questions;}
+          workspace.innerHTML=`<div class="hero"><div><strong>原文资料</strong><p>所有已收录题目与解析都可直接阅读，外链仅用于查看出处。</p></div></div><div class="material-list">${state.materials.map(q=>`<article class="material" id="material-${esc(q.id)}"><p>${esc(q.module_title)} · ${esc(q.chapter_title)}</p><h3>${esc(q.prompt)}</h3><div class="feedback-copy">${esc(q.short_reference_answer)}</div><details><summary>完整解析</summary><p>${esc(q.full_reference_answer)}</p></details>${q.source.url?`<a class="source" href="${esc(q.source.url)}" target="_blank" rel="noopener">查看出处 · ${esc(q.source.chapter||q.source.title)} ↗</a>`:""}</article>`).join("")}</div>`;
+        } catch(error){workspace.innerHTML=`<div class="card error">${esc(error.message)}</div>`;}
+      }
+      function syncTabs(){document.querySelectorAll("[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view===state.view));}
+      document.querySelectorAll("[data-view]").forEach(button=>button.onclick=()=>{state.view=button.dataset.view;syncTabs();render();});
+      const sidebar=document.getElementById("sidebar"); const closeMenu=()=>sidebar.classList.remove("open"); document.getElementById("menu").onclick=()=>sidebar.classList.toggle("open");
+      document.getElementById("today-nav").onclick=load;
+      document.getElementById("weak-nav").onclick=()=>startPractice({weak_only:true});
+      load();
+    </script>
+  </body>
+</html>

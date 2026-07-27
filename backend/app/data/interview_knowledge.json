@@ -1,0 +1,110 @@
+{
+  "version": "2026-07-27",
+  "questions": [
+    {
+      "id": "knowledge_network_http_001", "module_id": "network", "module_title": "计算机网络", "module_order": 1,
+      "chapter_id": "http", "chapter_title": "HTTP", "chapter_order": 1, "question_order": 1,
+      "prompt": "HTTP/1.1 相比 HTTP/1.0 有哪些主要改进？", "difficulty": "basic", "frequency": 5,
+      "hint": "可以从连接、请求头、缓存和传输方式四方面回答。",
+      "short_reference_answer": "HTTP/1.1 默认使用持久连接，引入 Host 请求头，增强缓存控制并支持分块传输；它还支持管线化，但仍存在应用层队头阻塞。",
+      "full_reference_answer": "HTTP/1.1 的核心改进包括默认持久连接，减少重复建立 TCP 连接的开销；Host 请求头支持同一 IP 上的虚拟主机；Cache-Control、ETag 等机制让缓存控制更精细；Transfer-Encoding: chunked 支持边生成边传输。它定义了管线化请求，但响应仍需按序返回，因此没有从根本上解决队头阻塞。",
+      "source_title": "小林 Coding 计算机网络", "source_url": "https://www.xiaolincoding.com/network/", "source_chapter": "HTTP",
+      "rubric_points": [
+        {"id":"http11_required_1","kind":"required","label":"持久连接","description":"默认复用 TCP 连接","weight":1},
+        {"id":"http11_required_2","kind":"required","label":"Host","description":"支持虚拟主机","weight":1},
+        {"id":"http11_required_3","kind":"required","label":"缓存增强","description":"更细粒度缓存控制","weight":1},
+        {"id":"http11_required_4","kind":"required","label":"分块传输","description":"支持 chunked 传输","weight":1},
+        {"id":"http11_bonus_1","kind":"bonus","label":"管线化限制","description":"知道仍有队头阻塞","weight":1},
+        {"id":"http11_mis_1","kind":"misconception","label":"多路复用混淆","description":"错误认为 HTTP/1.1 已实现多路复用","weight":1}
+      ]
+    },
+    {
+      "id":"knowledge_network_http_002","module_id":"network","module_title":"计算机网络","module_order":1,"chapter_id":"http","chapter_title":"HTTP","chapter_order":1,"question_order":2,
+      "prompt":"HTTP 和 HTTPS 的主要区别是什么？","difficulty":"basic","frequency":5,"hint":"从加密、身份认证、完整性和端口回答。",
+      "short_reference_answer":"HTTPS 是运行在 TLS 之上的 HTTP，通过加密、完整性校验和证书身份认证保护通信，默认端口为 443；HTTP 明文传输，默认端口为 80。",
+      "full_reference_answer":"HTTPS 不是新的应用层协议，而是 HTTP 与 TLS 的组合。TLS 通过对称加密保护正文，通过摘要或 AEAD 保证完整性，通过证书链验证服务器身份，并在握手阶段协商密钥。HTTP 默认使用 80 端口，HTTPS 默认使用 443 端口。",
+      "source_title":"小林 Coding 计算机网络","source_url":"https://www.xiaolincoding.com/network/2_http/http_interview.html","source_chapter":"HTTPS",
+      "rubric_points":[{"id":"https_required_1","kind":"required","label":"加密","description":"HTTPS 加密传输","weight":1},{"id":"https_required_2","kind":"required","label":"身份认证","description":"证书验证身份","weight":1},{"id":"https_required_3","kind":"required","label":"完整性","description":"防止内容被篡改","weight":1},{"id":"https_bonus_1","kind":"bonus","label":"TLS 定位","description":"说明 HTTPS 是 HTTP over TLS","weight":1}]
+    },
+    {
+      "id":"knowledge_network_tcp_001","module_id":"network","module_title":"计算机网络","module_order":1,"chapter_id":"tcp","chapter_title":"TCP","chapter_order":2,"question_order":1,
+      "prompt":"TCP 为什么需要三次握手？","difficulty":"basic","frequency":5,"hint":"分别考虑双方的发送和接收能力、序列号同步以及历史连接。",
+      "short_reference_answer":"三次握手用于确认双方收发能力正常、同步初始序列号，并通过第三次确认避免失效的历史 SYN 直接建立错误连接。",
+      "full_reference_answer":"第一次握手让服务端确认客户端具备发送能力；第二次让客户端确认服务端具备收发能力；第三次让服务端确认客户端也具备接收能力。双方同时交换并确认初始序列号。第三次确认还能让客户端拒绝已经失效的历史连接请求，避免服务端错误进入已连接状态。",
+      "source_title":"小林 Coding 图解网络","source_url":"https://www.xiaolincoding.com/network/3_tcp/tcp_interview.html","source_chapter":"TCP 三次握手",
+      "rubric_points":[{"id":"tcp3_required_1","kind":"required","label":"收发能力","description":"确认双方收发能力","weight":1},{"id":"tcp3_required_2","kind":"required","label":"序列号","description":"同步初始序列号","weight":1},{"id":"tcp3_required_3","kind":"required","label":"历史连接","description":"避免旧 SYN 建立错误连接","weight":1},{"id":"tcp3_mis_1","kind":"misconception","label":"可靠性简化","description":"只说为了可靠而无具体机制","weight":1}]
+    },
+    {
+      "id":"knowledge_operating_system_process_001","module_id":"operating_system","module_title":"操作系统","module_order":2,"chapter_id":"process","chapter_title":"进程与线程","chapter_order":1,"question_order":1,
+      "prompt":"进程和线程有什么区别？","difficulty":"basic","frequency":5,"hint":"从资源、调度、切换成本和故障影响回答。",
+      "short_reference_answer":"进程是资源分配的基本单位，线程是 CPU 调度的基本单位；同一进程的线程共享地址空间和资源，线程切换通常更轻量，但一个线程异常可能影响整个进程。",
+      "full_reference_answer":"进程拥有独立虚拟地址空间和系统资源，是资源分配与隔离的基本单位；线程属于进程，是 CPU 调度的基本单位，同进程线程共享代码、堆和文件等资源，但拥有独立栈和寄存器上下文。进程切换涉及地址空间切换，成本通常高于线程。",
+      "source_title":"小林 Coding 图解系统","source_url":"https://www.xiaolincoding.com/os/4_process/process_base.html","source_chapter":"进程与线程",
+      "rubric_points":[{"id":"proc_required_1","kind":"required","label":"资源单位","description":"进程负责资源分配","weight":1},{"id":"proc_required_2","kind":"required","label":"调度单位","description":"线程是调度单位","weight":1},{"id":"proc_required_3","kind":"required","label":"共享与独立","description":"说明共享地址空间和独立栈","weight":1},{"id":"proc_bonus_1","kind":"bonus","label":"切换成本","description":"比较上下文切换成本","weight":1}]
+    },
+    {
+      "id":"knowledge_operating_system_process_002","module_id":"operating_system","module_title":"操作系统","module_order":2,"chapter_id":"process","chapter_title":"进程与线程","chapter_order":1,"question_order":2,
+      "prompt":"进程间有哪些常见通信方式？","difficulty":"intermediate","frequency":4,"hint":"管道、消息队列、共享内存、信号量、信号和 Socket。",
+      "short_reference_answer":"常见 IPC 包括匿名/命名管道、消息队列、共享内存、信号量、信号和 Socket；共享内存最快但需要额外同步，Socket 可跨主机。",
+      "full_reference_answer":"管道适合有亲缘关系或通过命名管道通信；消息队列按消息传递但存在复制开销；共享内存避免频繁复制、速度快，但必须用信号量或锁同步；信号适合异步通知；Socket 既支持本机也支持跨主机通信。",
+      "source_title":"小林 Coding 图解系统","source_url":"https://www.xiaolincoding.com/os/4_process/process_commu.html","source_chapter":"进程间通信",
+      "rubric_points":[{"id":"ipc_required_1","kind":"required","label":"常见方式","description":"列出多种 IPC","weight":1},{"id":"ipc_required_2","kind":"required","label":"共享内存","description":"知道性能与同步要求","weight":1},{"id":"ipc_required_3","kind":"required","label":"Socket","description":"知道可跨主机","weight":1}]
+    },
+    {
+      "id":"knowledge_operating_system_memory_001","module_id":"operating_system","module_title":"操作系统","module_order":2,"chapter_id":"memory","chapter_title":"内存管理","chapter_order":2,"question_order":1,
+      "prompt":"什么是虚拟内存，它解决了什么问题？","difficulty":"basic","frequency":5,"hint":"考虑地址空间、物理内存容量、隔离和页面换入换出。",
+      "short_reference_answer":"虚拟内存为每个进程提供独立连续的虚拟地址空间，通过页表映射到物理内存，实现进程隔离、内存保护，并允许只把活跃页面装入内存，从而运行大于物理内存的程序。",
+      "full_reference_answer":"虚拟内存将进程使用的虚拟地址通过页表映射到物理页框。每个进程拥有独立地址空间，提升隔离和安全性；按需分页使程序无需一次全部载入物理内存；内存不足时可将不活跃页换出。代价包括页表空间、地址转换和缺页中断开销。",
+      "source_title":"小林 Coding 图解系统","source_url":"https://www.xiaolincoding.com/os/3_memory/vmem.html","source_chapter":"虚拟内存",
+      "rubric_points":[{"id":"vm_required_1","kind":"required","label":"地址映射","description":"虚拟地址映射物理地址","weight":1},{"id":"vm_required_2","kind":"required","label":"隔离保护","description":"提供进程隔离","weight":1},{"id":"vm_required_3","kind":"required","label":"按需分页","description":"只加载需要页面","weight":1},{"id":"vm_bonus_1","kind":"bonus","label":"代价","description":"知道缺页和页表开销","weight":1}]
+    },
+    {
+      "id":"knowledge_mysql_index_001","module_id":"mysql","module_title":"MySQL","module_order":3,"chapter_id":"index","chapter_title":"索引","chapter_order":1,"question_order":1,
+      "prompt":"为什么 MySQL InnoDB 索引使用 B+ 树？","difficulty":"intermediate","frequency":5,"hint":"比较磁盘 I/O、高度、范围查询和叶子节点。",
+      "short_reference_answer":"B+ 树分支多、高度低，能减少磁盘 I/O；非叶子节点只存键，单页容纳更多索引项；数据集中在叶子节点且叶子有序相连，适合范围查询。",
+      "full_reference_answer":"数据库索引主要受磁盘随机 I/O 成本约束。B+ 树的高扇出让大量数据仍保持较低树高；内部节点只保存键和子指针，单页可容纳更多项；所有记录位于叶子节点，使查询路径稳定；叶子节点按序连接，非常适合范围扫描。相比二叉树树高更低，相比哈希支持排序和范围查询。",
+      "source_title":"小林 Coding 图解 MySQL","source_url":"https://www.xiaolincoding.com/mysql/index/why_index_chose_bpuls_tree.html","source_chapter":"B+ 树索引",
+      "rubric_points":[{"id":"bplus_required_1","kind":"required","label":"低树高","description":"高扇出减少磁盘 IO","weight":1},{"id":"bplus_required_2","kind":"required","label":"内部节点","description":"非叶子只存索引键","weight":1},{"id":"bplus_required_3","kind":"required","label":"范围查询","description":"叶子有序相连","weight":1},{"id":"bplus_bonus_1","kind":"bonus","label":"对比结构","description":"与二叉树或哈希对比","weight":1}]
+    },
+    {
+      "id":"knowledge_mysql_index_002","module_id":"mysql","module_title":"MySQL","module_order":3,"chapter_id":"index","chapter_title":"索引","chapter_order":1,"question_order":2,
+      "prompt":"哪些常见情况会导致 MySQL 索引失效？","difficulty":"intermediate","frequency":5,"hint":"考虑联合索引、函数、类型转换、模糊匹配和优化器成本。",
+      "short_reference_answer":"常见情况包括不满足最左匹配、在索引列上计算或使用函数、隐式类型转换、LIKE 以通配符开头、使用不利于索引的条件，以及优化器判断全表扫描成本更低。",
+      "full_reference_answer":"索引是否使用最终由优化器决定。常见失效或无法有效利用包括联合索引跳过最左列；对索引列做函数或表达式运算；字符串和数字比较导致隐式转换；LIKE '%x' 无法利用有序前缀；OR 两侧并非都有合适索引；范围条件之后的联合索引列不能继续用于定位；数据量小或回表成本高时优化器可能主动选择全表扫描。",
+      "source_title":"小林 Coding 图解 MySQL","source_url":"https://www.xiaolincoding.com/mysql/index/index_lose.html","source_chapter":"索引失效",
+      "rubric_points":[{"id":"idxlose_required_1","kind":"required","label":"最左匹配","description":"联合索引顺序","weight":1},{"id":"idxlose_required_2","kind":"required","label":"函数计算","description":"索引列函数或表达式","weight":1},{"id":"idxlose_required_3","kind":"required","label":"隐式转换","description":"类型不一致","weight":1},{"id":"idxlose_required_4","kind":"required","label":"前导通配符","description":"LIKE 以 % 开头","weight":1},{"id":"idxlose_bonus_1","kind":"bonus","label":"成本模型","description":"优化器可能选择全表扫描","weight":1}]
+    },
+    {
+      "id":"knowledge_mysql_transaction_001","module_id":"mysql","module_title":"MySQL","module_order":3,"chapter_id":"transaction","chapter_title":"事务与 MVCC","chapter_order":2,"question_order":1,
+      "prompt":"MySQL 的 MVCC 是如何实现的？","difficulty":"advanced","frequency":5,"hint":"重点回答隐藏字段、undo log、版本链和 Read View。",
+      "short_reference_answer":"InnoDB 通过记录隐藏事务字段、undo log 版本链和 Read View 实现 MVCC。快照读根据 Read View 判断哪个版本对当前事务可见，从而减少读写冲突。",
+      "full_reference_answer":"InnoDB 聚簇索引记录包含创建该版本的事务 ID 和指向历史版本的回滚指针。更新会把旧版本写入 undo log，形成版本链。快照读创建或复用 Read View，其中保存活跃事务集合和边界；读取时沿版本链查找对当前事务可见的版本。读已提交通常每条语句生成 Read View，可重复读通常首次快照读生成后复用。",
+      "source_title":"小林 Coding 图解 MySQL","source_url":"https://www.xiaolincoding.com/mysql/transaction/mvcc.html","source_chapter":"MVCC",
+      "rubric_points":[{"id":"mvcc_required_1","kind":"required","label":"隐藏字段","description":"事务 ID 和回滚指针","weight":1},{"id":"mvcc_required_2","kind":"required","label":"undo 版本链","description":"旧版本形成链","weight":1},{"id":"mvcc_required_3","kind":"required","label":"Read View","description":"判断事务可见性","weight":1},{"id":"mvcc_bonus_1","kind":"bonus","label":"隔离级别","description":"区分 RC 与 RR 的 Read View","weight":1}]
+    },
+    {
+      "id":"knowledge_redis_data_001","module_id":"redis","module_title":"Redis","module_order":4,"chapter_id":"data_structure","chapter_title":"数据结构","chapter_order":1,"question_order":1,
+      "prompt":"Redis 为什么快？","difficulty":"basic","frequency":5,"hint":"从内存、线程模型、数据结构和 I/O 多路复用回答。",
+      "short_reference_answer":"Redis 主要在内存中操作，核心命令执行采用单线程避免锁和线程切换，使用高效数据结构，并通过 I/O 多路复用处理大量连接。",
+      "full_reference_answer":"Redis 的数据主要位于内存，避免磁盘随机 I/O；核心命令串行执行，省去复杂锁竞争和频繁上下文切换；不同对象使用经过优化的编码与数据结构；网络层使用 I/O 多路复用并在新版本中可用 I/O 线程处理网络读写。单线程指核心命令执行路径，并不代表 Redis 所有工作都只有一个线程。",
+      "source_title":"小林 Coding 图解 Redis","source_url":"https://www.xiaolincoding.com/redis/base/redis_interview.html","source_chapter":"Redis 为什么快",
+      "rubric_points":[{"id":"redisfast_required_1","kind":"required","label":"内存操作","description":"主要以内存为存储","weight":1},{"id":"redisfast_required_2","kind":"required","label":"单线程命令","description":"避免锁和切换","weight":1},{"id":"redisfast_required_3","kind":"required","label":"IO 多路复用","description":"高效处理连接","weight":1},{"id":"redisfast_required_4","kind":"required","label":"数据结构","description":"使用高效编码","weight":1},{"id":"redisfast_mis_1","kind":"misconception","label":"绝对单线程","description":"误认为 Redis 所有任务都单线程","weight":1}]
+    },
+    {
+      "id":"knowledge_redis_cache_001","module_id":"redis","module_title":"Redis","module_order":4,"chapter_id":"cache","chapter_title":"缓存问题","chapter_order":2,"question_order":1,
+      "prompt":"缓存穿透、缓存击穿和缓存雪崩有什么区别？","difficulty":"intermediate","frequency":5,"hint":"分别考虑不存在的数据、单个热点 key 和大量 key。",
+      "short_reference_answer":"穿透是查询不存在的数据绕过缓存持续访问数据库；击穿是热点 key 过期瞬间大量请求打到数据库；雪崩是大量 key 同时失效或 Redis 故障造成数据库流量激增。",
+      "full_reference_answer":"缓存穿透针对数据库也不存在的数据，可用参数校验、缓存空值或布隆过滤器；缓存击穿针对单个热点 key 失效，可用互斥重建、逻辑过期或热点不过期；缓存雪崩是大量 key 集中过期或缓存服务整体故障，可通过随机过期时间、多级缓存、限流熔断和高可用集群缓解。",
+      "source_title":"小林 Coding 图解 Redis","source_url":"https://www.xiaolincoding.com/redis/cluster/cache_problem.html","source_chapter":"缓存异常",
+      "rubric_points":[{"id":"cache_required_1","kind":"required","label":"穿透","description":"不存在数据持续查询","weight":1},{"id":"cache_required_2","kind":"required","label":"击穿","description":"热点 key 失效","weight":1},{"id":"cache_required_3","kind":"required","label":"雪崩","description":"大量 key 或服务故障","weight":1},{"id":"cache_bonus_1","kind":"bonus","label":"治理方案","description":"能分别给出解决方案","weight":1}]
+    },
+    {
+      "id":"knowledge_redis_persistence_001","module_id":"redis","module_title":"Redis","module_order":4,"chapter_id":"persistence","chapter_title":"持久化","chapter_order":3,"question_order":1,
+      "prompt":"Redis 的 RDB 和 AOF 有什么区别？","difficulty":"intermediate","frequency":4,"hint":"比较记录形式、恢复速度、数据丢失窗口和文件体积。",
+      "short_reference_answer":"RDB 保存某个时刻的数据快照，文件紧凑、恢复快，但可能丢失最近一次快照后的数据；AOF 记录写命令，数据完整性通常更高，但文件更大、恢复更慢，可通过重写压缩。",
+      "full_reference_answer":"RDB 以二进制快照保存数据集，适合备份和快速恢复，生成快照期间通常通过 fork 子进程，但两次快照间的数据可能丢失。AOF 追加写命令，可配置 always、everysec、no 等刷盘策略，通常最多丢失一秒数据；AOF 文件可通过重写合并命令。实际可组合使用混合持久化。",
+      "source_title":"小林 Coding 图解 Redis","source_url":"https://www.xiaolincoding.com/redis/storage/aof.html","source_chapter":"Redis 持久化",
+      "rubric_points":[{"id":"persist_required_1","kind":"required","label":"记录形式","description":"快照与写命令日志","weight":1},{"id":"persist_required_2","kind":"required","label":"恢复速度","description":"RDB 通常更快","weight":1},{"id":"persist_required_3","kind":"required","label":"数据完整性","description":"AOF 丢失窗口更小","weight":1},{"id":"persist_bonus_1","kind":"bonus","label":"重写与混合","description":"知道 AOF 重写或混合持久化","weight":1}]
+    }
+  ]
+}

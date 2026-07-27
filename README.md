@@ -39,6 +39,7 @@ OfferPilot 不是一个只负责回答问题的聊天机器人，而是一个围
 | Feishu Bitable | 支持多维表格自动创建、记录推送同步、记录拉取同步、事件订阅和协作者授权。 |
 | Feishu Calendar | 支持 OfferPilot 专属日历、面试日程创建、参与人同步和提醒确认。 |
 | LeetCode Hot 100 | 内置官方公开元数据快照，确定性生成每日推荐，支持间隔复习、标签页反馈，以及 08:00、12:00、18:00 分级提醒。 |
+| 八股学习中心 | 内置网络、操作系统、MySQL、Redis 结构化题库，支持一题一卡、AI 评分、参考答案、掌握度、间隔复习和飞书每日推送。 |
 | Persistence | Repository 边界清晰，支持内存存储与 SQLite 本地持久化。 |
 | Quality | 后端测试覆盖 Agent、Planner、Feishu 事件、多维表格同步、工具层和 Repository。 |
 | Documentation | `docs/` 下保留阶段性编码报告和产品技术方案，便于追踪架构演进。 |
@@ -185,13 +186,22 @@ curl -X POST http://127.0.0.1:8000/api/agent/message \
   -d '{"message":"新增投递字节跳动后端开发实习，明天下午三点一面"}'
 ```
 
-在飞书中发送“开启每日刷题”即可订阅；定时消息只展示进度摘要，用户从应用顶部的“刷题计划”标签页查看当天三题并点击记录结果。文本反馈入口继续保留，作为标签页不可用时的兼容方式。
+在飞书中发送“开启每日刷题”即可订阅；定时消息只展示进度摘要，用户可从“刷题计划”网页查看当天三题并点击记录结果。文本反馈入口继续保留，作为网页不可用时的兼容方式。
 
-飞书标签页使用 URL：
+后端只提供网页，不会自动修改飞书客户端顶部的标签页。开发测试时，在 OfferPilot
+机器人会话顶部点击 `+`，添加网页链接并命名为“刷题计划”；也可以在飞书开放平台为
+同一个应用添加“网页应用”能力，把桌面端主页和移动端主页都配置为：
 
 ```text
 https://sculptor-jester-deskwork.ngrok-free.dev/leetcode/dashboard
 ```
+
+添加或修改应用能力后，需要创建版本并发布，配置才会对正式版应用生效。
+
+> 注意：`ngrok-free.dev` 只适合临时开发。ngrok 免费版会对首次浏览器访问显示
+> `ERR_NGROK_6024` 安全确认页；手机端可先点击 **Visit Site** 继续，但服务端代码
+> 无法替飞书 WebView 添加 `ngrok-skip-browser-warning` 请求头。要彻底消除该页面，
+> 请使用无访问确认页的稳定 HTTPS 域名（或付费 ngrok 域名），并同步更新下面三处配置。
 
 飞书开放平台“安全设置”需要登记 OAuth 回调地址：
 
@@ -199,13 +209,20 @@ https://sculptor-jester-deskwork.ngrok-free.dev/leetcode/dashboard
 https://sculptor-jester-deskwork.ngrok-free.dev/leetcode/dashboard/auth/callback
 ```
 
-并在 `backend/.env` 配置同一个公网 HTTPS 域名：
+同时将公网域名加入飞书开放平台的 H5 可信域名，并在 `backend/.env` 配置同一个公网
+HTTPS 域名：
 
 ```env
 OFFERPILOT_DASHBOARD_PUBLIC_BASE_URL=https://sculptor-jester-deskwork.ngrok-free.dev
 OFFERPILOT_DASHBOARD_OAUTH_SCOPE=auth:user.id:read
 OFFERPILOT_DASHBOARD_SESSION_SECRET=replace-with-a-random-secret
 ```
+
+域名变更时必须同步更新：
+
+1. 飞书标签页或网页应用的桌面端、移动端主页；
+2. 飞书“安全设置”中的 OAuth 重定向 URL 和 H5 可信域名；
+3. `OFFERPILOT_DASHBOARD_PUBLIC_BASE_URL`。
 
 题库运行时只读取仓库内快照，不访问力扣。需要人工更新公开元数据时执行：
 
@@ -243,6 +260,10 @@ cd backend
 | `GET /leetcode/dashboard` | 飞书刷题标签页，未登录时进入飞书 OAuth。 |
 | `GET /api/leetcode/dashboard/today` | 返回当前飞书用户的今日推荐与反馈状态。 |
 | `POST /api/leetcode/dashboard/results` | 记录当前用户对指定推荐题的反馈。 |
+| `GET /study/knowledge` | 飞书八股复习网页，一题一卡并带知识导航。 |
+| `GET /api/study/knowledge/today` | 返回当前用户的今日八股与掌握进度。 |
+| `POST /api/study/knowledge/answers` | 评价回答、记录掌握度并安排下次复习。 |
+| `GET /api/study/knowledge/materials` | 在 OfferPilot 内阅读全部已收录题目与解析。 |
 | `POST /api/debug/llm` | LLM 调试接口，仅建议本地或开发环境使用。 |
 | `POST /api/debug/intent` | 意图识别调试接口。 |
 | `POST /api/debug/agent` | Agent 编排调试接口。 |

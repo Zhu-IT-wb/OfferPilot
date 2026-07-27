@@ -10,10 +10,16 @@ from app.api.routes.leetcode_dashboard import (
     api_router as leetcode_dashboard_api_router,
     router as leetcode_dashboard_router,
 )
+from app.api.routes.knowledge_dashboard import (
+    api_router as knowledge_dashboard_api_router,
+    router as knowledge_dashboard_router,
+)
 from app.core.config import Settings, settings
 from app.services.bitable_event_subscription_service import ensure_bitable_event_subscription
 from app.services.bitable_pull_sync_service import BitablePullSyncService
 from app.services.leetcode_push_service import LeetCodePushService
+from app.services.knowledge_dependencies import get_default_knowledge_repository
+from app.services.knowledge_push_service import KnowledgePushService
 from app.tools.offerpilot_tools import (
     get_default_leetcode_repository,
     get_default_offerpilot_repository,
@@ -41,6 +47,12 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         tags=["leetcode-dashboard"],
     )
     app.include_router(leetcode_dashboard_router, tags=["leetcode-dashboard"])
+    app.include_router(
+        knowledge_dashboard_api_router,
+        prefix=app_settings.api_prefix,
+        tags=["knowledge-dashboard"],
+    )
+    app.include_router(knowledge_dashboard_router, tags=["knowledge-dashboard"])
 
     # 在应用启动时启动多维表格定时拉取同步任务。
     @app.on_event("startup")
@@ -77,6 +89,17 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         app.state.leetcode_push_service = leetcode_push_service
         leetcode_push_service.start()
 
+        knowledge_push_service = KnowledgePushService(
+            repository=get_default_knowledge_repository(),
+            dashboard_url=(
+                f"{app_settings.dashboard_public_base_url.rstrip('/')}/study/knowledge"
+                if app_settings.dashboard_public_base_url
+                else None
+            ),
+        )
+        app.state.knowledge_push_service = knowledge_push_service
+        knowledge_push_service.start()
+
     # 在应用关闭时停止多维表格定时拉取同步任务。
     @app.on_event("shutdown")
     async def stop_bitable_pull_sync() -> None:
@@ -86,6 +109,9 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         leetcode_push_service = getattr(app.state, "leetcode_push_service", None)
         if leetcode_push_service is not None:
             await leetcode_push_service.stop()
+        knowledge_push_service = getattr(app.state, "knowledge_push_service", None)
+        if knowledge_push_service is not None:
+            await knowledge_push_service.stop()
 
     return app
 
