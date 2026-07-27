@@ -38,7 +38,7 @@ OfferPilot 不是一个只负责回答问题的聊天机器人，而是一个围
 | Feishu Bot | 支持飞书事件回调、URL verification、文本消息提取、Agent 回复发送和事件审计。 |
 | Feishu Bitable | 支持多维表格自动创建、记录推送同步、记录拉取同步、事件订阅和协作者授权。 |
 | Feishu Calendar | 支持 OfferPilot 专属日历、面试日程创建、参与人同步和提醒确认。 |
-| LeetCode Hot 100 | 内置官方公开元数据快照，确定性生成每日推荐，支持间隔复习、结果反馈、09:00 推送与 21:00 提醒。 |
+| LeetCode Hot 100 | 内置官方公开元数据快照，确定性生成每日推荐，支持间隔复习、标签页反馈，以及 08:00、12:00、18:00 分级提醒。 |
 | Persistence | Repository 边界清晰，支持内存存储与 SQLite 本地持久化。 |
 | Quality | 后端测试覆盖 Agent、Planner、Feishu 事件、多维表格同步、工具层和 Repository。 |
 | Documentation | `docs/` 下保留阶段性编码报告和产品技术方案，便于追踪架构演进。 |
@@ -185,7 +185,27 @@ curl -X POST http://127.0.0.1:8000/api/agent/message \
   -d '{"message":"新增投递字节跳动后端开发实习，明天下午三点一面"}'
 ```
 
-在飞书中发送“开启每日刷题”即可订阅；“今天刷什么”只返回 LeetCode 推荐，“今天任务是什么”会同时返回刷题与其他秋招任务。明确反馈可直接回复“第1题独立完成”“LRU 看题解完成”“第2题没做出来”或“第3题延期”。
+在飞书中发送“开启每日刷题”即可订阅；定时消息只展示进度摘要，用户从应用顶部的“刷题计划”标签页查看当天三题并点击记录结果。文本反馈入口继续保留，作为标签页不可用时的兼容方式。
+
+飞书标签页使用 URL：
+
+```text
+https://sculptor-jester-deskwork.ngrok-free.dev/leetcode/dashboard
+```
+
+飞书开放平台“安全设置”需要登记 OAuth 回调地址：
+
+```text
+https://sculptor-jester-deskwork.ngrok-free.dev/leetcode/dashboard/auth/callback
+```
+
+并在 `backend/.env` 配置同一个公网 HTTPS 域名：
+
+```env
+OFFERPILOT_DASHBOARD_PUBLIC_BASE_URL=https://sculptor-jester-deskwork.ngrok-free.dev
+OFFERPILOT_DASHBOARD_OAUTH_SCOPE=auth:user.id:read
+OFFERPILOT_DASHBOARD_SESSION_SECRET=replace-with-a-random-secret
+```
 
 题库运行时只读取仓库内快照，不访问力扣。需要人工更新公开元数据时执行：
 
@@ -208,6 +228,8 @@ cd backend
 | `FEISHU_VERIFICATION_TOKEN` | 飞书事件订阅校验 token。 |
 | `FEISHU_BITABLE_SYNC_ENABLED` | 是否启用飞书多维表格同步。 |
 | `FEISHU_CALENDAR_SYNC_ENABLED` | 是否启用飞书日历同步。 |
+| `OFFERPILOT_DASHBOARD_PUBLIC_BASE_URL` | 飞书刷题标签页可访问的公网 HTTPS 域名。 |
+| `OFFERPILOT_DASHBOARD_SESSION_SECRET` | OAuth state 与标签页会话签名密钥。 |
 
 完整配置请参考 [backend/.env.example](backend/.env.example)。
 
@@ -218,6 +240,9 @@ cd backend
 | `GET /api/health` | 服务健康检查。 |
 | `POST /api/agent/message` | 正式 Agent 消息入口，供 API 或飞书事件回调复用。 |
 | `POST /api/feishu/events` | 飞书事件回调入口，支持 verification、文本消息和多维表格事件。 |
+| `GET /leetcode/dashboard` | 飞书刷题标签页，未登录时进入飞书 OAuth。 |
+| `GET /api/leetcode/dashboard/today` | 返回当前飞书用户的今日推荐与反馈状态。 |
+| `POST /api/leetcode/dashboard/results` | 记录当前用户对指定推荐题的反馈。 |
 | `POST /api/debug/llm` | LLM 调试接口，仅建议本地或开发环境使用。 |
 | `POST /api/debug/intent` | 意图识别调试接口。 |
 | `POST /api/debug/agent` | Agent 编排调试接口。 |

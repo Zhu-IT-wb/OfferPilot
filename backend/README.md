@@ -203,7 +203,27 @@ LRU 看题解完成
 关闭每日刷题
 ```
 
-开启后默认在 `Asia/Shanghai` 时区 09:00 推送题目，21:00 合并提醒仍未反馈的题目。每日推荐由确定性工作流生成，不消耗 LLM Token；正常为两道新题和一道到期复习题，没有到期复习时推荐三道新题。
+开启后默认在 `Asia/Shanghai` 时区 08:00 推送当天计划，12:00 和 18:00 只提醒仍未反馈的题目。每日推荐由确定性工作流生成，不消耗 LLM Token；正常为两道新题和一道到期复习题，没有到期复习时推荐三道新题。
+
+推荐与反馈的主界面是飞书应用顶部的“刷题计划”URL 标签页。定时消息只保留进度摘要和工作台入口，题目结果在标签页中点击记录；文本回复继续作为兼容入口。
+
+```env
+OFFERPILOT_DASHBOARD_PUBLIC_BASE_URL=https://sculptor-jester-deskwork.ngrok-free.dev
+OFFERPILOT_DASHBOARD_OAUTH_SCOPE=auth:user.id:read
+OFFERPILOT_DASHBOARD_SESSION_SECRET=replace-with-a-random-secret
+```
+
+飞书标签页 URL：
+
+```text
+https://sculptor-jester-deskwork.ngrok-free.dev/leetcode/dashboard
+```
+
+飞书开放平台“安全设置”中的 OAuth 重定向 URL：
+
+```text
+https://sculptor-jester-deskwork.ngrok-free.dev/leetcode/dashboard/auth/callback
+```
 
 运行时只读取 `app/data/leetcode_hot100.json`，不会访问力扣。手动更新公开元数据快照：
 

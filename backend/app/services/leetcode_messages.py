@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.models.leetcode import (
     LeetCodeDeliveryType,
@@ -8,6 +8,11 @@ from app.models.leetcode import (
 
 _TYPE_LABELS = {"new": "新题", "review": "复习", "carryover": "顺延"}
 _DIFFICULTY_LABELS = {"easy": "简单", "medium": "中等", "hard": "困难"}
+_DELIVERY_TEMPLATES = {
+    LeetCodeDeliveryType.MORNING: "blue",
+    LeetCodeDeliveryType.NOON: "orange",
+    LeetCodeDeliveryType.EVENING: "red",
+}
 
 
 def format_leetcode_recommendations(recommendations: List[LeetCodeRecommendation]) -> str:
@@ -39,16 +44,8 @@ def build_leetcode_card(
     recommendations: List[LeetCodeRecommendation],
     delivery_type: LeetCodeDeliveryType = LeetCodeDeliveryType.MORNING,
 ) -> Dict[str, Any]:
-    title = {
-        LeetCodeDeliveryType.MORNING: f"🎯 今日 LeetCode · {len(recommendations)} 题",
-        LeetCodeDeliveryType.NOON: "⏰ 12:00 刷题进度提醒",
-        LeetCodeDeliveryType.EVENING: "🔥 18:00 今日最后提醒",
-    }[delivery_type]
-    template = {
-        LeetCodeDeliveryType.MORNING: "blue",
-        LeetCodeDeliveryType.NOON: "orange",
-        LeetCodeDeliveryType.EVENING: "red",
-    }[delivery_type]
+    title = _delivery_title(delivery_type, len(recommendations))
+    template = _DELIVERY_TEMPLATES[delivery_type]
     elements: List[Dict[str, Any]] = [
         {
             "tag": "div",
@@ -101,6 +98,80 @@ def build_leetcode_card(
         },
         "elements": elements,
     }
+
+
+def build_leetcode_reminder_card(
+    recommendations: List[LeetCodeRecommendation],
+    delivery_type: LeetCodeDeliveryType,
+    dashboard_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    title = _delivery_title(delivery_type, len(recommendations))
+    template = _DELIVERY_TEMPLATES[delivery_type]
+    problem_lines = [
+        (
+            f"{index}. {item.problem.frontend_id}. {item.problem.title_zh}"
+            f"（{_TYPE_LABELS[item.assignment.assignment_type.value]}）"
+        )
+        for index, item in enumerate(recommendations, start=1)
+    ]
+    elements: List[Dict[str, Any]] = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": "\n".join(
+                    [_card_intro(recommendations, delivery_type), "", *problem_lines]
+                ),
+            },
+        }
+    ]
+    if dashboard_url:
+        elements.append(
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "打开刷题计划"},
+                        "type": "primary",
+                        "url": dashboard_url,
+                    }
+                ],
+            }
+        )
+    else:
+        elements.append(
+            {
+                "tag": "note",
+                "elements": [
+                    {
+                        "tag": "plain_text",
+                        "content": "请从 OfferPilot 顶部的「刷题计划」标签页打开工作台。",
+                    }
+                ],
+            }
+        )
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": template,
+            "title": {"tag": "plain_text", "content": title},
+        },
+        "elements": elements,
+    }
+
+
+def _delivery_title(
+    delivery_type: LeetCodeDeliveryType,
+    recommendation_count: int,
+) -> str:
+    return {
+        LeetCodeDeliveryType.MORNING: (
+            f"🎯 今日 LeetCode · {recommendation_count} 题"
+        ),
+        LeetCodeDeliveryType.NOON: "⏰ 12:00 刷题进度提醒",
+        LeetCodeDeliveryType.EVENING: "🔥 18:00 今日最后提醒",
+    }[delivery_type]
 
 
 def _card_intro(

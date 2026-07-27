@@ -17,7 +17,7 @@ from app.services.feishu_service import (
     FeishuMessageService,
     FeishuRequestError,
 )
-from app.services.leetcode_messages import build_leetcode_card
+from app.services.leetcode_messages import build_leetcode_reminder_card
 from app.services.leetcode_recommendation import LeetCodeRecommendationWorkflow
 
 
@@ -39,11 +39,13 @@ class LeetCodePushService:
         message_service: Optional[FeishuMessageService] = None,
         interval_seconds: int = 60,
         max_attempts: int = 3,
+        dashboard_url: Optional[str] = None,
     ) -> None:
         self.repository = repository
         self.message_service = message_service or FeishuMessageService()
         self.interval_seconds = max(interval_seconds, 5)
         self.max_attempts = max(max_attempts, 1)
+        self.dashboard_url = dashboard_url
         self._stop_event: Optional[asyncio.Event] = None
         self._task: Optional[asyncio.Task] = None
 
@@ -118,7 +120,11 @@ class LeetCodePushService:
                 delivery_on=today,
                 delivery_type=delivery_type,
                 receive_id=subscription.feishu_open_id,
-                card=build_leetcode_card(selected, delivery_type),
+                card=build_leetcode_reminder_card(
+                    selected,
+                    delivery_type,
+                    self.dashboard_url,
+                ),
             )
             if not sent:
                 failed += 1

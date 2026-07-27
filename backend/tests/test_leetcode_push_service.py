@@ -30,7 +30,11 @@ def test_leetcode_pushes_cards_at_eight_noon_and_six_for_pending_problems() -> N
         LeetCodeSubscription(owner_id="feishu:ou_1", feishu_open_id="ou_1")
     )
     messages = FakeMessageService()
-    service = LeetCodePushService(repository=repository, message_service=messages)
+    service = LeetCodePushService(
+        repository=repository,
+        message_service=messages,
+        dashboard_url="https://offerpilot.example/leetcode/dashboard",
+    )
     timezone = ZoneInfo("Asia/Shanghai")
 
     morning = datetime(2026, 7, 22, 8, 0, tzinfo=timezone)
@@ -60,6 +64,12 @@ def test_leetcode_pushes_cards_at_eight_noon_and_six_for_pending_problems() -> N
     assert recommendations[1].problem.title_zh in noon_content
     assert recommendations[2].problem.title_zh in noon_content
     assert "明天会自动顺延" in evening_content
+    assert all(
+        "https://offerpilot.example/leetcode/dashboard" in str(item[1])
+        for item in messages.cards
+    )
+    assert all("leetcode_result" not in str(item[1]) for item in messages.cards)
+    assert all("打开刷题计划" in str(item[1]) for item in messages.cards)
     assert all(uuid.UUID(item[2]).version == 5 for item in messages.cards)
     assert len({item[2] for item in messages.cards}) == 3
     assert repository.has_delivery(

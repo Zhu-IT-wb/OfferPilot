@@ -1,0 +1,882 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>OfferPilot 刷题计划</title>
+    <style>
+      :root {
+        --bg: #f4f6f8;
+        --surface: #ffffff;
+        --surface-soft: #f8fafc;
+        --text: #172033;
+        --muted: #667085;
+        --line: #e7eaf0;
+        --brand: #1769e0;
+        --brand-soft: #eaf2ff;
+        --success: #16845b;
+        --success-soft: #e9f8f1;
+        --warning: #a85b00;
+        --warning-soft: #fff4df;
+        --danger: #d14343;
+        --shadow: 0 12px 34px rgba(30, 55, 90, 0.08);
+        --radius: 18px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        background:
+          radial-gradient(circle at 92% 0%, rgba(42, 123, 237, 0.12), transparent 30rem),
+          var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, "SF Pro Display", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      }
+
+      button,
+      a {
+        font: inherit;
+      }
+
+      button:focus-visible,
+      a:focus-visible {
+        outline: 3px solid rgba(23, 105, 224, 0.22);
+        outline-offset: 2px;
+      }
+
+      .app {
+        width: min(100%, 960px);
+        margin: 0 auto;
+        padding: 28px 24px 56px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 24px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .brand-mark {
+        display: grid;
+        width: 42px;
+        height: 42px;
+        place-items: center;
+        border-radius: 13px;
+        background: linear-gradient(145deg, #0f5fd5, #4a96ff);
+        box-shadow: 0 8px 20px rgba(23, 105, 224, 0.25);
+        color: #fff;
+        font-size: 21px;
+      }
+
+      .brand-copy strong {
+        display: block;
+        font-size: 16px;
+        letter-spacing: -0.01em;
+      }
+
+      .brand-copy span {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .refresh-button {
+        min-height: 38px;
+        padding: 0 15px;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: rgba(255, 255, 255, 0.86);
+        color: #344054;
+        cursor: pointer;
+      }
+
+      .refresh-button:hover {
+        border-color: #b9c9e7;
+        background: #fff;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 24px;
+        align-items: center;
+        overflow: hidden;
+        margin-bottom: 20px;
+        padding: 28px 30px;
+        border: 1px solid rgba(255, 255, 255, 0.72);
+        border-radius: 22px;
+        background:
+          linear-gradient(128deg, rgba(255, 255, 255, 0.98), rgba(238, 245, 255, 0.94));
+        box-shadow: var(--shadow);
+      }
+
+      .eyebrow {
+        margin: 0 0 8px;
+        color: var(--brand);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(27px, 5vw, 42px);
+        letter-spacing: -0.04em;
+        line-height: 1.12;
+      }
+
+      .hero-copy {
+        max-width: 620px;
+        margin: 13px 0 0;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.7;
+      }
+
+      .progress-orb {
+        display: grid;
+        width: 116px;
+        height: 116px;
+        flex: 0 0 auto;
+        place-items: center;
+        border-radius: 50%;
+        background: conic-gradient(
+          var(--brand) calc(var(--progress, 0) * 1%),
+          #dfe8f6 0
+        );
+        box-shadow: inset 0 0 0 1px rgba(23, 105, 224, 0.08);
+      }
+
+      .progress-orb::before {
+        content: "";
+        grid-area: 1 / 1;
+        width: 88px;
+        height: 88px;
+        border-radius: 50%;
+        background: #fff;
+      }
+
+      .progress-value {
+        z-index: 1;
+        grid-area: 1 / 1;
+        text-align: center;
+      }
+
+      .progress-value strong {
+        display: block;
+        font-size: 25px;
+        letter-spacing: -0.04em;
+      }
+
+      .progress-value span {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+        margin-bottom: 22px;
+      }
+
+      .summary-card {
+        padding: 16px 18px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.78);
+      }
+
+      .summary-card span {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .summary-card strong {
+        font-size: 17px;
+      }
+
+      .section-heading {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 16px;
+        margin: 0 2px 12px;
+      }
+
+      .section-heading h2 {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: -0.02em;
+      }
+
+      .section-heading span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .problem-list {
+        display: grid;
+        gap: 14px;
+      }
+
+      .problem-card {
+        padding: 22px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: 0 5px 18px rgba(30, 55, 90, 0.045);
+        transition:
+          transform 160ms ease,
+          box-shadow 160ms ease,
+          border-color 160ms ease;
+      }
+
+      .problem-card:hover {
+        transform: translateY(-1px);
+        border-color: #d6deeb;
+        box-shadow: 0 10px 26px rgba(30, 55, 90, 0.08);
+      }
+
+      .problem-card.is-handled {
+        border-color: #cfeadd;
+        background: linear-gradient(160deg, #fff, #f8fdfb);
+      }
+
+      .problem-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 18px;
+      }
+
+      .problem-number {
+        margin: 0 0 7px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .problem-title {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: -0.025em;
+      }
+
+      .status-pill {
+        flex: 0 0 auto;
+        padding: 7px 10px;
+        border-radius: 999px;
+        background: var(--brand-soft);
+        color: var(--brand);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .status-pill.done {
+        background: var(--success-soft);
+        color: var(--success);
+      }
+
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 14px 0 0;
+      }
+
+      .tag {
+        padding: 5px 9px;
+        border-radius: 8px;
+        background: var(--surface-soft);
+        color: #475467;
+        font-size: 12px;
+      }
+
+      .reason {
+        margin: 15px 0 0;
+        color: #475467;
+        font-size: 14px;
+        line-height: 1.65;
+      }
+
+      .result-note {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 18px;
+        margin-top: 15px;
+        padding: 12px 14px;
+        border-radius: 11px;
+        background: var(--success-soft);
+        color: #28634d;
+        font-size: 13px;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 9px;
+        margin-top: 18px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+      }
+
+      .action-button,
+      .leetcode-link {
+        display: inline-flex;
+        min-height: 38px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 14px;
+        border: 1px solid #d7dde7;
+        border-radius: 10px;
+        background: #fff;
+        color: #344054;
+        text-decoration: none;
+        cursor: pointer;
+      }
+
+      .action-button:hover,
+      .leetcode-link:hover {
+        border-color: #aebed7;
+        background: #f9fbff;
+      }
+
+      .action-button.primary {
+        border-color: var(--brand);
+        background: var(--brand);
+        color: #fff;
+      }
+
+      .action-button.danger {
+        border-color: #efc6c6;
+        color: var(--danger);
+      }
+
+      .action-button:disabled {
+        cursor: wait;
+        opacity: 0.55;
+      }
+
+      .leetcode-link {
+        margin-left: auto;
+        border-color: #c9d8ef;
+        color: var(--brand);
+        font-weight: 650;
+      }
+
+      .empty,
+      .error-panel {
+        padding: 48px 24px;
+        border: 1px dashed #ccd5e3;
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.72);
+        color: var(--muted);
+        text-align: center;
+      }
+
+      .error-panel strong {
+        display: block;
+        margin-bottom: 8px;
+        color: var(--danger);
+      }
+
+      .skeleton {
+        min-height: 216px;
+        overflow: hidden;
+        position: relative;
+      }
+
+      .skeleton::after {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          100deg,
+          transparent 20%,
+          rgba(255, 255, 255, 0.72) 50%,
+          transparent 80%
+        );
+        content: "";
+        transform: translateX(-100%);
+        animation: shimmer 1.25s infinite;
+      }
+
+      .skeleton-line {
+        height: 13px;
+        margin: 12px 0;
+        border-radius: 999px;
+        background: #edf0f4;
+      }
+
+      .skeleton-line.wide {
+        width: 62%;
+        height: 22px;
+      }
+
+      .skeleton-line.short {
+        width: 38%;
+      }
+
+      .toast {
+        position: fixed;
+        z-index: 10;
+        right: 22px;
+        bottom: 22px;
+        max-width: min(420px, calc(100vw - 44px));
+        padding: 13px 16px;
+        border-radius: 12px;
+        background: #172033;
+        box-shadow: 0 12px 34px rgba(17, 24, 39, 0.24);
+        color: #fff;
+        font-size: 13px;
+        line-height: 1.5;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(12px);
+        transition:
+          opacity 180ms ease,
+          transform 180ms ease;
+      }
+
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .toast.error {
+        background: #9d2f2f;
+      }
+
+      @keyframes shimmer {
+        to {
+          transform: translateX(100%);
+        }
+      }
+
+      @media (max-width: 680px) {
+        .app {
+          padding: 20px 14px 44px;
+        }
+
+        .hero {
+          grid-template-columns: 1fr;
+          padding: 23px 20px;
+        }
+
+        .progress-orb {
+          width: 96px;
+          height: 96px;
+        }
+
+        .progress-orb::before {
+          width: 72px;
+          height: 72px;
+        }
+
+        .summary {
+          grid-template-columns: 1fr;
+        }
+
+        .problem-card {
+          padding: 18px;
+        }
+
+        .problem-head {
+          display: block;
+        }
+
+        .status-pill {
+          display: inline-block;
+          margin-top: 12px;
+        }
+
+        .action-button,
+        .leetcode-link {
+          flex: 1 1 calc(50% - 9px);
+        }
+
+        .leetcode-link {
+          margin-left: 0;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition: none !important;
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">↗</div>
+          <div class="brand-copy">
+            <strong>OfferPilot</strong>
+            <span>个人秋招执行 Agent</span>
+          </div>
+        </div>
+        <button class="refresh-button" id="refresh" type="button">刷新进度</button>
+      </header>
+
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Daily Practice</p>
+          <h1>今天，把三道题变成确定性。</h1>
+          <p class="hero-copy">
+            两道新题建立覆盖，一道复习题巩固记忆。做完后直接记录结果，OfferPilot
+            会自动安排下一次复习。
+          </p>
+        </div>
+        <div class="progress-orb" id="progress-orb" style="--progress: 0">
+          <div class="progress-value">
+            <strong id="progress-value">0/3</strong>
+            <span>今日反馈</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="summary" aria-label="今日概览">
+        <div class="summary-card">
+          <span>计划日期</span>
+          <strong id="plan-date">加载中</strong>
+        </div>
+        <div class="summary-card">
+          <span>今日组合</span>
+          <strong id="plan-mix">读取中</strong>
+        </div>
+        <div class="summary-card">
+          <span>剩余任务</span>
+          <strong id="remaining-count">--</strong>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-heading">
+          <h2>今日题目</h2>
+          <span>结果会同步到复习计划</span>
+        </div>
+        <div class="problem-list" id="problem-list" aria-live="polite">
+          <article class="problem-card skeleton">
+            <div class="skeleton-line short"></div>
+            <div class="skeleton-line wide"></div>
+            <div class="skeleton-line"></div>
+            <div class="skeleton-line"></div>
+          </article>
+          <article class="problem-card skeleton">
+            <div class="skeleton-line short"></div>
+            <div class="skeleton-line wide"></div>
+            <div class="skeleton-line"></div>
+            <div class="skeleton-line"></div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script>
+      const TODAY_API = "/api/leetcode/dashboard/today";
+      const RESULT_API = "/api/leetcode/dashboard/results";
+      const AUTH_URL = "/leetcode/dashboard/auth/start";
+
+      const labels = {
+        assignmentType: {
+          new: "新题",
+          review: "复习",
+          carryover: "顺延",
+        },
+        difficulty: {
+          easy: "简单",
+          medium: "中等",
+          hard: "困难",
+        },
+        result: {
+          independent: "独立完成",
+          with_hint: "提示完成",
+          with_solution: "看题解",
+          failed: "没做出来",
+          postponed: "明天继续",
+          skipped: "已跳过",
+        },
+        mastery: {
+          learning: "学习中",
+          reviewing: "复习中",
+          mastered: "已掌握",
+        },
+      };
+
+      const actions = [
+        { value: "independent", label: "独立完成", style: "primary" },
+        { value: "with_hint", label: "提示完成", style: "" },
+        { value: "with_solution", label: "看题解", style: "" },
+        { value: "failed", label: "没做出来", style: "danger" },
+        { value: "postponed", label: "明天继续", style: "" },
+      ];
+
+      const listElement = document.getElementById("problem-list");
+      const toastElement = document.getElementById("toast");
+      let toastTimer;
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      function safeLeetCodeUrl(value) {
+        try {
+          const url = new URL(value);
+          return url.protocol === "https:" && url.hostname === "leetcode.cn"
+            ? url.href
+            : "https://leetcode.cn/studyplan/top-100-liked/";
+        } catch {
+          return "https://leetcode.cn/studyplan/top-100-liked/";
+        }
+      }
+
+      function showToast(message, type = "success") {
+        clearTimeout(toastTimer);
+        toastElement.textContent = message;
+        toastElement.className = `toast ${type === "error" ? "error" : ""} show`;
+        toastTimer = window.setTimeout(() => {
+          toastElement.className = "toast";
+        }, 3600);
+      }
+
+      async function requestJson(url, options = {}) {
+        const response = await fetch(url, {
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+            ...(options.headers || {}),
+          },
+          ...options,
+        });
+        if (response.status === 401) {
+          window.location.assign(AUTH_URL);
+          throw new Error("登录状态已过期，正在重新授权。");
+        }
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.detail || "请求失败，请稍后重试。");
+        }
+        return payload;
+      }
+
+      function resultNote(item) {
+        if (!item.result) {
+          return "";
+        }
+        const review = item.progress?.next_review_on
+          ? `<span>下次复习：${escapeHtml(item.progress.next_review_on)}</span>`
+          : "";
+        const mastery = item.progress?.mastery_status
+          ? `<span>掌握状态：${escapeHtml(
+              labels.mastery[item.progress.mastery_status] ||
+                item.progress.mastery_status,
+            )}</span>`
+          : "";
+        return `
+          <div class="result-note">
+            <strong>${escapeHtml(labels.result[item.result] || item.result)}</strong>
+            ${review}
+            ${mastery}
+          </div>
+        `;
+      }
+
+      function actionButtons(item) {
+        if (item.result) {
+          return `
+            <div class="actions">
+              <a
+                class="leetcode-link"
+                href="${escapeHtml(safeLeetCodeUrl(item.problem.url))}"
+                target="_blank"
+                rel="noopener noreferrer"
+              >再次查看题目 ↗</a>
+            </div>
+          `;
+        }
+        const buttons = actions
+          .map(
+            (action) => `
+              <button
+                class="action-button ${action.style}"
+                type="button"
+                data-assignment-id="${escapeHtml(item.assignment_id)}"
+                data-result="${action.value}"
+              >${action.label}</button>
+            `,
+          )
+          .join("");
+        return `
+          <div class="actions">
+            ${buttons}
+            <a
+              class="leetcode-link"
+              href="${escapeHtml(safeLeetCodeUrl(item.problem.url))}"
+              target="_blank"
+              rel="noopener noreferrer"
+            >去力扣做题 ↗</a>
+          </div>
+        `;
+      }
+
+      function renderProblem(item, index) {
+        const handled = Boolean(item.result);
+        const statusLabel = handled
+          ? labels.result[item.result] || item.result
+          : "待反馈";
+        return `
+          <article class="problem-card ${handled ? "is-handled" : ""}">
+            <div class="problem-head">
+              <div>
+                <p class="problem-number">题目 ${index + 1} · ${escapeHtml(
+                  item.problem.frontend_id,
+                )}</p>
+                <h3 class="problem-title">${escapeHtml(item.problem.title)}</h3>
+              </div>
+              <span class="status-pill ${handled ? "done" : ""}">
+                ${handled ? "✓ " : ""}${escapeHtml(statusLabel)}
+              </span>
+            </div>
+            <div class="meta">
+              <span class="tag">${escapeHtml(
+                labels.difficulty[item.problem.difficulty] ||
+                  item.problem.difficulty,
+              )}</span>
+              <span class="tag">${escapeHtml(item.problem.category)}</span>
+              <span class="tag">${escapeHtml(
+                labels.assignmentType[item.assignment_type] ||
+                  item.assignment_type,
+              )}</span>
+            </div>
+            <p class="reason">${escapeHtml(item.recommendation_reason)}</p>
+            ${resultNote(item)}
+            ${actionButtons(item)}
+          </article>
+        `;
+      }
+
+      function renderDashboard(dashboard) {
+        const handled = dashboard.summary.handled;
+        const total = dashboard.summary.total;
+        const percentage = total ? Math.round((handled / total) * 100) : 0;
+        document.getElementById("progress-value").textContent = `${handled}/${total}`;
+        document
+          .getElementById("progress-orb")
+          .style.setProperty("--progress", percentage);
+        document.getElementById("plan-date").textContent = dashboard.date;
+        document.getElementById("remaining-count").textContent = `${Math.max(
+          total - handled,
+          0,
+        )} 道`;
+
+        const counts = dashboard.items.reduce(
+          (result, item) => {
+            result[item.assignment_type] =
+              (result[item.assignment_type] || 0) + 1;
+            return result;
+          },
+          {},
+        );
+        const mix = [
+          counts.new ? `新题 ${counts.new}` : "",
+          counts.review ? `复习 ${counts.review}` : "",
+          counts.carryover ? `顺延 ${counts.carryover}` : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        document.getElementById("plan-mix").textContent = mix || "暂无安排";
+
+        if (!dashboard.items.length) {
+          listElement.innerHTML =
+            '<div class="empty">Hot 100 当前没有需要安排的题目。</div>';
+          return;
+        }
+        listElement.innerHTML = dashboard.items.map(renderProblem).join("");
+      }
+
+      function renderError(error) {
+        listElement.innerHTML = `
+          <div class="error-panel">
+            <strong>暂时无法读取刷题计划</strong>
+            <span>${escapeHtml(error.message)}</span>
+          </div>
+        `;
+      }
+
+      async function loadDashboard() {
+        try {
+          renderDashboard(await requestJson(TODAY_API));
+        } catch (error) {
+          renderError(error);
+        }
+      }
+
+      async function recordResult(button) {
+        const card = button.closest(".problem-card");
+        const buttons = card.querySelectorAll("button[data-result]");
+        buttons.forEach((item) => {
+          item.disabled = true;
+        });
+        try {
+          const payload = await requestJson(RESULT_API, {
+            method: "POST",
+            body: JSON.stringify({
+              assignment_id: button.dataset.assignmentId,
+              result: button.dataset.result,
+            }),
+          });
+          renderDashboard(payload.dashboard);
+          showToast(payload.message);
+        } catch (error) {
+          buttons.forEach((item) => {
+            item.disabled = false;
+          });
+          showToast(error.message, "error");
+        }
+      }
+
+      listElement.addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-result]");
+        if (button) {
+          recordResult(button);
+        }
+      });
+      document.getElementById("refresh").addEventListener("click", loadDashboard);
+      loadDashboard();
+    </script>
+  </body>
+</html>

@@ -131,6 +131,26 @@ class Settings:
         "https://open.feishu.cn/open-apis",
     )
     feishu_timeout_seconds: float = float(os.getenv("FEISHU_TIMEOUT_SECONDS", "15"))
+    feishu_authorize_url: str = os.getenv(
+        "FEISHU_AUTHORIZE_URL",
+        "https://accounts.feishu.cn/open-apis/authen/v1/authorize",
+    )
+    dashboard_oauth_scope: str = os.getenv(
+        "OFFERPILOT_DASHBOARD_OAUTH_SCOPE",
+        "auth:user.id:read",
+    )
+    dashboard_public_base_url: str = os.getenv(
+        "OFFERPILOT_DASHBOARD_PUBLIC_BASE_URL",
+        "",
+    )
+    dashboard_session_secret: str = os.getenv(
+        "OFFERPILOT_DASHBOARD_SESSION_SECRET",
+        "",
+    )
+    dashboard_session_ttl_seconds: int = _get_int_env(
+        "OFFERPILOT_DASHBOARD_SESSION_TTL_SECONDS",
+        7 * 24 * 60 * 60,
+    )
     feishu_calendar_sync_enabled: bool = _get_bool_env("FEISHU_CALENDAR_SYNC_ENABLED", False)
     feishu_calendar_id: str = os.getenv("FEISHU_CALENDAR_ID", "primary")
     feishu_calendar_auto_create_enabled: bool = _get_bool_env(
