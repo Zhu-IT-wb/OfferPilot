@@ -89,6 +89,10 @@ class KnowledgeQuestion:
     source_page_start: Optional[int] = None
     source_page_end: Optional[int] = None
     enabled: bool = True
+    source_file: str = ""
+    source_heading: str = ""
+    content_hash: str = ""
+    keywords: List[str] = field(default_factory=list)
 
     @property
     def required_points(self) -> List[KnowledgeRubricPoint]:
@@ -127,6 +131,10 @@ class KnowledgeQuestion:
             "source_page_start": self.source_page_start,
             "source_page_end": self.source_page_end,
             "enabled": self.enabled,
+            "source_file": self.source_file,
+            "source_heading": self.source_heading,
+            "content_hash": self.content_hash,
+            "keywords": list(self.keywords),
         }
 
 

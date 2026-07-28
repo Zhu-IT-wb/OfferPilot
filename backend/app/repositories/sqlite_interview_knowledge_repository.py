@@ -28,12 +28,18 @@ from app.services.knowledge_catalog import load_knowledge_catalog
 
 class SQLiteInterviewKnowledgeRepository:
     def __init__(
-        self, db_path: str, questions: Optional[List[KnowledgeQuestion]] = None
+        self,
+        db_path: str,
+        questions: Optional[List[KnowledgeQuestion]] = None,
+        initialize_questions: bool = True,
     ) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
-        self.upsert_questions(questions or load_knowledge_catalog().questions)
+        if initialize_questions:
+            self.upsert_questions(
+                load_knowledge_catalog().questions if questions is None else questions
+            )
 
     def upsert_questions(self, questions: List[KnowledgeQuestion]) -> None:
         now = datetime.now().isoformat()
@@ -46,8 +52,9 @@ class SQLiteInterviewKnowledgeRepository:
                     chapter_order, question_order, prompt, difficulty, frequency,
                     short_reference_answer, full_reference_answer, rubric_points, hint,
                     source_title, source_url, source_chapter, source_page_start,
-                    source_page_end, enabled, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_page_end, source_file, source_heading, content_hash, keywords,
+                    enabled, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     module_id=excluded.module_id, module_title=excluded.module_title,
                     module_order=excluded.module_order, chapter_id=excluded.chapter_id,
@@ -60,7 +67,11 @@ class SQLiteInterviewKnowledgeRepository:
                     source_title=excluded.source_title, source_url=excluded.source_url,
                     source_chapter=excluded.source_chapter,
                     source_page_start=excluded.source_page_start,
-                    source_page_end=excluded.source_page_end, enabled=excluded.enabled,
+                    source_page_end=excluded.source_page_end,
+                    source_file=excluded.source_file,
+                    source_heading=excluded.source_heading,
+                    content_hash=excluded.content_hash, keywords=excluded.keywords,
+                    enabled=excluded.enabled,
                     updated_at=excluded.updated_at
                 """,
                 [
@@ -72,7 +83,9 @@ class SQLiteInterviewKnowledgeRepository:
                         item.full_reference_answer,
                         json.dumps([point.to_dict() for point in item.rubric_points], ensure_ascii=False),
                         item.hint, item.source_title, item.source_url, item.source_chapter,
-                        item.source_page_start, item.source_page_end, int(item.enabled), now,
+                        item.source_page_start, item.source_page_end, item.source_file,
+                        item.source_heading, item.content_hash,
+                        json.dumps(item.keywords, ensure_ascii=False), int(item.enabled), now,
                     )
                     for item in questions
                 ],
@@ -332,7 +345,11 @@ class SQLiteInterviewKnowledgeRepository:
                     rubric_points TEXT NOT NULL, hint TEXT NOT NULL,
                     source_title TEXT NOT NULL, source_url TEXT NOT NULL,
                     source_chapter TEXT NOT NULL, source_page_start INTEGER,
-                    source_page_end INTEGER, enabled INTEGER NOT NULL, updated_at TEXT NOT NULL
+                    source_page_end INTEGER, source_file TEXT NOT NULL DEFAULT '',
+                    source_heading TEXT NOT NULL DEFAULT '',
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    keywords TEXT NOT NULL DEFAULT '[]',
+                    enabled INTEGER NOT NULL, updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS knowledge_assignments (
                     id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, question_id TEXT NOT NULL,
@@ -379,6 +396,21 @@ class SQLiteInterviewKnowledgeRepository:
                 connection.execute(
                     "ALTER TABLE knowledge_attempts ADD COLUMN submission_id TEXT"
                 )
+            question_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(knowledge_questions)")
+            }
+            question_column_migrations = {
+                "source_file": "TEXT NOT NULL DEFAULT ''",
+                "source_heading": "TEXT NOT NULL DEFAULT ''",
+                "content_hash": "TEXT NOT NULL DEFAULT ''",
+                "keywords": "TEXT NOT NULL DEFAULT '[]'",
+            }
+            for column, definition in question_column_migrations.items():
+                if column not in question_columns:
+                    connection.execute(
+                        f"ALTER TABLE knowledge_questions ADD COLUMN {column} {definition}"
+                    )
             connection.execute(
                 """CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_attempt_submission
                    ON knowledge_attempts(owner_id, submission_id)
@@ -421,6 +453,8 @@ class SQLiteInterviewKnowledgeRepository:
             source_chapter=row["source_chapter"],
             source_page_start=row["source_page_start"],
             source_page_end=row["source_page_end"], enabled=bool(row["enabled"]),
+            source_file=row["source_file"], source_heading=row["source_heading"],
+            content_hash=row["content_hash"], keywords=json.loads(row["keywords"]),
         )
 
     @staticmethod

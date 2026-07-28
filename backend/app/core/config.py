@@ -94,6 +94,10 @@ def _default_sqlite_path() -> str:
     return str(Path(__file__).resolve().parents[2] / "data" / "offerpilot.db")
 
 
+def _default_knowledge_source_path() -> str:
+    return str(Path(__file__).resolve().parents[3] / "data" / "knowledge")
+
+
 _load_env_file(_default_env_file())
 
 
@@ -123,6 +127,14 @@ class Settings:
     )
     storage_backend: str = os.getenv("OFFERPILOT_STORAGE_BACKEND", "memory")
     sqlite_path: str = os.getenv("OFFERPILOT_SQLITE_PATH", _default_sqlite_path())
+    knowledge_source_path: str = os.getenv(
+        "OFFERPILOT_KNOWLEDGE_SOURCE_PATH",
+        _default_knowledge_source_path(),
+    )
+    knowledge_markdown_sync_enabled: bool = _get_bool_env(
+        "OFFERPILOT_KNOWLEDGE_MARKDOWN_SYNC_ENABLED",
+        True,
+    )
     feishu_verification_token: str = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
     feishu_app_id: str = os.getenv("FEISHU_APP_ID", "")
     feishu_app_secret: str = os.getenv("FEISHU_APP_SECRET", "")

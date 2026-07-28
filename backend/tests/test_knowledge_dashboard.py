@@ -81,6 +81,8 @@ def test_authenticated_user_can_open_knowledge_practice_page(monkeypatch) -> Non
     assert "submission_id" in response.text
     assert 'findIndex(item=>item.status!=="completed")' in response.text
     assert "/api/study/knowledge/practice" in response.text
+    assert "/api/study/knowledge/catalog/questions" in response.text
+    assert "加载更多" in response.text
 
 
 def test_today_api_returns_navigation_and_hides_answers_before_submission(
@@ -95,9 +97,31 @@ def test_today_api_returns_navigation_and_hides_answers_before_submission(
     assert payload["summary"] == {"handled": 0, "total": 5}
     assert len(payload["items"]) == 5
     assert payload["catalog"][0]["id"] == "network"
+    first_chapter = payload["catalog"][0]["chapters"][0]
+    assert first_chapter["question_count"] == 2
+    assert "questions" not in first_chapter
     assert payload["items"][0]["question"]["prompt"]
     assert "short_reference_answer" not in response.text
     assert "full_reference_answer" not in response.text
+
+
+def test_catalog_questions_are_loaded_by_chapter_with_progress(monkeypatch) -> None:
+    client, _ = _client(monkeypatch)
+    client.get("/api/study/knowledge/today")
+
+    response = client.get(
+        "/api/study/knowledge/catalog/questions",
+        params={"chapter_id": "index", "limit": 1},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 2
+    assert payload["has_more"] is True
+    assert len(payload["questions"]) == 1
+    assert payload["questions"][0]["id"] == "knowledge_mysql_index_001"
+    assert payload["questions"][0]["status"] == "unseen"
+    assert payload["questions"][0]["score"] is None
 
 
 def test_materials_api_exposes_all_in_app_reference_answers(monkeypatch) -> None:
@@ -108,11 +132,30 @@ def test_materials_api_exposes_all_in_app_reference_answers(monkeypatch) -> None
     assert response.status_code == 200
     payload = response.json()
     assert len(payload["questions"]) >= 12
+    assert payload["total"] == 12
+    assert payload["has_more"] is False
     first = payload["questions"][0]
     assert first["id"] == "knowledge_network_http_001"
     assert "默认使用持久连接" in first["short_reference_answer"]
     assert first["full_reference_answer"]
     assert first["source"]["url"].startswith("https://")
+
+
+def test_materials_api_supports_pagination_for_large_corpus(monkeypatch) -> None:
+    client, _ = _client(monkeypatch)
+
+    first_page = client.get(
+        "/api/study/knowledge/materials", params={"limit": 2, "offset": 0}
+    ).json()
+    second_page = client.get(
+        "/api/study/knowledge/materials", params={"limit": 2, "offset": 2}
+    ).json()
+
+    assert first_page["total"] == 12
+    assert first_page["has_more"] is True
+    assert len(first_page["questions"]) == 2
+    assert len(second_page["questions"]) == 2
+    assert first_page["questions"][0]["id"] != second_page["questions"][0]["id"]
 
 
 def test_chapter_navigation_creates_manual_practice_assignments(monkeypatch) -> None:

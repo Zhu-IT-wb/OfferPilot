@@ -39,7 +39,7 @@ OfferPilot 不是一个只负责回答问题的聊天机器人，而是一个围
 | Feishu Bitable | 支持多维表格自动创建、记录推送同步、记录拉取同步、事件订阅和协作者授权。 |
 | Feishu Calendar | 支持 OfferPilot 专属日历、面试日程创建、参与人同步和提醒确认。 |
 | LeetCode Hot 100 | 内置官方公开元数据快照，确定性生成每日推荐，支持间隔复习、标签页反馈，以及 08:00、12:00、18:00 分级提醒。 |
-| 八股学习中心 | 内置网络、操作系统、MySQL、Redis 结构化题库，支持一题一卡、AI 评分、参考答案、掌握度、间隔复习和飞书每日推送。 |
+| 八股学习中心 | 自动将本地私有 Markdown 拆成结构化题库，支持一题一卡、AI 评分、参考答案、掌握度、间隔复习和飞书每日推送。 |
 | Persistence | Repository 边界清晰，支持内存存储与 SQLite 本地持久化。 |
 | Quality | 后端测试覆盖 Agent、Planner、Feishu 事件、多维表格同步、工具层和 Repository。 |
 | Documentation | `docs/` 下保留阶段性编码报告和产品技术方案，便于追踪架构演进。 |
@@ -239,6 +239,8 @@ cd backend
 | `OFFERPILOT_ENABLE_DEBUG_ROUTES` | 是否开放 `/api/debug/*`。生产环境建议关闭。 |
 | `OFFERPILOT_STORAGE_BACKEND` | 存储后端，可选 `memory` 或 `sqlite`。 |
 | `OFFERPILOT_SQLITE_PATH` | SQLite 数据库路径。 |
+| `OFFERPILOT_KNOWLEDGE_SOURCE_PATH` | 私有 Markdown 八股资料目录，默认是仓库根目录下的 `data/knowledge`。 |
+| `OFFERPILOT_KNOWLEDGE_MARKDOWN_SYNC_ENABLED` | 启动时是否增量同步 Markdown 题库。 |
 | `DEEPSEEK_API_KEY` / `OFFERPILOT_LLM_API_KEY` | LLM 调用凭证。 |
 | `OFFERPILOT_LLM_PLANNER_ENABLED` | 是否启用 LLM Planner。 |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 飞书应用凭证。 |
@@ -263,7 +265,7 @@ cd backend
 | `GET /study/knowledge` | 飞书八股复习网页，一题一卡并带知识导航。 |
 | `GET /api/study/knowledge/today` | 返回当前用户的今日八股与掌握进度。 |
 | `POST /api/study/knowledge/answers` | 评价回答、记录掌握度并安排下次复习。 |
-| `GET /api/study/knowledge/materials` | 在 OfferPilot 内阅读全部已收录题目与解析。 |
+| `GET /api/study/knowledge/materials` | 分页阅读已收录题目与解析，可按模块或章节过滤。 |
 | `POST /api/debug/llm` | LLM 调试接口，仅建议本地或开发环境使用。 |
 | `POST /api/debug/intent` | 意图识别调试接口。 |
 | `POST /api/debug/agent` | Agent 编排调试接口。 |

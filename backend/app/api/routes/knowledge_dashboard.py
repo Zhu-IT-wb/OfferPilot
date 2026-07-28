@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -76,10 +76,27 @@ async def get_knowledge_today(request: Request) -> Dict[str, Any]:
 
 
 @api_router.get("/materials")
-async def get_knowledge_materials(request: Request) -> Dict[str, Any]:
+async def get_knowledge_materials(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    module_id: str = Query(default="", max_length=100),
+    chapter_id: str = Query(default="", max_length=100),
+) -> Dict[str, Any]:
     _require_dashboard_open_id(request)
     repository = get_default_knowledge_repository()
+    questions = [
+        question
+        for question in repository.list_questions()
+        if (not module_id or question.module_id == module_id)
+        and (not chapter_id or question.chapter_id == chapter_id)
+    ]
+    page = questions[offset : offset + limit]
     return {
+        "total": len(questions),
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(page) < len(questions),
         "questions": [
             {
                 "id": question.id,
@@ -96,10 +113,42 @@ async def get_knowledge_materials(request: Request) -> Dict[str, Any]:
                     "chapter": question.source_chapter,
                     "page_start": question.source_page_start,
                     "page_end": question.source_page_end,
+                    "file": question.source_file,
+                    "heading": question.source_heading,
                 },
             }
-            for question in repository.list_questions()
+            for question in page
         ]
+    }
+
+
+@api_router.get("/catalog/questions")
+async def get_knowledge_catalog_questions(
+    request: Request,
+    chapter_id: str = Query(..., min_length=1, max_length=100),
+    limit: int = Query(default=100, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> Dict[str, Any]:
+    owner_id = f"feishu:{_require_dashboard_open_id(request)}"
+    repository = get_default_knowledge_repository()
+    questions = [
+        question
+        for question in repository.list_questions()
+        if question.chapter_id == chapter_id
+    ]
+    progress_by_id = {
+        item.question_id: item for item in repository.list_progress(owner_id)
+    }
+    page = questions[offset : offset + limit]
+    return {
+        "total": len(questions),
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(page) < len(questions),
+        "questions": [
+            _catalog_question_payload(question, progress_by_id.get(question.id))
+            for question in page
+        ],
     }
 
 
@@ -239,14 +288,13 @@ def _dashboard_payload(repository, owner_id, recommendations, date_value: str):
             "handled": sum(1 for item in recommendations if item.assignment.attempt_id),
             "total": len(recommendations),
         },
-        "catalog": _catalog_payload(repository, owner_id),
+        "catalog": _catalog_payload(repository),
         "items": items,
     }
 
 
-def _catalog_payload(repository, owner_id: str) -> List[Dict[str, Any]]:
+def _catalog_payload(repository) -> List[Dict[str, Any]]:
     modules: Dict[str, Dict[str, Any]] = {}
-    progress_by_id = {item.question_id: item for item in repository.list_progress(owner_id)}
     for question in repository.list_questions():
         module = modules.setdefault(
             question.module_id,
@@ -263,19 +311,10 @@ def _catalog_payload(repository, owner_id: str) -> List[Dict[str, Any]]:
                 "id": question.chapter_id,
                 "title": question.chapter_title,
                 "order": question.chapter_order,
-                "questions": [],
+                "question_count": 0,
             },
         )
-        progress = progress_by_id.get(question.id)
-        chapter["questions"].append(
-            {
-                "id": question.id,
-                "prompt": question.prompt,
-                "status": progress.mastery_status.value if progress else "unseen",
-                "score": progress.last_score if progress else None,
-                "source_url": question.source_url,
-            }
-        )
+        chapter["question_count"] += 1
     result = []
     for module in sorted(modules.values(), key=lambda item: item["order"]):
         module["chapters"] = sorted(
@@ -283,6 +322,16 @@ def _catalog_payload(repository, owner_id: str) -> List[Dict[str, Any]]:
         )
         result.append(module)
     return result
+
+
+def _catalog_question_payload(question, progress) -> Dict[str, Any]:
+    return {
+        "id": question.id,
+        "prompt": question.prompt,
+        "status": progress.mastery_status.value if progress else "unseen",
+        "score": progress.last_score if progress else None,
+        "source_url": question.source_url,
+    }
 
 
 def _progress_payload(progress) -> Dict[str, Any]:

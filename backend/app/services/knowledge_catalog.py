@@ -82,4 +82,8 @@ def _question_from_dict(value: Dict[str, Any]) -> KnowledgeQuestion:
         source_page_start=value.get("source_page_start"),
         source_page_end=value.get("source_page_end"),
         enabled=bool(value.get("enabled", True)),
+        source_file=str(value.get("source_file", "")),
+        source_heading=str(value.get("source_heading", "")),
+        content_hash=str(value.get("content_hash", "")),
+        keywords=[str(item) for item in value.get("keywords", [])],
     )

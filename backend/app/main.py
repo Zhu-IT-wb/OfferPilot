@@ -18,7 +18,11 @@ from app.core.config import Settings, settings
 from app.services.bitable_event_subscription_service import ensure_bitable_event_subscription
 from app.services.bitable_pull_sync_service import BitablePullSyncService
 from app.services.leetcode_push_service import LeetCodePushService
-from app.services.knowledge_dependencies import get_default_knowledge_repository
+from app.services.knowledge_dependencies import (
+    get_default_knowledge_repository,
+    sync_default_knowledge_repository,
+)
+from app.services.knowledge_corpus import KnowledgeCorpusSyncError
 from app.services.knowledge_push_service import KnowledgePushService
 from app.tools.offerpilot_tools import (
     get_default_leetcode_repository,
@@ -57,6 +61,14 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
     # 在应用启动时启动多维表格定时拉取同步任务。
     @app.on_event("startup")
     async def start_bitable_pull_sync() -> None:
+        try:
+            sync_default_knowledge_repository(app_settings)
+        except KnowledgeCorpusSyncError as exc:
+            logger.warning(
+                "Knowledge Markdown startup sync was rejected; retaining the "
+                "last-known-good corpus: %s",
+                exc,
+            )
         repository = get_default_offerpilot_repository()
         event_subscription = ensure_bitable_event_subscription(repository=repository, force=True)
         if event_subscription.subscribed:

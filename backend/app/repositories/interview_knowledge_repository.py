@@ -77,9 +77,7 @@ class InMemoryInterviewKnowledgeRepository:
     deliveries: set[Tuple[str, date, KnowledgeDeliveryType]] = field(default_factory=set)
 
     def upsert_questions(self, questions: List[KnowledgeQuestion]) -> None:
-        by_id = {question.id: question for question in self.questions}
-        by_id.update({question.id: question for question in questions})
-        self.questions = list(by_id.values())
+        self.questions = list(questions)
 
     def list_questions(self) -> List[KnowledgeQuestion]:
         return sorted(

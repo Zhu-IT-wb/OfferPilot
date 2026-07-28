@@ -22,8 +22,11 @@
       .nav-special.active, .nav-special:hover { background:var(--soft); color:var(--brand); }
       .module { margin-top:17px; }
       .module-title { margin:0 9px 8px; color:#344054; font-size:13px; font-weight:750; }
+      .chapter-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:4px; }
       .chapter-button { display:flex; justify-content:space-between; padding:9px 12px; border-radius:9px; color:#475467; }
       .chapter-button:hover { background:#f1f4f8; }
+      .chapter-practice { border:0; border-radius:8px; padding:6px 8px; color:var(--brand); background:transparent; font-size:12px; }
+      .chapter-practice:hover { background:var(--soft); }
       .chapter-questions { padding-left:8px; }
       .question-link { display:flex; gap:8px; padding:7px 10px; color:var(--muted); font-size:12px; line-height:1.35; }
       .question-link:hover { color:var(--brand); }
@@ -101,7 +104,8 @@
       const ANSWER_URL = "/api/study/knowledge/answers";
       const MATERIALS_URL = "/api/study/knowledge/materials";
       const PRACTICE_URL = "/api/study/knowledge/practice";
-      const state = { data:null, materials:null, index:0, view:"practice", submissionId:null, submissionAssignmentId:null };
+      const CATALOG_QUESTIONS_URL = "/api/study/knowledge/catalog/questions";
+      const state = { data:null, materials:null, catalogQuestions:{}, expandedChapter:null, index:0, view:"practice", submissionId:null, submissionAssignmentId:null };
       const workspace = document.getElementById("workspace");
       const esc = (value) => String(value ?? "").replace(/[&<>\"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'\"':"&quot;","'":"&#39;"}[c]));
       const newSubmissionId = () => globalThis.crypto?.randomUUID?.() || `submission-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -110,10 +114,12 @@
         catch (error) { workspace.innerHTML = `<div class="card error">${esc(error.message)}</div>`; }
       }
       function renderCatalog() {
-        document.getElementById("catalog").innerHTML = state.data.catalog.map(module => `<div class="module"><div class="module-title">${esc(module.title)}</div>${module.chapters.map(chapter => `<button class="chapter-button" data-chapter="${esc(chapter.id)}"><span>${esc(chapter.title)}</span><span>${chapter.questions.length}</span></button><div class="chapter-questions">${chapter.questions.map(question => `<button class="question-link" data-question="${question.id}"><span class="dot ${question.status}"></span><span>${esc(question.prompt)}</span></button>`).join("")}</div>`).join("")}</div>`).join("");
-        document.querySelectorAll("[data-chapter]").forEach(button=>button.onclick=()=>startPractice({chapter_id:button.dataset.chapter}));
+        document.getElementById("catalog").innerHTML = state.data.catalog.map(module => `<div class="module"><div class="module-title">${esc(module.title)}</div>${module.chapters.map(chapter => {const questions=state.catalogQuestions[chapter.id]||[];const expanded=state.expandedChapter===chapter.id;return `<div class="chapter-row"><button class="chapter-button" data-chapter-load="${esc(chapter.id)}"><span>${expanded?"▾":"▸"} ${esc(chapter.title)}</span><span>${chapter.question_count}</span></button><button class="chapter-practice" data-chapter-practice="${esc(chapter.id)}">练习</button></div><div class="chapter-questions">${expanded?questions.map(question => `<button class="question-link" data-question="${esc(question.id)}"><span class="dot ${esc(question.status)}"></span><span>${esc(question.prompt)}</span></button>`).join(""):""}</div>`;}).join("")}</div>`).join("");
+        document.querySelectorAll("[data-chapter-load]").forEach(button=>button.onclick=()=>toggleChapter(button.dataset.chapterLoad));
+        document.querySelectorAll("[data-chapter-practice]").forEach(button=>button.onclick=()=>startPractice({chapter_id:button.dataset.chapterPractice}));
         document.querySelectorAll("[data-question]").forEach(button=>button.onclick=()=>startPractice({question_id:button.dataset.question}));
       }
+      async function toggleChapter(chapterId){if(state.expandedChapter===chapterId){state.expandedChapter=null;renderCatalog();return;}state.expandedChapter=chapterId;if(!state.catalogQuestions[chapterId]){let questions=[],offset=0,hasMore=true;while(hasMore){const response=await fetch(`${CATALOG_QUESTIONS_URL}?chapter_id=${encodeURIComponent(chapterId)}&limit=100&offset=${offset}`);if(!response.ok)throw new Error("题目目录加载失败");const page=await response.json();questions.push(...page.questions);offset=questions.length;hasMore=page.has_more;}state.catalogQuestions[chapterId]=questions;}renderCatalog();}
       async function startPractice(selector){workspace.innerHTML='<div class="card empty">正在创建练习…</div>';try{const response=await fetch(PRACTICE_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(selector)});const payload=await response.json();if(!response.ok)throw new Error(payload.detail||"创建练习失败");state.data=payload;state.index=Math.max(0,state.data.items.findIndex(item=>item.question.id===payload.focus_question_id));state.view="practice";state.submissionId=null;state.submissionAssignmentId=null;renderCatalog();syncTabs();renderPractice();closeMenu();}catch(error){workspace.innerHTML=`<div class="card error">${esc(error.message)}</div>`;}}
       function render() { state.view === "material" ? renderMaterials() : renderPractice(); }
       function renderPractice() {
@@ -140,10 +146,12 @@
         document.getElementById("next").onclick=()=>{ state.index=Math.min(state.index+1,state.data.items.length-1); state.submissionId=null; state.submissionAssignmentId=null; renderPractice(); };
         document.getElementById("retry").onclick=()=>{ state.submissionId=newSubmissionId(); state.submissionAssignmentId=state.data.items[state.index].assignment_id; feedback.style.display="none"; document.querySelectorAll("article.card > .actions button").forEach(button=>button.disabled=false); document.getElementById("answer").focus(); };
       }
+      async function loadMaterialPage(){const offset=state.materials?.questions.length||0;const response=await fetch(`${MATERIALS_URL}?limit=30&offset=${offset}`);if(!response.ok)throw new Error("资料库加载失败");const page=await response.json();state.materials=state.materials?{...page,questions:[...state.materials.questions,...page.questions]}:page;}
       async function renderMaterials() {
         workspace.innerHTML='<div class="card empty">正在加载资料库…</div>';
-        try { if(!state.materials){const response=await fetch(MATERIALS_URL);if(!response.ok)throw new Error("资料库加载失败");state.materials=(await response.json()).questions;}
-          workspace.innerHTML=`<div class="hero"><div><strong>原文资料</strong><p>所有已收录题目与解析都可直接阅读，外链仅用于查看出处。</p></div></div><div class="material-list">${state.materials.map(q=>`<article class="material" id="material-${esc(q.id)}"><p>${esc(q.module_title)} · ${esc(q.chapter_title)}</p><h3>${esc(q.prompt)}</h3><div class="feedback-copy">${esc(q.short_reference_answer)}</div><details><summary>完整解析</summary><p>${esc(q.full_reference_answer)}</p></details>${q.source.url?`<a class="source" href="${esc(q.source.url)}" target="_blank" rel="noopener">查看出处 · ${esc(q.source.chapter||q.source.title)} ↗</a>`:""}</article>`).join("")}</div>`;
+        try { if(!state.materials)await loadMaterialPage();const materials=state.materials;
+          workspace.innerHTML=`<div class="hero"><div><strong>原文资料</strong><p>已加载 ${materials.questions.length} / ${materials.total} 题，外链仅用于查看出处。</p></div></div><div class="material-list">${materials.questions.map(q=>`<article class="material" id="material-${esc(q.id)}"><p>${esc(q.module_title)} · ${esc(q.chapter_title)}</p><h3>${esc(q.prompt)}</h3><div class="feedback-copy">${esc(q.short_reference_answer)}</div><details><summary>完整解析</summary><p>${esc(q.full_reference_answer)}</p></details>${q.source.url?`<a class="source" href="${esc(q.source.url)}" target="_blank" rel="noopener">查看出处 · ${esc(q.source.chapter||q.source.title)} ↗</a>`:""}</article>`).join("")}</div>${materials.has_more?'<div class="actions"><button class="button" id="material-more">加载更多</button></div>':""}`;
+          if(materials.has_more)document.getElementById("material-more").onclick=async()=>{await loadMaterialPage();renderMaterials();};
         } catch(error){workspace.innerHTML=`<div class="card error">${esc(error.message)}</div>`;}
       }
       function syncTabs(){document.querySelectorAll("[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view===state.view));}

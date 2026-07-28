@@ -259,4 +259,27 @@ https://your-public-domain.example/study/knowledge
 
 页面提供左侧知识导航、一题一卡文字回答、AI 结构化评价、简答版和完整解析。首次打开页面会为当前飞书用户启用每日八股订阅；08:00 推送今日计划，12:00 和 18:00 只提醒未完成题目。薄弱题按掌握度自动进入后续复习队列。
 
-结构化题库位于 `app/data/interview_knowledge.json`。模型只识别命中的评分点和回答证据，最终分数、掌握状态与复习日期由服务端计算。
+本地私有资料默认从仓库根目录的 `data/knowledge` 读取。启动时，`KnowledgeCorpus` 会过滤介绍页和聚合页，将 AI 专题的一题一文件以及传统开发的大篇章 Markdown 统一拆成一题一条，生成稳定 ID、简答、完整解析、来源信息、内容哈希和初版评分点，再增量同步到 SQLite。`app/data/interview_knowledge.json` 只在 Markdown 目录不存在或没有可用题目时作为最小回退题库。
+
+当前本地语料可解析为 814 道题。原始 `data/` 已被 Git 忽略，不会随代码提交。手动同步命令：
+
+私有目录中的 `.offerpilot-corpus.json` 记录最低 Markdown 文件数和最低题目数，用来避免首次部署时因目录未完整挂载而把残缺题库写入数据库。题库有意扩容后可同步更新该清单；有意删题时使用下方的 `--force`。
+
+```bash
+.venv/bin/python scripts/sync_knowledge.py
+```
+
+同步会先校验题目数量和稳定 ID；默认不允许自动删除或替换任何现有题目，会保留上一次可用题库并拒绝写入。确认是有意迁移后，才使用：
+
+```bash
+.venv/bin/python scripts/sync_knowledge.py --force
+```
+
+可以通过以下配置覆盖目录或关闭启动同步：
+
+```text
+OFFERPILOT_KNOWLEDGE_SOURCE_PATH=../data/knowledge
+OFFERPILOT_KNOWLEDGE_MARKDOWN_SYNC_ENABLED=true
+```
+
+当前没有引入向量数据库：每日推荐、展示和评分都按稳定题目 ID 读取结构化数据；后续自由追问或跨题语义检索需要时，可在 `KnowledgeCorpus.search()` 的内部实现中增加混合检索，而不改变业务调用接口。模型只识别命中的评分点和回答证据，最终分数、掌握状态与复习日期仍由服务端计算。
