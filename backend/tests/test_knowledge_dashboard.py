@@ -1,6 +1,9 @@
 import json
+from dataclasses import replace
 from datetime import date, datetime
+from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routes import knowledge_dashboard
@@ -14,6 +17,12 @@ from app.services.knowledge_catalog import load_knowledge_catalog
 from app.services.knowledge_evaluation import KnowledgeEvaluationService
 from app.services.leetcode_dashboard_auth import DashboardTokenSigner
 from app.services.llm_service import LLMConfigurationError, LLMResult
+from app.services.speech_transcription import (
+    NoSpeechDetectedError,
+    SpeechTranscriptionConfigurationError,
+    SpeechTranscriptionError,
+    SpeechTranscriptionResult,
+)
 
 
 class FakeLLMService:
@@ -53,6 +62,7 @@ def _client(monkeypatch, open_id: str = "ou_owner") -> tuple[TestClient, object]
         debug_routes_enabled=False,
         feishu_app_id="cli_dashboard_test",
         feishu_app_secret="dashboard-secret",
+        dashboard_public_base_url="http://testserver",
     )
     client = TestClient(create_app(settings), follow_redirects=False)
     client.cookies.set(
@@ -75,6 +85,11 @@ def test_authenticated_user_can_open_knowledge_practice_page(monkeypatch) -> Non
     assert "OfferPilot 八股复习" in response.text
     assert "/api/study/knowledge/today" in response.text
     assert "/api/study/knowledge/answers" in response.text
+    assert "/api/study/knowledge/transcriptions" in response.text
+    assert "开始语音回答" in response.text
+    assert "MediaRecorder" in response.text
+    assert "getRecorderManager" in response.text
+    assert "h5-js-sdk-1.5.44.js" in response.text
     assert "逐题练习" in response.text
     assert "原文资料" in response.text
     assert "window.open" not in response.text
@@ -211,6 +226,293 @@ def test_answer_api_returns_evaluation_reference_answer_and_updated_progress(
     assert payload["progress"]["next_review_on"]
     updated = client.get("/api/study/knowledge/today").json()
     assert updated["summary"] == {"handled": 1, "total": 5}
+
+
+def test_voice_transcript_can_be_submitted_for_ai_evaluation(monkeypatch) -> None:
+    client, repository = _client(monkeypatch)
+    assignment_id = client.get("/api/study/knowledge/today").json()["items"][0][
+        "assignment_id"
+    ]
+
+    response = client.post(
+        "/api/study/knowledge/answers",
+        json={
+            "assignment_id": assignment_id,
+            "submission_id": "submission-voice-answer",
+            "answer_text": "默认持久连接，并增加 Host 请求头。",
+            "answer_source": "voice_transcript",
+        },
+    )
+
+    assert response.status_code == 200
+    attempt = repository.get_attempt(
+        "feishu:ou_owner", response.json()["attempt"]["id"]
+    )
+    assert attempt is not None
+    assert attempt.answer_source == KnowledgeAnswerSource.VOICE_TRANSCRIPT
+
+
+class FakeSpeechTranscriptionService:
+    def __init__(self, result=None, error=None) -> None:
+        self.result = result or SpeechTranscriptionResult(
+            transcript="JVM 通过 CAS 实现并发控制。",
+            provider="bailian",
+            model="fun-asr-test",
+        )
+        self.error = error
+        self.calls = []
+
+    async def transcribe(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+@pytest.mark.parametrize(
+    ("mime_type", "audio_format"),
+    [
+        ("audio/webm", "webm"),
+        ("audio/mp4", "mp4"),
+        ("audio/m4a", "m4a"),
+        ("audio/ogg", "ogg"),
+        ("audio/opus", "opus"),
+        ("audio/wav", "wav"),
+        ("audio/mpeg", "mp3"),
+        ("audio/aac", "aac"),
+    ],
+)
+def test_transcription_audio_format_mapping(mime_type, audio_format) -> None:
+    assert knowledge_dashboard._AUDIO_FORMATS[mime_type] == audio_format
+
+
+def test_speech_context_filters_keywords_that_only_come_from_answer_rubric() -> None:
+    question = load_knowledge_catalog().questions[0]
+    question = replace(
+        question,
+        keywords=["HTTP", "持久连接", "缓存增强", "rubric-secret"],
+    )
+
+    context = knowledge_dashboard._speech_context(question)
+
+    assert "HTTP" in context
+    assert "持久连接" not in context
+    assert "缓存增强" not in context
+    assert "rubric-secret" not in context
+
+
+class FakeJSSDKService:
+    def __init__(self) -> None:
+        self.urls = []
+
+    async def get_jssdk_config(self, page_url):
+        self.urls.append(page_url)
+        return SimpleNamespace(
+            app_id="cli_test",
+            timestamp=123456789,
+            nonce_str="nonce-test",
+            signature="signature-test",
+        )
+
+
+def test_jsapi_config_is_authenticated_signed_and_limited_to_knowledge_page(
+    monkeypatch,
+) -> None:
+    client, _ = _client(monkeypatch)
+    service = FakeJSSDKService()
+    monkeypatch.setattr(
+        knowledge_dashboard,
+        "get_feishu_jssdk_service",
+        lambda request: service,
+    )
+
+    response = client.get(
+        "/api/study/knowledge/jsapi-config",
+        params={"url": "http://testserver/study/knowledge?from=workplace#ignored"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "app_id": "cli_test",
+        "timestamp": 123456789,
+        "nonce_str": "nonce-test",
+        "signature": "signature-test",
+    }
+    assert service.urls == ["http://testserver/study/knowledge?from=workplace"]
+
+    wrong_path = client.get(
+        "/api/study/knowledge/jsapi-config",
+        params={"url": "http://testserver/leetcode/dashboard"},
+    )
+    assert wrong_path.status_code == 400
+    wrong_origin = client.get(
+        "/api/study/knowledge/jsapi-config",
+        params={"url": "https://attacker.example/study/knowledge"},
+    )
+    assert wrong_origin.status_code == 400
+
+
+def test_transcription_api_validates_audio_and_uses_safe_question_context(
+    monkeypatch,
+) -> None:
+    client, _ = _client(monkeypatch)
+    service = FakeSpeechTranscriptionService()
+    monkeypatch.setattr(
+        knowledge_dashboard,
+        "get_speech_transcription_service",
+        lambda request: service,
+    )
+
+    response = client.post(
+        "/api/study/knowledge/transcriptions",
+        params={"question_id": "knowledge_network_http_001"},
+        content=b"webm-audio",
+        headers={
+            "Content-Type": "audio/webm;codecs=opus",
+            "X-Audio-Duration-Ms": "42000",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "transcript": "JVM 通过 CAS 实现并发控制。",
+        "provider": "bailian",
+        "model": "fun-asr-test",
+    }
+    assert service.calls == [
+        {
+            "audio": b"webm-audio",
+            "audio_format": "webm",
+            "mime_type": "audio/webm",
+            "context": service.calls[0]["context"],
+        }
+    ]
+    context = service.calls[0]["context"]
+    assert "模块：计算机网络" in context
+    assert "题目：HTTP/1.1 相比 HTTP/1.0" in context
+    assert "默认使用持久连接" not in context
+    assert "缓存增强" not in context
+    assert len(context) <= 300
+
+
+def test_transcription_api_rejects_anonymous_missing_question_and_invalid_audio(
+    monkeypatch,
+) -> None:
+    anonymous = TestClient(
+        create_app(Settings(debug_routes_enabled=False)), follow_redirects=False
+    )
+    unauthorized = anonymous.post(
+        "/api/study/knowledge/transcriptions?question_id=missing",
+        content=b"audio",
+        headers={"Content-Type": "audio/webm", "X-Audio-Duration-Ms": "1000"},
+    )
+    assert unauthorized.status_code == 401
+
+    client, _ = _client(monkeypatch)
+    missing = client.post(
+        "/api/study/knowledge/transcriptions?question_id=missing",
+        content=b"audio",
+        headers={"Content-Type": "audio/webm", "X-Audio-Duration-Ms": "1000"},
+    )
+    assert missing.status_code == 404
+
+    question_id = "knowledge_network_http_001"
+    empty = client.post(
+        f"/api/study/knowledge/transcriptions?question_id={question_id}",
+        content=b"",
+        headers={"Content-Type": "audio/webm", "X-Audio-Duration-Ms": "1000"},
+    )
+    assert empty.status_code == 400
+    invalid_mime = client.post(
+        f"/api/study/knowledge/transcriptions?question_id={question_id}",
+        content=b"audio",
+        headers={"Content-Type": "application/octet-stream", "X-Audio-Duration-Ms": "1000"},
+    )
+    assert invalid_mime.status_code == 415
+    missing_duration = client.post(
+        f"/api/study/knowledge/transcriptions?question_id={question_id}",
+        content=b"audio",
+        headers={"Content-Type": "audio/aac"},
+    )
+    assert missing_duration.status_code == 400
+    too_long = client.post(
+        f"/api/study/knowledge/transcriptions?question_id={question_id}",
+        content=b"audio",
+        headers={"Content-Type": "audio/aac", "X-Audio-Duration-Ms": "180001"},
+    )
+    assert too_long.status_code == 400
+
+
+def test_transcription_api_rejects_audio_that_would_exceed_base64_limit(
+    monkeypatch,
+) -> None:
+    client, _ = _client(monkeypatch)
+
+    response = client.post(
+        "/api/study/knowledge/transcriptions?question_id=knowledge_network_http_001",
+        content=b"a" * (knowledge_dashboard._MAX_AUDIO_BYTES + 1),
+        headers={"Content-Type": "audio/aac", "X-Audio-Duration-Ms": "1000"},
+    )
+
+    assert response.status_code == 413
+
+
+def test_transcription_api_rejects_provider_detected_audio_over_three_minutes(
+    monkeypatch,
+) -> None:
+    client, _ = _client(monkeypatch)
+    service = FakeSpeechTranscriptionService(
+        result=SpeechTranscriptionResult(
+            transcript="长录音",
+            provider="bailian",
+            model="fun-asr-test",
+            duration_seconds=181,
+        )
+    )
+    monkeypatch.setattr(
+        knowledge_dashboard,
+        "get_speech_transcription_service",
+        lambda request: service,
+    )
+
+    response = client.post(
+        "/api/study/knowledge/transcriptions?question_id=knowledge_network_http_001",
+        content=b"audio",
+        headers={"Content-Type": "audio/aac", "X-Audio-Duration-Ms": "1000"},
+    )
+
+    assert response.status_code == 400
+    assert "超过 3 分钟" in response.json()["detail"]
+
+
+def test_transcription_api_exposes_configuration_no_speech_and_provider_errors(
+    monkeypatch,
+) -> None:
+    client, _ = _client(monkeypatch)
+    url = (
+        "/api/study/knowledge/transcriptions"
+        "?question_id=knowledge_network_http_001"
+    )
+    headers = {"Content-Type": "audio/aac", "X-Audio-Duration-Ms": "1000"}
+    cases = [
+        (
+            SpeechTranscriptionConfigurationError("语音转写尚未配置"),
+            503,
+            "尚未配置",
+        ),
+        (NoSpeechDetectedError("没有识别到清晰语音"), 422, "没有识别到"),
+        (SpeechTranscriptionError("语音服务超时"), 503, "超时"),
+    ]
+    for error, expected_status, expected_detail in cases:
+        service = FakeSpeechTranscriptionService(error=error)
+        monkeypatch.setattr(
+            knowledge_dashboard,
+            "get_speech_transcription_service",
+            lambda request, current=service: current,
+        )
+        response = client.post(url, content=b"audio", headers=headers)
+        assert response.status_code == expected_status
+        assert expected_detail in response.json()["detail"]
 
 
 def test_completed_assignment_can_be_answered_again_without_double_counting(

@@ -1,6 +1,8 @@
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -22,6 +24,11 @@ from app.services.knowledge_evaluation import (
     KnowledgeEvaluationError,
     KnowledgeEvaluationService,
 )
+from app.services.feishu_service import (
+    FeishuConfigurationError,
+    FeishuMessageService,
+    FeishuRequestError,
+)
 from app.services.knowledge_practice import (
     KnowledgePracticeWorkflow,
     KnowledgeSubmissionInProgressError,
@@ -30,11 +37,34 @@ from app.services.knowledge_recommendation import (
     KnowledgeRecommendation,
     KnowledgeRecommendationWorkflow,
 )
+from app.services.speech_transcription import (
+    NoSpeechDetectedError,
+    SpeechTranscriptionConfigurationError,
+    SpeechTranscriptionError,
+    create_speech_transcription_service,
+)
 
 
 router = APIRouter(prefix="/study/knowledge")
 api_router = APIRouter(prefix="/study/knowledge")
 _HTML_PATH = Path(__file__).resolve().parents[2] / "web" / "knowledge_dashboard.html"
+_MAX_BAILIAN_DATA_URI_BYTES = 10 * 1024 * 1024
+# Base64 expands input by roughly 4/3. Keep a small margin for the Data URI prefix.
+_MAX_AUDIO_BYTES = ((_MAX_BAILIAN_DATA_URI_BYTES - 64) // 4) * 3
+_MAX_AUDIO_DURATION_MS = 180_000
+_AUDIO_FORMATS = {
+    "audio/webm": "webm",
+    "audio/mp4": "mp4",
+    "audio/x-m4a": "m4a",
+    "audio/m4a": "m4a",
+    "audio/ogg": "ogg",
+    "audio/opus": "opus",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/aac": "aac",
+}
 
 
 class KnowledgeAnswerRequest(BaseModel):
@@ -247,6 +277,213 @@ async def submit_knowledge_answer(
         },
         "progress": _progress_payload(outcome.progress),
     }
+
+
+@api_router.post("/transcriptions")
+async def transcribe_knowledge_answer(
+    request: Request,
+    question_id: str = Query(..., min_length=1, max_length=160),
+) -> Dict[str, str]:
+    _require_dashboard_open_id(request)
+    repository = get_default_knowledge_repository()
+    question = repository.get_question(question_id)
+    if question is None:
+        raise HTTPException(status_code=404, detail="Knowledge question was not found.")
+
+    mime_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    audio_format = _AUDIO_FORMATS.get(mime_type)
+    if audio_format is None:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=(
+                "不支持这种录音格式，请改用 WebM、MP4、M4A、Ogg、WAV、MP3 或 AAC。"
+            ),
+        )
+    _audio_duration_ms(request)
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > _MAX_AUDIO_BYTES:
+                raise HTTPException(
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    detail=(
+                        "录音文件不能超过约 7.5 MB（Base64 输入上限为 10 MB）。"
+                    ),
+                )
+        except ValueError:
+            pass
+    audio = await _read_limited_audio(request)
+    if not audio:
+        raise HTTPException(status_code=400, detail="录音内容为空，请重新录制。")
+
+    context = _speech_context(question)
+    try:
+        service = get_speech_transcription_service(request)
+        result = await service.transcribe(
+            audio=audio,
+            audio_format=audio_format,
+            mime_type=mime_type,
+            context=context,
+        )
+        if (
+            result.duration_seconds is not None
+            and result.duration_seconds * 1000 > _MAX_AUDIO_DURATION_MS
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="语音服务检测到录音超过 3 分钟，请缩短后重新录制。",
+            )
+    except SpeechTranscriptionConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except NoSpeechDetectedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    except SpeechTranscriptionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    return {
+        "transcript": result.transcript,
+        "provider": result.provider,
+        "model": result.model,
+    }
+
+
+@api_router.get("/jsapi-config")
+async def get_knowledge_jsapi_config(
+    request: Request,
+    url: str = Query(..., min_length=1, max_length=2048),
+) -> Dict[str, Any]:
+    _require_dashboard_open_id(request)
+    page_url = url.split("#", 1)[0]
+    _validate_knowledge_page_url(request, page_url)
+    try:
+        config = await get_feishu_jssdk_service(request).get_jssdk_config(page_url)
+    except (FeishuConfigurationError, FeishuRequestError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="飞书移动录音暂时不可用，请使用浏览器录音或文字回答。",
+        ) from exc
+    return {
+        "app_id": config.app_id,
+        "timestamp": config.timestamp,
+        "nonce_str": config.nonce_str,
+        "signature": config.signature,
+    }
+
+
+def get_speech_transcription_service(request: Request):
+    return create_speech_transcription_service(request.app.state.settings)
+
+
+def get_feishu_jssdk_service(request: Request) -> FeishuMessageService:
+    existing = getattr(request.app.state, "knowledge_feishu_jssdk_service", None)
+    if existing is not None:
+        return existing
+    settings = request.app.state.settings
+    service = FeishuMessageService(
+        app_id=settings.feishu_app_id,
+        app_secret=settings.feishu_app_secret,
+        base_url=settings.feishu_api_base_url,
+        timeout_seconds=settings.feishu_timeout_seconds,
+    )
+    request.app.state.knowledge_feishu_jssdk_service = service
+    return service
+
+
+def _validate_knowledge_page_url(request: Request, page_url: str) -> None:
+    parsed = urlsplit(page_url)
+    if parsed.scheme not in {"http", "https"} or parsed.path != "/study/knowledge":
+        raise HTTPException(
+            status_code=400,
+            detail="只能为八股学习页面申请飞书录音权限。",
+        )
+    settings = request.app.state.settings
+    if not settings.dashboard_public_base_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="尚未配置 OfferPilot 网页应用公网地址。",
+        )
+    allowed_origin = settings.dashboard_public_base_url.rstrip("/")
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    if origin != allowed_origin:
+        raise HTTPException(status_code=400, detail="网页地址与 OfferPilot 配置不匹配。")
+
+
+def _audio_duration_ms(request: Request) -> int:
+    raw_duration = request.headers.get("x-audio-duration-ms", "")
+    try:
+        duration_ms = int(raw_duration)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="缺少有效的录音时长，请重新录制。",
+        ) from exc
+    if duration_ms <= 0:
+        raise HTTPException(status_code=400, detail="录音时长必须大于 0。")
+    if duration_ms > _MAX_AUDIO_DURATION_MS:
+        raise HTTPException(status_code=400, detail="单次语音回答不能超过 3 分钟。")
+    return duration_ms
+
+
+async def _read_limited_audio(request: Request) -> bytes:
+    chunks = []
+    total_bytes = 0
+    async for chunk in request.stream():
+        total_bytes += len(chunk)
+        if total_bytes > _MAX_AUDIO_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=(
+                    "录音文件不能超过约 7.5 MB（Base64 输入上限为 10 MB）。"
+                ),
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _speech_context(question) -> str:
+    parts = [
+        f"模块：{question.module_title}",
+        f"章节：{question.chapter_title}",
+        f"题目：{question.prompt}",
+    ]
+    keywords = _safe_speech_keywords(question)
+    if keywords:
+        parts.append("技术术语：" + "、".join(keywords))
+    return "；".join(parts)[:300]
+
+
+def _safe_speech_keywords(question) -> List[str]:
+    public_text = " ".join(
+        [question.module_title, question.chapter_title, question.prompt]
+    )
+    normalized_public_text = public_text.casefold()
+    candidates = [
+        item.strip()
+        for item in question.keywords
+        if item.strip() and item.strip().casefold() in normalized_public_text
+    ]
+    candidates.extend(
+        re.findall(r"[A-Za-z][A-Za-z0-9+#._/-]{1,31}", public_text)
+    )
+    result = []
+    seen = set()
+    for candidate in candidates:
+        normalized = candidate.casefold()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(candidate)
+        if len(result) == 20:
+            break
+    return result
 
 
 def get_knowledge_evaluation_service() -> KnowledgeEvaluationService:

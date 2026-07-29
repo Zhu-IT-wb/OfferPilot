@@ -1,4 +1,6 @@
+import hashlib
 import json
+import secrets
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -93,6 +95,14 @@ class FeishuFileSubscriptionResult:
     raw_response: Dict[str, Any]
 
 
+@dataclass(frozen=True)
+class FeishuJSSDKConfig:
+    app_id: str
+    timestamp: int
+    nonce_str: str
+    signature: str
+
+
 # 封装飞书消息发送和基础 OpenAPI 调用。
 class FeishuMessageService:
     # 初始化当前组件所需的依赖和配置。
@@ -109,6 +119,8 @@ class FeishuMessageService:
         self.timeout_seconds = timeout_seconds or settings.feishu_timeout_seconds
         self._tenant_access_token: Optional[str] = None
         self._tenant_access_token_expires_at = 0.0
+        self._jssdk_ticket: Optional[str] = None
+        self._jssdk_ticket_expires_at = 0.0
 
     # 判断飞书服务必要配置是否完整。
     def is_configured(self) -> bool:
@@ -202,6 +214,45 @@ class FeishuMessageService:
         self._tenant_access_token = token
         self._tenant_access_token_expires_at = now + max(expire_seconds - 60, 60)
         return token
+
+    async def get_jssdk_config(self, page_url: str) -> FeishuJSSDKConfig:
+        """Return URL-bound H5 JSSDK signing parameters."""
+        ticket = await self._get_jssdk_ticket()
+        timestamp = int(time.time() * 1000)
+        nonce_str = secrets.token_hex(16)
+        verify_string = (
+            f"jsapi_ticket={ticket}&noncestr={nonce_str}"
+            f"&timestamp={timestamp}&url={page_url}"
+        )
+        signature = hashlib.sha1(verify_string.encode("utf-8")).hexdigest()
+        return FeishuJSSDKConfig(
+            app_id=self.app_id,
+            timestamp=timestamp,
+            nonce_str=nonce_str,
+            signature=signature,
+        )
+
+    async def _get_jssdk_ticket(self) -> str:
+        now = time.time()
+        if self._jssdk_ticket and now < self._jssdk_ticket_expires_at:
+            return self._jssdk_ticket
+        token = await self.get_tenant_access_token()
+        response_data = await self._post_json(
+            path="/jssdk/ticket/get",
+            payload={},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self._raise_for_feishu_code(response_data)
+        data = response_data.get("data")
+        ticket = data.get("ticket") if isinstance(data, dict) else None
+        if not isinstance(ticket, str) or not ticket:
+            raise FeishuRequestError("Feishu JSSDK response does not contain a ticket.")
+        expire_seconds = data.get("expire_in", 7200)
+        if not isinstance(expire_seconds, int):
+            expire_seconds = 7200
+        self._jssdk_ticket = ticket
+        self._jssdk_ticket_expires_at = now + max(expire_seconds - 60, 60)
+        return ticket
 
     # 同步获取飞书 tenant_access_token。
     def get_tenant_access_token_sync(self) -> str:

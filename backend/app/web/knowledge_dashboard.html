@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
     <title>OfferPilot 八股复习</title>
+    <script defer src="https://lf-scm-cn.feishucdn.com/lark/op/h5-js-sdk-1.5.44.js"></script>
     <style>
       :root { --bg:#f4f6f8; --surface:#fff; --text:#172033; --muted:#667085; --line:#e5e9f0; --brand:#1769e0; --soft:#edf4ff; --green:#16845b; --orange:#b45f06; --red:#c43d3d; --shadow:0 14px 40px rgba(28,48,78,.08); }
       * { box-sizing:border-box; }
@@ -49,6 +50,20 @@
       .reason { margin:13px 0 22px; color:var(--muted); font-size:13px; }
       textarea { width:100%; min-height:170px; resize:vertical; padding:16px; border:1px solid #d8dee8; border-radius:13px; outline:0; color:var(--text); background:#fbfcfe; line-height:1.65; }
       textarea:focus { border-color:#7aabea; box-shadow:0 0 0 3px rgba(23,105,224,.12); background:#fff; }
+      .voice-panel { margin:0 0 14px; padding:14px 16px; border:1px solid #dce3ed; border-radius:13px; background:#f9fbfe; }
+      .voice-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+      .voice-title { display:flex; align-items:center; gap:8px; }
+      .recording-dot { display:none; width:9px; height:9px; border-radius:50%; background:var(--red); box-shadow:0 0 0 4px rgba(196,61,61,.12); animation:pulse 1.2s infinite; }
+      .voice-panel.recording .recording-dot { display:inline-block; }
+      .voice-time { color:var(--muted); font-variant-numeric:tabular-nums; font-size:13px; }
+      .voice-status { margin:8px 0 0; color:var(--muted); font-size:13px; line-height:1.5; }
+      .voice-status.error-text { color:var(--red); }
+      .voice-status.success-text { color:var(--green); }
+      .voice-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:11px; }
+      .voice-actions .button { min-height:36px; padding:0 12px; font-size:13px; }
+      .voice-note { display:none; margin:9px 2px 0; color:var(--green); font-size:13px; }
+      [hidden] { display:none !important; }
+      @keyframes pulse { 50% { opacity:.42; } }
       .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:15px; }
       .button { min-height:42px; padding:0 16px; border:1px solid var(--line); border-radius:11px; color:#344054; background:#fff; }
       .button.primary { border-color:var(--brand); color:#fff; background:var(--brand); }
@@ -102,14 +117,17 @@
     <script>
       const TODAY_URL = "/api/study/knowledge/today";
       const ANSWER_URL = "/api/study/knowledge/answers";
+      const TRANSCRIPTION_URL = "/api/study/knowledge/transcriptions";
+      const JSAPI_CONFIG_URL = "/api/study/knowledge/jsapi-config";
       const MATERIALS_URL = "/api/study/knowledge/materials";
       const PRACTICE_URL = "/api/study/knowledge/practice";
       const CATALOG_QUESTIONS_URL = "/api/study/knowledge/catalog/questions";
-      const state = { data:null, materials:null, catalogQuestions:{}, expandedChapter:null, index:0, view:"practice", submissionId:null, submissionAssignmentId:null };
+      const state = { data:null, materials:null, catalogQuestions:{}, expandedChapter:null, index:0, view:"practice", submissionId:null, submissionAssignmentId:null, answerSource:"text", voice:{sessionId:0,source:null,recorder:null,manager:null,stream:null,blob:null,mimeType:"",durationMs:0,startedAt:0,timer:null,autoStop:null,transcribing:false,transcriptionController:null,feishuReady:false,feishuConfigPromise:null} };
       const workspace = document.getElementById("workspace");
       const esc = (value) => String(value ?? "").replace(/[&<>\"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'\"':"&quot;","'":"&#39;"}[c]));
       const newSubmissionId = () => globalThis.crypto?.randomUUID?.() || `submission-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       async function load() {
+        releaseVoice(true);
         try { const response = await fetch(TODAY_URL); if (!response.ok) throw new Error("加载失败，请重新登录或稍后重试。"); state.data = await response.json(); const pendingIndex=state.data.items.findIndex(item=>item.status!=="completed"); state.index=pendingIndex>=0?pendingIndex:Math.max(state.data.items.length-1,0); renderCatalog(); render(); }
         catch (error) { workspace.innerHTML = `<div class="card error">${esc(error.message)}</div>`; }
       }
@@ -120,19 +138,24 @@
         document.querySelectorAll("[data-question]").forEach(button=>button.onclick=()=>startPractice({question_id:button.dataset.question}));
       }
       async function toggleChapter(chapterId){if(state.expandedChapter===chapterId){state.expandedChapter=null;renderCatalog();return;}state.expandedChapter=chapterId;if(!state.catalogQuestions[chapterId]){let questions=[],offset=0,hasMore=true;while(hasMore){const response=await fetch(`${CATALOG_QUESTIONS_URL}?chapter_id=${encodeURIComponent(chapterId)}&limit=100&offset=${offset}`);if(!response.ok)throw new Error("题目目录加载失败");const page=await response.json();questions.push(...page.questions);offset=questions.length;hasMore=page.has_more;}state.catalogQuestions[chapterId]=questions;}renderCatalog();}
-      async function startPractice(selector){workspace.innerHTML='<div class="card empty">正在创建练习…</div>';try{const response=await fetch(PRACTICE_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(selector)});const payload=await response.json();if(!response.ok)throw new Error(payload.detail||"创建练习失败");state.data=payload;state.index=Math.max(0,state.data.items.findIndex(item=>item.question.id===payload.focus_question_id));state.view="practice";state.submissionId=null;state.submissionAssignmentId=null;renderCatalog();syncTabs();renderPractice();closeMenu();}catch(error){workspace.innerHTML=`<div class="card error">${esc(error.message)}</div>`;}}
+      async function startPractice(selector){releaseVoice(true);workspace.innerHTML='<div class="card empty">正在创建练习…</div>';try{const response=await fetch(PRACTICE_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(selector)});const payload=await response.json();if(!response.ok)throw new Error(payload.detail||"创建练习失败");state.data=payload;state.index=Math.max(0,state.data.items.findIndex(item=>item.question.id===payload.focus_question_id));state.view="practice";state.submissionId=null;state.submissionAssignmentId=null;renderCatalog();syncTabs();renderPractice();closeMenu();}catch(error){workspace.innerHTML=`<div class="card error">${esc(error.message)}</div>`;}}
       function render() { state.view === "material" ? renderMaterials() : renderPractice(); }
       function renderPractice() {
+        releaseVoice(true);
         const items = state.data.items; if (!items.length) { workspace.innerHTML='<div class="card empty">今天没有待复习题目。</div>'; return; }
         const item = items[Math.min(state.index, items.length-1)], q = item.question;
-        workspace.innerHTML = `<div class="hero"><div><strong>今日八股</strong><p>${esc(state.data.date)} · ${esc(q.module_title)} / ${esc(q.chapter_title)}</p></div><div class="progress">${state.data.summary.handled} / ${state.data.summary.total}</div></div><article class="card"><p class="eyebrow">今日第 ${state.index+1} / ${items.length} 题 · ${esc(item.assignment_type)}</p><h2 class="question">${esc(q.prompt)}</h2><p class="reason">${esc(item.recommendation_reason)}</p><textarea id="answer" placeholder="先不看答案，用自己的话回答。建议控制在 1～2 分钟的表达长度。"></textarea><div class="actions"><button class="button primary" id="submit">提交回答</button><button class="button" id="skip">我不会</button><button class="button" id="hint-button">给一点提示</button></div><div class="hint" id="hint">${esc(q.hint)}</div><section class="feedback" id="feedback"></section></article>`;
+        workspace.innerHTML = `<div class="hero"><div><strong>今日八股</strong><p>${esc(state.data.date)} · ${esc(q.module_title)} / ${esc(q.chapter_title)}</p></div><div class="progress">${state.data.summary.handled} / ${state.data.summary.total}</div></div><article class="card"><p class="eyebrow">今日第 ${state.index+1} / ${items.length} 题 · ${esc(item.assignment_type)}</p><h2 class="question">${esc(q.prompt)}</h2><p class="reason">${esc(item.recommendation_reason)}</p><section class="voice-panel" id="voice-panel"><div class="voice-head"><strong class="voice-title"><span class="recording-dot"></span>🎙 用语音回答</strong><span class="voice-time" id="voice-time">00:00 / 03:00</span></div><p class="voice-status" id="voice-status">录完后自动转成文字，你可以检查和修改后再提交评分。</p><div class="voice-actions"><button class="button" id="voice-start">开始语音回答</button><button class="button" id="voice-stop" hidden>停止录音</button><button class="button" id="voice-rerecord" hidden>重新录制</button><button class="button" id="voice-retry" hidden>重新转写</button></div></section><textarea id="answer" placeholder="先不看答案，用自己的话回答。建议控制在 1～2 分钟的表达长度。"></textarea><p class="voice-note" id="voice-note">语音已转成文字，请检查技术术语再提交。</p><div class="actions"><button class="button primary" id="submit">提交回答</button><button class="button" id="skip">我不会</button><button class="button" id="hint-button">给一点提示</button></div><div class="hint" id="hint">${esc(q.hint)}</div><section class="feedback" id="feedback"></section></article>`;
         document.getElementById("hint-button").onclick = () => document.getElementById("hint").style.display="block";
-        document.getElementById("submit").onclick = () => submit("text");
+        document.getElementById("voice-start").onclick = startVoiceRecording;
+        document.getElementById("voice-stop").onclick = stopVoiceRecording;
+        document.getElementById("voice-rerecord").onclick = rerecordVoice;
+        document.getElementById("voice-retry").onclick = transcribeVoice;
+        document.getElementById("submit").onclick = () => submit(state.answerSource);
         document.getElementById("skip").onclick = () => submit("skipped");
       }
       async function submit(source) {
         const item=state.data.items[state.index], answer=document.getElementById("answer").value.trim();
-        if (source==="text" && !answer) { document.getElementById("answer").focus(); return; }
+        if (source!=="skipped" && !answer) { document.getElementById("answer").focus(); return; }
         if(state.submissionAssignmentId!==item.assignment_id){state.submissionId=newSubmissionId();state.submissionAssignmentId=item.assignment_id;}
         document.querySelectorAll(".actions button").forEach(button=>button.disabled=true);
         try { const response=await fetch(ANSWER_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({assignment_id:item.assignment_id,submission_id:state.submissionId,answer_text:answer,answer_source:source})}); const payload=await response.json(); if(!response.ok) throw new Error(payload.detail||"评价失败"); const firstCompletion=item.status!=="completed"; showFeedback(payload); item.status="completed"; if(firstCompletion) state.data.summary.handled += 1; }
@@ -146,8 +169,110 @@
         document.getElementById("next").onclick=()=>{ state.index=Math.min(state.index+1,state.data.items.length-1); state.submissionId=null; state.submissionAssignmentId=null; renderPractice(); };
         document.getElementById("retry").onclick=()=>{ state.submissionId=newSubmissionId(); state.submissionAssignmentId=state.data.items[state.index].assignment_id; feedback.style.display="none"; document.querySelectorAll("article.card > .actions button").forEach(button=>button.disabled=false); document.getElementById("answer").focus(); };
       }
+      function formatVoiceTime(milliseconds) {
+        const seconds=Math.min(180,Math.max(0,Math.floor(milliseconds/1000))),minutes=Math.floor(seconds/60),rest=seconds%60;
+        return `${String(minutes).padStart(2,"0")}:${String(rest).padStart(2,"0")} / 03:00`;
+      }
+      function setVoiceStatus(message,kind="") {
+        const status=document.getElementById("voice-status"); if(!status)return;
+        status.textContent=message;status.className=`voice-status ${kind}`.trim();
+      }
+      function setVoiceControls(mode) {
+        const start=document.getElementById("voice-start"),stop=document.getElementById("voice-stop"),rerecord=document.getElementById("voice-rerecord"),retry=document.getElementById("voice-retry"),panel=document.getElementById("voice-panel");
+        if(!start)return;
+        start.hidden=mode!=="idle";stop.hidden=mode!=="recording";rerecord.hidden=!(mode==="ready"||mode==="error");retry.hidden=!(mode==="error"&&state.voice.blob);panel.classList.toggle("recording",mode==="recording");
+        [start,stop,rerecord,retry].forEach(button=>button.disabled=mode==="transcribing");
+      }
+      function beginVoiceTimer() {
+        state.voice.startedAt=Date.now();state.voice.durationMs=0;
+        const renderTime=()=>{const elapsed=Math.min(180000,Date.now()-state.voice.startedAt);state.voice.durationMs=elapsed;const timer=document.getElementById("voice-time");if(timer)timer.textContent=formatVoiceTime(elapsed);};
+        renderTime();state.voice.timer=setInterval(renderTime,250);state.voice.autoStop=setTimeout(stopVoiceRecording,180000);
+      }
+      function endVoiceTimer() {
+        if(state.voice.startedAt)state.voice.durationMs=Math.min(180000,Math.max(1,Date.now()-state.voice.startedAt));
+        clearInterval(state.voice.timer);clearTimeout(state.voice.autoStop);state.voice.timer=null;state.voice.autoStop=null;
+        const timer=document.getElementById("voice-time");if(timer)timer.textContent=formatVoiceTime(state.voice.durationMs);
+      }
+      function stopTracks(stream) { if(stream)stream.getTracks().forEach(track=>track.stop()); }
+      function releaseVoice(discardBlob=true) {
+        state.voice.sessionId+=1;clearInterval(state.voice.timer);clearTimeout(state.voice.autoStop);
+        if(state.voice.transcriptionController)state.voice.transcriptionController.abort();
+        if(state.voice.recorder&&state.voice.recorder.state!=="inactive"){try{state.voice.recorder.stop();}catch(error){}}
+        if(state.voice.manager){try{state.voice.manager.stop();}catch(error){}}
+        stopTracks(state.voice.stream);
+        state.voice.source=null;state.voice.recorder=null;state.voice.manager=null;state.voice.stream=null;state.voice.startedAt=0;state.voice.timer=null;state.voice.autoStop=null;state.voice.transcribing=false;state.voice.transcriptionController=null;
+        if(discardBlob){state.voice.blob=null;state.voice.mimeType="";state.voice.durationMs=0;state.answerSource="text";}
+      }
+      function preferredRecordingMimeType() {
+        const candidates=["audio/webm;codecs=opus","audio/mp4","audio/ogg;codecs=opus","audio/aac"];
+        return candidates.find(type=>globalThis.MediaRecorder?.isTypeSupported?.(type))||"";
+      }
+      async function startVoiceRecording() {
+        releaseVoice(true);document.getElementById("voice-note").style.display="none";setVoiceStatus("正在请求麦克风权限…");setVoiceControls("transcribing");
+        const sessionId=++state.voice.sessionId;
+        try {
+          if(navigator.mediaDevices?.getUserMedia&&globalThis.MediaRecorder){await startBrowserRecording(sessionId);return;}
+          if(globalThis.tt?.getRecorderManager){await startFeishuRecording(sessionId);return;}
+          throw new Error("当前环境不支持网页录音，请使用文字回答，或升级飞书后重试。");
+        } catch(error) {
+          if(sessionId!==state.voice.sessionId)return;
+          const permissionDenied=error?.name==="NotAllowedError",deviceMissing=error?.name==="NotFoundError";
+          if(globalThis.tt?.getRecorderManager&&!permissionDenied&&!deviceMissing){try{await startFeishuRecording(sessionId);return;}catch(feishuError){error=feishuError;}}
+          releaseVoice(false);setVoiceControls("idle");
+          const denied=error?.name==="NotAllowedError"||error?.name==="SecurityError";
+          const missing=error?.name==="NotFoundError";
+          setVoiceStatus(denied?"麦克风权限被拒绝，请在系统或飞书设置中允许后重试。":missing?"没有检测到可用麦克风，请连接设备后重试。":(error.message||"无法开始录音，请改用文字回答。"),"error-text");
+        }
+      }
+      async function startBrowserRecording(sessionId) {
+        const stream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true}});
+        if(sessionId!==state.voice.sessionId){stopTracks(stream);return;}
+        const mimeType=preferredRecordingMimeType();let recorder;
+        try{recorder=new MediaRecorder(stream,mimeType?{mimeType}:undefined);}catch(error){stopTracks(stream);if(globalThis.tt?.getRecorderManager){await startFeishuRecording(sessionId);return;}throw error;}
+        const chunks=[];state.voice.source="browser";state.voice.stream=stream;state.voice.recorder=recorder;state.voice.mimeType=(recorder.mimeType||mimeType||"audio/webm").split(";",1)[0];
+        recorder.ondataavailable=event=>{if(event.data?.size)chunks.push(event.data);};
+        recorder.onerror=event=>{if(sessionId===state.voice.sessionId){endVoiceTimer();stopTracks(stream);setVoiceStatus(event.error?.message||"录音失败，请重新录制或使用文字回答。","error-text");setVoiceControls("idle");}};
+        recorder.onstop=async()=>{stopTracks(stream);if(sessionId!==state.voice.sessionId)return;endVoiceTimer();state.voice.blob=new Blob(chunks,{type:state.voice.mimeType});state.voice.recorder=null;state.voice.stream=null;if(!state.voice.blob.size){setVoiceStatus("录音内容为空，请重新录制。","error-text");setVoiceControls("error");return;}await transcribeVoice();};
+        recorder.start(1000);beginVoiceTimer();setVoiceStatus("正在录音，请完整说出你的答案。");setVoiceControls("recording");
+      }
+      async function ensureFeishuRecorderReady() {
+        if(state.voice.feishuReady)return;
+        if(state.voice.feishuConfigPromise)return state.voice.feishuConfigPromise;
+        state.voice.feishuConfigPromise=(async()=>{if(!globalThis.h5sdk?.config)throw new Error("飞书录音组件尚未加载，请稍后重试。");const pageUrl=location.href.split("#",1)[0];const response=await fetch(`${JSAPI_CONFIG_URL}?url=${encodeURIComponent(pageUrl)}`);const payload=await response.json();if(!response.ok)throw new Error(payload.detail||"飞书录音鉴权失败");await new Promise((resolve,reject)=>globalThis.h5sdk.config({appId:payload.app_id,timestamp:Number(payload.timestamp),nonceStr:payload.nonce_str,signature:payload.signature,jsApiList:["tt.getRecorderManager"],onSuccess:resolve,onFail:()=>reject(new Error("飞书录音鉴权失败，请使用文字回答。"))}));state.voice.feishuReady=true;})().finally(()=>{state.voice.feishuConfigPromise=null;});
+        return state.voice.feishuConfigPromise;
+      }
+      async function startFeishuRecording(sessionId) {
+        await ensureFeishuRecorderReady();if(sessionId!==state.voice.sessionId)return;
+        const manager=globalThis.tt.getRecorderManager();state.voice.source="feishu";state.voice.manager=manager;state.voice.mimeType="audio/aac";
+        manager.onStop(async result=>{if(sessionId!==state.voice.sessionId)return;endVoiceTimer();try{const blob=await readFeishuRecording(result.tempFilePath);if(sessionId!==state.voice.sessionId)return;state.voice.blob=blob;state.voice.manager=null;await transcribeVoice();}catch(error){if(sessionId!==state.voice.sessionId)return;setVoiceStatus(error.message||"无法读取飞书录音，请使用文字回答。","error-text");setVoiceControls("error");}});
+        manager.onError(error=>{if(sessionId!==state.voice.sessionId)return;endVoiceTimer();setVoiceStatus(error?.errMsg||"飞书录音失败，请使用文字回答。","error-text");setVoiceControls("idle");});
+        manager.start({duration:180000,sampleRate:16000,numberOfChannels:1,encodeBitRate:64000,format:"aac"});beginVoiceTimer();setVoiceStatus("正在录音，请完整说出你的答案。");setVoiceControls("recording");
+      }
+      async function readFeishuRecording(tempFilePath) {
+        if(!tempFilePath)throw new Error("飞书没有返回录音文件，请重新录制。");
+        try{const response=await fetch(tempFilePath);const blob=await response.blob();if(blob.size)return new Blob([blob],{type:"audio/aac"});}catch(error){}
+        const fileSystem=globalThis.tt?.getFileSystemManager?.();
+        if(!fileSystem)throw new Error("当前飞书版本无法读取录音，请升级后重试。");
+        return await new Promise((resolve,reject)=>fileSystem.readFile({filePath:tempFilePath,success:result=>resolve(new Blob([result.data],{type:"audio/aac"})),fail:()=>reject(new Error("无法读取飞书录音，请重新录制。"))}));
+      }
+      function stopVoiceRecording() {
+        if(!state.voice.source)return;endVoiceTimer();setVoiceStatus("录音完成，正在准备转写…");setVoiceControls("transcribing");
+        if(state.voice.source==="browser"&&state.voice.recorder?.state!=="inactive")state.voice.recorder.stop();
+        else if(state.voice.source==="feishu"&&state.voice.manager)state.voice.manager.stop();
+      }
+      async function transcribeVoice() {
+        const blob=state.voice.blob,item=state.data.items[state.index];if(!blob||!item)return;
+        const sessionId=state.voice.sessionId,questionId=item.question.id,controller=globalThis.AbortController?new AbortController():{signal:undefined,abort:()=>{}};if(state.voice.transcriptionController)state.voice.transcriptionController.abort();state.voice.transcriptionController=controller;
+        state.voice.transcribing=true;setVoiceStatus("正在转成文字，通常需要几秒钟…");setVoiceControls("transcribing");
+        try{const response=await fetch(`${TRANSCRIPTION_URL}?question_id=${encodeURIComponent(questionId)}`,{method:"POST",headers:{"Content-Type":state.voice.mimeType||blob.type||"audio/webm","X-Audio-Duration-Ms":String(Math.max(1,Math.round(state.voice.durationMs)))},body:blob,signal:controller.signal});const payload=await response.json();if(sessionId!==state.voice.sessionId||state.data.items[state.index]?.question.id!==questionId)return;if(!response.ok)throw new Error(payload.detail||"语音转写失败");document.getElementById("answer").value=payload.transcript;document.getElementById("voice-note").style.display="block";state.answerSource="voice_transcript";state.voice.blob=null;state.voice.transcribing=false;state.voice.transcriptionController=null;setVoiceStatus("转写完成，你可以修改文字后提交评分。","success-text");setVoiceControls("ready");document.getElementById("answer").focus();}
+        catch(error){if(sessionId!==state.voice.sessionId||error?.name==="AbortError")return;state.voice.transcribing=false;state.voice.transcriptionController=null;setVoiceStatus(`${error.message||"语音转写失败"} 录音仍保留在本页，可重新转写或改用文字。`,"error-text");setVoiceControls("error");}
+      }
+      function rerecordVoice() {
+        const answer=document.getElementById("answer");if(state.answerSource==="voice_transcript")answer.value="";releaseVoice(true);document.getElementById("voice-note").style.display="none";setVoiceStatus("录完后自动转成文字，你可以检查和修改后再提交评分。");setVoiceControls("idle");startVoiceRecording();
+      }
       async function loadMaterialPage(){const offset=state.materials?.questions.length||0;const response=await fetch(`${MATERIALS_URL}?limit=30&offset=${offset}`);if(!response.ok)throw new Error("资料库加载失败");const page=await response.json();state.materials=state.materials?{...page,questions:[...state.materials.questions,...page.questions]}:page;}
       async function renderMaterials() {
+        releaseVoice(true);
         workspace.innerHTML='<div class="card empty">正在加载资料库…</div>';
         try { if(!state.materials)await loadMaterialPage();const materials=state.materials;
           workspace.innerHTML=`<div class="hero"><div><strong>原文资料</strong><p>已加载 ${materials.questions.length} / ${materials.total} 题，外链仅用于查看出处。</p></div></div><div class="material-list">${materials.questions.map(q=>`<article class="material" id="material-${esc(q.id)}"><p>${esc(q.module_title)} · ${esc(q.chapter_title)}</p><h3>${esc(q.prompt)}</h3><div class="feedback-copy">${esc(q.short_reference_answer)}</div><details><summary>完整解析</summary><p>${esc(q.full_reference_answer)}</p></details>${q.source.url?`<a class="source" href="${esc(q.source.url)}" target="_blank" rel="noopener">查看出处 · ${esc(q.source.chapter||q.source.title)} ↗</a>`:""}</article>`).join("")}</div>${materials.has_more?'<div class="actions"><button class="button" id="material-more">加载更多</button></div>':""}`;
@@ -155,10 +280,11 @@
         } catch(error){workspace.innerHTML=`<div class="card error">${esc(error.message)}</div>`;}
       }
       function syncTabs(){document.querySelectorAll("[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view===state.view));}
-      document.querySelectorAll("[data-view]").forEach(button=>button.onclick=()=>{state.view=button.dataset.view;syncTabs();render();});
+      document.querySelectorAll("[data-view]").forEach(button=>button.onclick=()=>{releaseVoice(true);state.view=button.dataset.view;syncTabs();render();});
       const sidebar=document.getElementById("sidebar"); const closeMenu=()=>sidebar.classList.remove("open"); document.getElementById("menu").onclick=()=>sidebar.classList.toggle("open");
       document.getElementById("today-nav").onclick=load;
       document.getElementById("weak-nav").onclick=()=>startPractice({weak_only:true});
+      globalThis.addEventListener("pagehide",()=>releaseVoice(true));
       load();
     </script>
   </body>

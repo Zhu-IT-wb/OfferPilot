@@ -135,6 +135,17 @@ class Settings:
         "OFFERPILOT_KNOWLEDGE_MARKDOWN_SYNC_ENABLED",
         True,
     )
+    asr_provider: str = os.getenv("OFFERPILOT_ASR_PROVIDER", "bailian")
+    asr_api_key: str = os.getenv("OFFERPILOT_ASR_API_KEY", "")
+    asr_workspace_id: str = os.getenv("OFFERPILOT_ASR_WORKSPACE_ID", "")
+    asr_model: str = os.getenv(
+        "OFFERPILOT_ASR_MODEL",
+        "fun-asr-flash-2026-06-15",
+    )
+    asr_base_url: str = os.getenv("OFFERPILOT_ASR_BASE_URL", "")
+    asr_timeout_seconds: float = float(
+        os.getenv("OFFERPILOT_ASR_TIMEOUT_SECONDS", "60")
+    )
     feishu_verification_token: str = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
     feishu_app_id: str = os.getenv("FEISHU_APP_ID", "")
     feishu_app_secret: str = os.getenv("FEISHU_APP_SECRET", "")

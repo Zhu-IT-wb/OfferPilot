@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -55,6 +56,35 @@ def test_feishu_service_gets_and_caches_tenant_access_token(monkeypatch) -> None
             "headers": None,
             "params": None,
         }
+    ]
+
+
+def test_feishu_service_signs_page_url_and_caches_jssdk_ticket(monkeypatch) -> None:
+    calls = []
+    service = FeishuMessageService(app_id="app_id", app_secret="app_secret")
+
+    async def fake_post_json(path, payload, headers=None, params=None):
+        calls.append(path)
+        if path == "/auth/v3/tenant_access_token/internal":
+            return {"code": 0, "tenant_access_token": "tenant_token", "expire": 7200}
+        return {"code": 0, "data": {"ticket": "ticket-test", "expire_in": 7200}}
+
+    monkeypatch.setattr(service, "_post_json", fake_post_json)
+    page_url = "https://offerpilot.example/study/knowledge?from=workplace"
+
+    first = asyncio.run(service.get_jssdk_config(page_url))
+    second = asyncio.run(service.get_jssdk_config(page_url))
+
+    verify_string = (
+        f"jsapi_ticket=ticket-test&noncestr={first.nonce_str}"
+        f"&timestamp={first.timestamp}&url={page_url}"
+    )
+    assert first.app_id == "app_id"
+    assert first.signature == hashlib.sha1(verify_string.encode()).hexdigest()
+    assert second.signature
+    assert calls == [
+        "/auth/v3/tenant_access_token/internal",
+        "/jssdk/ticket/get",
     ]
 
 
