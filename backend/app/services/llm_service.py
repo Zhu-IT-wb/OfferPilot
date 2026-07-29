@@ -50,6 +50,8 @@ class LLMService:
         model: Optional[str] = None,
         temperature: float = 0.3,
         max_tokens: int = 512,
+        response_format: Optional[Dict[str, str]] = None,
+        thinking: Optional[Dict[str, str]] = None,
     ) -> LLMResult:
         if not self.api_key:
             raise LLMConfigurationError(
@@ -65,6 +67,10 @@ class LLMService:
             "max_tokens": max_tokens,
             "stream": False,
         }
+        if response_format is not None:
+            payload["response_format"] = response_format
+        if thinking is not None:
+            payload["thinking"] = thinking
 
         try:
             response_data = await self._post_chat_completions(payload)

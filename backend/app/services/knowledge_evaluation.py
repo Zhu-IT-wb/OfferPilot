@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from app.models.interview_knowledge import KnowledgeQuestion
+from app.services.knowledge_markdown import markdown_table_rows
 from app.services.llm_service import LLMConfigurationError, LLMRequestError, LLMService
 
 
@@ -54,24 +55,40 @@ class KnowledgeEvaluationService:
     ) -> KnowledgeEvaluationResult:
         if not answer_text.strip():
             return skipped_evaluation(question)
-        try:
-            result = await self.llm_service.generate_text(
-                prompt=_evaluation_prompt(question, answer_text),
-                system_prompt=(
-                    "你是严格但友善的计算机面试知识评分器。只根据给定评分点判断，"
-                    "不得发明评分点；必须输出 JSON，不要输出 Markdown 以外的解释。"
-                ),
-                temperature=0.0,
-                max_tokens=1200,
+        base_prompt = _evaluation_prompt(question, answer_text)
+        payload = None
+        parse_error: Optional[Exception] = None
+        for attempt in range(2):
+            retry_instruction = (
+                "\n\n上一次响应不是完整合法的 JSON。请缩短反馈和证据，只输出完整 JSON。"
+                if attempt
+                else ""
             )
-        except (LLMConfigurationError, LLMRequestError) as exc:
+            try:
+                result = await self.llm_service.generate_text(
+                    prompt=base_prompt + retry_instruction,
+                    system_prompt=(
+                        "你是严格但友善的计算机面试知识评分器。只根据给定评分点判断，"
+                        "不得发明评分点；必须输出 JSON，不要输出 Markdown 以外的解释。"
+                    ),
+                    temperature=0.0,
+                    max_tokens=2400,
+                    response_format={"type": "json_object"},
+                    thinking={"type": "disabled"},
+                )
+            except (LLMConfigurationError, LLMRequestError) as exc:
+                raise KnowledgeEvaluationError(
+                    "AI 评价暂时不可用，你的答案已保留，请稍后重试。"
+                ) from exc
+            try:
+                payload = _parse_json_object(result.content)
+                break
+            except (ValueError, json.JSONDecodeError) as exc:
+                parse_error = exc
+        if payload is None:
             raise KnowledgeEvaluationError(
-                "AI 评价暂时不可用，你的答案已保留，请稍后重试。"
-            ) from exc
-        try:
-            payload = _parse_json_object(result.content)
-        except (ValueError, json.JSONDecodeError) as exc:
-            raise KnowledgeEvaluationError("AI 评价返回了无效 JSON，请稍后重试。") from exc
+                "AI 评价返回了无效 JSON，请稍后重试。"
+            ) from parse_error
         return _validated_evaluation(question, answer_text, payload)
 
 
@@ -104,8 +121,18 @@ def _validated_evaluation(
     claimed_misconceptions = _known_ids(
         payload.get("triggered_misconception_ids"), misconceptions
     )
+    raw_evidence = payload.get("evidence", [])
+    if isinstance(raw_evidence, dict):
+        evidence_items = [
+            {"point_id": point_id, "quote": quote}
+            for point_id, quote in raw_evidence.items()
+        ]
+    elif isinstance(raw_evidence, list):
+        evidence_items = raw_evidence
+    else:
+        evidence_items = []
     evidence = []
-    for item in payload.get("evidence", []):
+    for item in evidence_items:
         if not isinstance(item, dict):
             continue
         point_id = item.get("point_id")
@@ -115,7 +142,7 @@ def _validated_evaluation(
             and point_id in {*required, *bonus, *misconceptions}
             and isinstance(quote, str)
             and quote
-            and quote in answer_text
+            and _is_supported_evidence_quote(quote, answer_text)
         ):
             evidence.append({"point_id": point_id, "quote": quote})
     evidenced_ids = {item["point_id"] for item in evidence}
@@ -170,6 +197,22 @@ def _bounded_int(value: Any, lower: int, upper: int) -> int:
         return lower
 
 
+def _is_supported_evidence_quote(quote: str, answer_text: str) -> bool:
+    if quote in answer_text:
+        return True
+    normalized_quote = _without_whitespace(quote)
+    for cells in markdown_table_rows(answer_text):
+        for start in range(len(cells)):
+            for end in range(start + 1, len(cells) + 1):
+                if _without_whitespace("；".join(cells[start:end])) == normalized_quote:
+                    return True
+    return False
+
+
+def _without_whitespace(value: str) -> str:
+    return re.sub(r"\s+", "", value)
+
+
 def _parse_json_object(content: str) -> Dict[str, Any]:
     stripped = content.strip()
     fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, re.DOTALL)
@@ -188,7 +231,12 @@ def _evaluation_prompt(question: KnowledgeQuestion, answer_text: str) -> str:
         f"题目：{question.prompt}\n"
         f"评分点：{json.dumps(points, ensure_ascii=False)}\n"
         f"用户回答：{answer_text}\n\n"
-        "输出字段：matched_required_point_ids、matched_bonus_point_ids、"
-        "triggered_misconception_ids、evidence、organization_score(0-10)、"
-        "clarity_score(0-10)、feedback、suggested_improvement。"
+        "严格输出一个 JSON 对象，字段为：matched_required_point_ids、"
+        "matched_bonus_point_ids、triggered_misconception_ids、evidence、"
+        "organization_score(0-10)、clarity_score(0-10)、feedback、"
+        "suggested_improvement。evidence 必须是数组，数组元素格式必须为"
+        '{"point_id":"评分点ID","quote":"逐字来自用户回答的最短原文片段"}；'
+        "不要把 evidence 输出成以评分点 ID 为键的对象。每个声称命中的评分点"
+        "都必须有一条 evidence，quote 控制在 4～30 个字，没有逐字证据就不要"
+        "声称命中。feedback 和 suggested_improvement 各不超过 120 个字。"
     )

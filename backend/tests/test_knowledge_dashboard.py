@@ -25,10 +25,10 @@ class FakeLLMService:
             ],
             "matched_bonus_point_ids": [],
             "triggered_misconception_ids": [],
-            "evidence": [
-                {"point_id": "http11_required_1", "quote": "持久连接"},
-                {"point_id": "http11_required_2", "quote": "Host"},
-            ],
+            "evidence": {
+                "http11_required_1": "持久连接",
+                "http11_required_2": "Host",
+            },
             "organization_score": 8,
             "clarity_score": 8,
             "feedback": "连接和 Host 回答正确，但遗漏缓存与分块传输。",

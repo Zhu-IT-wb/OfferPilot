@@ -176,6 +176,85 @@ docker.run();
     assert after_insertion["什么是最左匹配原则？"] == second_original_id
 
 
+def test_table_answer_becomes_semantic_rubric_points(tmp_path: Path) -> None:
+    source_root = tmp_path / "knowledge"
+    traditional = source_root / "传统开发面试题"
+    traditional.mkdir(parents=True)
+    (traditional / "Spring面试题.md").write_text(
+        """# Spring 面试题
+
+## 核心
+
+### Spring 的核心思想是什么？
+
+| 核心思想 | 解决的问题 | 实现手段 | 典型场景 |
+| --- | --- | --- | --- |
+| IOC | 对象创建与依赖管理的高耦合 | 容器管理 Bean 生命周期 | 服务组装 |
+| DI | 依赖关系硬编码 | 构造器或注解注入 | 注入数据源 |
+| AOP | 横切逻辑散落 | 动态代理与切面 | 日志和事务 |
+""",
+        encoding="utf-8",
+    )
+    corpus = KnowledgeCorpus(
+        InMemoryInterviewKnowledgeRepository(),
+        source_root,
+    )
+
+    corpus.sync_markdown()
+    question = corpus.list_questions(module_id="spring")[0]
+    descriptions = [point.description for point in question.required_points]
+
+    assert any(
+        description.startswith("IOC：") and "容器管理 Bean 生命周期" in description
+        for description in descriptions
+    )
+    assert any(description.startswith("DI：") for description in descriptions)
+    assert any(description.startswith("AOP：") for description in descriptions)
+    assert "围绕题目给出准确、完整的核心回答" not in descriptions
+
+
+def test_generated_rubric_removes_transitions_and_duplicate_points(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "knowledge"
+    source_file = source_root / "agent" / "1. 如何选择组件？.md"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text(
+        """# 1. 如何选择组件？
+
+## 简要回答
+
+核心定义：先说明组件解决的问题。
+例如。
+spring-boot-starter-very-long-component-alpha：支持 Web 开发。
+spring-boot-starter-very-long-component-beta：支持安全能力。
+关键机制；关键机制。
+
+## 详细解析
+
+根据业务目标选择组件，并说明适用范围和限制。
+
+## 面试总结
+
+不导入。
+""",
+        encoding="utf-8",
+    )
+    corpus = KnowledgeCorpus(
+        InMemoryInterviewKnowledgeRepository(),
+        source_root,
+    )
+
+    corpus.sync_markdown()
+    question = corpus.list_questions()[0]
+    descriptions = [point.description for point in question.required_points]
+    labels = [point.label for point in question.required_points]
+
+    assert "例如" not in descriptions
+    assert len(descriptions) == len(set(descriptions))
+    assert len(labels) == len(set(labels))
+
+
 def test_sync_is_incremental_and_removes_deleted_source_questions(tmp_path: Path) -> None:
     source_root = tmp_path / "knowledge"
     source_file = source_root / "agent" / "1. 什么是 Agent？.md"

@@ -12,6 +12,7 @@ from app.models.interview_knowledge import (
     KnowledgeRubricPoint,
 )
 from app.repositories.interview_knowledge_repository import InterviewKnowledgeRepository
+from app.services.knowledge_markdown import markdown_table_rows
 
 
 _ATOMIC_MODULES = {
@@ -69,8 +70,19 @@ _TRADITIONAL_MODULES = {
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _SOURCE_RE = re.compile(r"^来源：\[[^]]*]\((https?://[^)]+)\)", re.MULTILINE)
 _NUMBERED_FILE_RE = re.compile(r"^(\d+)\.\s*")
-_PARSER_VERSION = "2026-07-28-v2"
+_PARSER_VERSION = "2026-07-29-v3"
 _MINIMUM_RETENTION_RATIO = 1.0
+_RUBRIC_TRANSITIONS = {
+    "例如",
+    "比如",
+    "如下图",
+    "输出",
+    "解释",
+    "区别",
+    "首先",
+    "然后",
+    "最后",
+}
 
 
 class KnowledgeCorpusSyncError(RuntimeError):
@@ -338,7 +350,7 @@ def _parse_atomic_question(
     question_id = f"knowledge_{module_id}_{number:03d}"
     source_match = _SOURCE_RE.search(markdown)
     source_url = source_match.group(1) if source_match else ""
-    points = _draft_rubric_points(question_id, short)
+    points = _draft_rubric_points(question_id, short, full)
     return KnowledgeQuestion(
         id=question_id,
         module_id=module_id,
@@ -421,7 +433,7 @@ def _parse_monolithic_questions(
         )
         digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:12]
         question_id = f"knowledge_{module_id}_{digest}"
-        points = _draft_rubric_points(question_id, short_answer)
+        points = _draft_rubric_points(question_id, short_answer, full_answer)
         chapter_id = (
             f"{module_id}_"
             + hashlib.sha1(current_chapter.encode("utf-8")).hexdigest()[:8]
@@ -492,15 +504,21 @@ def _section_text(
 
 
 def _draft_rubric_points(
-    question_id: str, short_answer: str
+    question_id: str,
+    short_answer: str,
+    full_answer: str = "",
 ) -> List[KnowledgeRubricPoint]:
-    candidates = []
+    candidates = _table_rubric_candidates(full_answer or short_answer)
     for line in short_answer.splitlines():
         if _is_rubric_noise(line):
             continue
         for item in re.split(r"[；;。]+", line):
             candidate = item.strip(" ：:，,。；;-")
-            if candidate and not _is_rubric_noise(candidate):
+            if (
+                candidate
+                and candidate not in candidates
+                and not _is_rubric_noise(candidate)
+            ):
                 candidates.append(candidate)
         if len(candidates) >= 6:
             break
@@ -515,25 +533,54 @@ def _draft_rubric_points(
             "围绕题目给出准确、完整的核心回答",
         )
         candidates = [fallback]
-    return [
-        KnowledgeRubricPoint(
-            id=f"{question_id}_required_{index}",
-            kind=KnowledgeRubricKind.REQUIRED,
-            label=_point_label(text),
-            description=text,
+    points = []
+    label_counts: dict[str, int] = {}
+    for index, text in enumerate(candidates, start=1):
+        base_label = _point_label(text)
+        label_counts[base_label] = label_counts.get(base_label, 0) + 1
+        occurrence = label_counts[base_label]
+        if occurrence == 1:
+            label = base_label
+        else:
+            suffix = f"（{occurrence}）"
+            label = f"{base_label[: 32 - len(suffix)]}{suffix}"
+        points.append(
+            KnowledgeRubricPoint(
+                id=f"{question_id}_required_{index}",
+                kind=KnowledgeRubricKind.REQUIRED,
+                label=label,
+                description=text,
+            )
         )
-        for index, text in enumerate(candidates, start=1)
-    ]
+    return points
+
+
+def _table_rubric_candidates(markdown: str) -> List[str]:
+    candidates = []
+    for cells in markdown_table_rows(markdown):
+        nonempty_cells = [cell for cell in cells if cell]
+        if len(nonempty_cells) < 2:
+            continue
+        key, *details = nonempty_cells
+        candidate = f"{key}：" + "；".join(details)
+        if candidate not in candidates:
+            candidates.append(candidate)
+        if len(candidates) >= 6:
+            break
+    return candidates
 
 
 def _point_label(text: str) -> str:
     normalized = re.sub(r"^(RAG|答案|核心|首先|然后|最后)\s*", "", text).strip()
-    return normalized[:18] or "核心要点"
+    return normalized[:32] or "核心要点"
 
 
 def _is_rubric_noise(value: str) -> bool:
     stripped = value.strip()
     if not stripped or stripped.startswith(("```", "~~~", "|")):
+        return True
+    transition = stripped.strip(" ：:，,。；;-_").casefold()
+    if transition in _RUBRIC_TRANSITIONS:
         return True
     if re.fullmatch(r"[:|+\-=\s]+", stripped):
         return True
