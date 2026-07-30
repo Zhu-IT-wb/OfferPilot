@@ -22,6 +22,12 @@ class KnowledgeAnswerSource(str, Enum):
     SKIPPED = "skipped"
 
 
+class KnowledgeFactualErrorSeverity(str, Enum):
+    MINOR = "minor"
+    MAJOR = "major"
+    CRITICAL = "critical"
+
+
 class KnowledgeAssignmentType(str, Enum):
     NEW = "new"
     DUE_REVIEW = "due_review"
@@ -63,6 +69,20 @@ class KnowledgeRubricPoint:
             "label": self.label,
             "description": self.description,
             "weight": self.weight,
+        }
+
+
+@dataclass(frozen=True)
+class KnowledgeFactualError:
+    quote: str
+    explanation: str
+    severity: KnowledgeFactualErrorSeverity
+
+    def to_dict(self) -> Dict[str, str]:
+        return {
+            "quote": self.quote,
+            "explanation": self.explanation,
+            "severity": self.severity.value,
         }
 
 
@@ -149,6 +169,8 @@ class KnowledgeAssignment:
     status: KnowledgeAssignmentStatus = KnowledgeAssignmentStatus.PENDING
     attempt_id: Optional[str] = None
     completed_at: Optional[datetime] = None
+    active_attempt_id: Optional[str] = None
+    active_attempt_started_at: Optional[datetime] = None
 
 
 @dataclass

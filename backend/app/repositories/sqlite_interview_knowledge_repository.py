@@ -1,7 +1,7 @@
 import json
 import sqlite3
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -21,12 +21,16 @@ from app.models.interview_knowledge import (
     KnowledgeSubscription,
 )
 from app.repositories.interview_knowledge_repository import (
+    ConcurrentKnowledgeProgressUpdateError,
     DuplicateKnowledgeSubmissionError,
+    KnowledgeAssignmentInProgressError,
 )
 from app.services.knowledge_catalog import load_knowledge_catalog
 
 
 class SQLiteInterviewKnowledgeRepository:
+    _ATTEMPT_LEASE = timedelta(minutes=15)
+
     def __init__(
         self,
         db_path: str,
@@ -198,6 +202,231 @@ class SQLiteInterviewKnowledgeRepository:
             raise
         return attempt
 
+    def begin_attempt(
+        self,
+        owner_id: str,
+        question_id: str,
+        assignment_id: str,
+        answer_text: str,
+        answer_source: KnowledgeAnswerSource,
+        submitted_at: datetime,
+        submission_id: Optional[str] = None,
+        existing_attempt_id: Optional[str] = None,
+    ) -> KnowledgeAttempt:
+        attempt = KnowledgeAttempt(
+            id=existing_attempt_id or f"knowledge_attempt_{uuid.uuid4().hex}",
+            owner_id=owner_id,
+            question_id=question_id,
+            assignment_id=assignment_id,
+            answer_text=answer_text,
+            answer_source=answer_source,
+            submitted_at=submitted_at,
+            submission_id=submission_id,
+        )
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT * FROM knowledge_assignments WHERE id=? AND owner_id=?",
+                    (assignment_id, owner_id),
+                ).fetchone()
+                if row is None or row["question_id"] != question_id:
+                    raise ValueError("Knowledge assignment was not found.")
+                active_attempt_id = row["active_attempt_id"]
+                if active_attempt_id:
+                    if not self._active_attempt_is_stale(
+                        row["active_attempt_started_at"]
+                    ):
+                        raise KnowledgeAssignmentInProgressError(
+                            "This knowledge assignment is already being evaluated."
+                        )
+                    connection.execute(
+                        """UPDATE knowledge_attempts SET evaluation_status='failed'
+                           WHERE id=? AND owner_id=? AND evaluation_status='pending'""",
+                        (active_attempt_id, owner_id),
+                    )
+                    connection.execute(
+                        """UPDATE knowledge_assignments
+                           SET active_attempt_id=NULL, active_attempt_started_at=NULL
+                           WHERE id=? AND owner_id=? AND active_attempt_id=?""",
+                        (assignment_id, owner_id, active_attempt_id),
+                    )
+                if existing_attempt_id:
+                    attempt_row = connection.execute(
+                        "SELECT * FROM knowledge_attempts WHERE id=? AND owner_id=?",
+                        (existing_attempt_id, owner_id),
+                    ).fetchone()
+                    if (
+                        attempt_row is None
+                        or attempt_row["assignment_id"] != assignment_id
+                        or attempt_row["question_id"] != question_id
+                        or attempt_row["evaluation_status"] not in {"pending", "failed"}
+                    ):
+                        raise ValueError("Knowledge attempt cannot be retried.")
+                    if (
+                        attempt_row["evaluation_status"] == "pending"
+                        and not self._active_attempt_is_stale(
+                            attempt_row["submitted_at"]
+                        )
+                    ):
+                        raise KnowledgeAssignmentInProgressError(
+                            "This answer is already being evaluated."
+                        )
+                    attempt.submission_id = attempt_row["submission_id"]
+                    connection.execute(
+                        """UPDATE knowledge_attempts SET submitted_at=?,
+                           evaluation_status='pending', evaluation_payload='{}', score=NULL
+                           WHERE id=? AND owner_id=?""",
+                        (submitted_at.isoformat(), existing_attempt_id, owner_id),
+                    )
+                else:
+                    connection.execute(
+                        """INSERT INTO knowledge_attempts (
+                            id, owner_id, question_id, assignment_id, answer_text,
+                            answer_source, submitted_at, submission_id,
+                            evaluation_status, evaluation_payload, score
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            attempt.id,
+                            owner_id,
+                            question_id,
+                            assignment_id,
+                            answer_text,
+                            answer_source.value,
+                            submitted_at.isoformat(),
+                            submission_id,
+                            "pending",
+                            "{}",
+                            None,
+                        ),
+                    )
+                updated = connection.execute(
+                    """UPDATE knowledge_assignments
+                       SET active_attempt_id=?, active_attempt_started_at=?
+                       WHERE id=? AND owner_id=? AND active_attempt_id IS NULL""",
+                    (
+                        attempt.id,
+                        datetime.now(timezone.utc).isoformat(),
+                        assignment_id,
+                        owner_id,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise KnowledgeAssignmentInProgressError(
+                        "This knowledge assignment is already being evaluated."
+                    )
+                connection.commit()
+        except sqlite3.IntegrityError as exc:
+            if submission_id and self.get_attempt_by_submission_id(owner_id, submission_id):
+                raise DuplicateKnowledgeSubmissionError(
+                    "Knowledge submission already exists."
+                ) from exc
+            raise
+        return attempt
+
+    def fail_attempt(self, attempt: KnowledgeAttempt) -> None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """UPDATE knowledge_attempts SET evaluation_status='failed'
+                   WHERE id=? AND owner_id=?""",
+                (attempt.id, attempt.owner_id),
+            )
+            connection.execute(
+                """UPDATE knowledge_assignments
+                   SET active_attempt_id=NULL, active_attempt_started_at=NULL
+                   WHERE id=? AND owner_id=? AND active_attempt_id=?""",
+                (attempt.assignment_id, attempt.owner_id, attempt.id),
+            )
+            connection.commit()
+
+    def complete_attempt(
+        self,
+        attempt: KnowledgeAttempt,
+        assignment: KnowledgeAssignment,
+        progress: KnowledgeProgress,
+        expected_progress_attempt_count: int,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            active = connection.execute(
+                """SELECT 1 FROM knowledge_assignments
+                   WHERE id=? AND owner_id=? AND active_attempt_id=?""",
+                (assignment.id, assignment.owner_id, attempt.id),
+            ).fetchone()
+            if active is None:
+                raise KnowledgeAssignmentInProgressError(
+                    "This knowledge assignment is no longer owned by this attempt."
+                )
+            connection.execute(
+                """UPDATE knowledge_attempts SET answer_text=?, answer_source=?,
+                   evaluation_status=?, evaluation_payload=?, score=?
+                   WHERE id=? AND owner_id=?""",
+                (
+                    attempt.answer_text,
+                    attempt.answer_source.value,
+                    attempt.evaluation_status,
+                    json.dumps(attempt.evaluation_payload, ensure_ascii=False),
+                    attempt.score,
+                    attempt.id,
+                    attempt.owner_id,
+                ),
+            )
+            progress_values = (
+                progress.owner_id,
+                progress.question_id,
+                progress.mastery_status.value,
+                progress.mastery_score,
+                progress.attempt_count,
+                progress.high_score_streak,
+                progress.last_score,
+                progress.last_attempt_at.isoformat() if progress.last_attempt_at else None,
+                progress.next_review_on.isoformat() if progress.next_review_on else None,
+                json.dumps(progress.last_detected_gaps, ensure_ascii=False),
+                datetime.now().isoformat(),
+            )
+            updated_progress = connection.execute(
+                """INSERT INTO knowledge_progress (
+                    owner_id, question_id, mastery_status, mastery_score, attempt_count,
+                    high_score_streak, last_score, last_attempt_at, next_review_on,
+                    last_detected_gaps, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(owner_id, question_id) DO UPDATE SET
+                    mastery_status=excluded.mastery_status,
+                    mastery_score=excluded.mastery_score,
+                    attempt_count=excluded.attempt_count,
+                    high_score_streak=excluded.high_score_streak,
+                    last_score=excluded.last_score,
+                    last_attempt_at=excluded.last_attempt_at,
+                    next_review_on=excluded.next_review_on,
+                    last_detected_gaps=excluded.last_detected_gaps,
+                    updated_at=excluded.updated_at
+                WHERE knowledge_progress.attempt_count=?""",
+                (*progress_values, expected_progress_attempt_count),
+            )
+            if updated_progress.rowcount != 1:
+                raise ConcurrentKnowledgeProgressUpdateError(
+                    "Knowledge progress changed during evaluation."
+                )
+            completed = connection.execute(
+                """UPDATE knowledge_assignments SET status=?, attempt_id=?, completed_at=?,
+                   active_attempt_id=NULL, active_attempt_started_at=NULL
+                   WHERE id=? AND owner_id=? AND active_attempt_id=?""",
+                (
+                    assignment.status.value,
+                    assignment.attempt_id,
+                    assignment.completed_at.isoformat() if assignment.completed_at else None,
+                    assignment.id,
+                    assignment.owner_id,
+                    attempt.id,
+                ),
+            )
+            if completed.rowcount != 1:
+                raise KnowledgeAssignmentInProgressError(
+                    "This knowledge assignment is no longer owned by this attempt."
+                )
+            connection.commit()
+
     def save_attempt(self, attempt: KnowledgeAttempt) -> None:
         self._execute(
             """UPDATE knowledge_attempts SET answer_text=?, answer_source=?,
@@ -356,6 +585,7 @@ class SQLiteInterviewKnowledgeRepository:
                     assigned_on TEXT NOT NULL, assignment_type TEXT NOT NULL,
                     recommendation_reason TEXT NOT NULL, status TEXT NOT NULL,
                     attempt_id TEXT, completed_at TEXT, created_at TEXT NOT NULL,
+                    active_attempt_id TEXT, active_attempt_started_at TEXT,
                     UNIQUE(owner_id, question_id, assigned_on)
                 );
                 CREATE INDEX IF NOT EXISTS idx_knowledge_assignments_owner_date
@@ -396,6 +626,19 @@ class SQLiteInterviewKnowledgeRepository:
                 connection.execute(
                     "ALTER TABLE knowledge_attempts ADD COLUMN submission_id TEXT"
                 )
+            assignment_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(knowledge_assignments)")
+            }
+            assignment_column_migrations = {
+                "active_attempt_id": "TEXT",
+                "active_attempt_started_at": "TEXT",
+            }
+            for column, definition in assignment_column_migrations.items():
+                if column not in assignment_columns:
+                    connection.execute(
+                        f"ALTER TABLE knowledge_assignments ADD COLUMN {column} {definition}"
+                    )
             question_columns = {
                 row[1]
                 for row in connection.execute("PRAGMA table_info(knowledge_questions)")
@@ -432,6 +675,18 @@ class SQLiteInterviewKnowledgeRepository:
         connection.row_factory = sqlite3.Row
         return connection
 
+    @classmethod
+    def _active_attempt_is_stale(cls, started_at: Optional[str]) -> bool:
+        if not started_at:
+            return True
+        try:
+            parsed = datetime.fromisoformat(started_at)
+        except ValueError:
+            return True
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) - parsed.astimezone(timezone.utc) >= cls._ATTEMPT_LEASE
+
     @staticmethod
     def _question_from_row(row: sqlite3.Row) -> KnowledgeQuestion:
         return KnowledgeQuestion(
@@ -466,6 +721,12 @@ class SQLiteInterviewKnowledgeRepository:
             recommendation_reason=row["recommendation_reason"],
             status=KnowledgeAssignmentStatus(row["status"]), attempt_id=row["attempt_id"],
             completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
+            active_attempt_id=row["active_attempt_id"],
+            active_attempt_started_at=(
+                datetime.fromisoformat(row["active_attempt_started_at"])
+                if row["active_attempt_started_at"]
+                else None
+            ),
         )
 
     @staticmethod

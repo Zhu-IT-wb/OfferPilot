@@ -1,5 +1,7 @@
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
+from typing import Optional
 
 from app.models.interview_knowledge import (
     KnowledgeAnswerSource,
@@ -10,8 +12,10 @@ from app.models.interview_knowledge import (
     KnowledgeProgress,
 )
 from app.repositories.interview_knowledge_repository import (
+    ConcurrentKnowledgeProgressUpdateError,
     DuplicateKnowledgeSubmissionError,
     InterviewKnowledgeRepository,
+    KnowledgeAssignmentInProgressError,
 )
 from app.services.knowledge_evaluation import (
     KnowledgeEvaluationResult,
@@ -82,64 +86,90 @@ class KnowledgePracticeWorkflow:
                 return self._completed_outcome(
                     owner_id, assignment, existing_attempt
                 )
-            if existing_attempt.evaluation_status == "pending":
-                raise KnowledgeSubmissionInProgressError(
-                    "This answer is already being evaluated."
+        try:
+            attempt = self.repository.begin_attempt(
+                owner_id=owner_id,
+                question_id=question.id,
+                assignment_id=assignment.id,
+                answer_text=normalized_answer,
+                answer_source=answer_source,
+                submitted_at=submitted_at,
+                submission_id=submission_id or None,
+                existing_attempt_id=(existing_attempt.id if existing_attempt else None),
+            )
+        except DuplicateKnowledgeSubmissionError as exc:
+            concurrent_attempt = self.repository.get_attempt_by_submission_id(
+                owner_id, submission_id
+            )
+            if (
+                concurrent_attempt is not None
+                and concurrent_attempt.evaluation_status == "completed"
+            ):
+                return self._completed_outcome(
+                    owner_id, assignment, concurrent_attempt
                 )
-            attempt = existing_attempt
-            attempt.submitted_at = submitted_at
-        else:
-            try:
-                attempt = self.repository.create_attempt(
-                    owner_id=owner_id,
-                    question_id=question.id,
-                    assignment_id=assignment.id,
-                    answer_text=normalized_answer,
-                    answer_source=answer_source,
-                    submitted_at=submitted_at,
-                    submission_id=submission_id or None,
-                )
-            except DuplicateKnowledgeSubmissionError as exc:
-                concurrent_attempt = self.repository.get_attempt_by_submission_id(
-                    owner_id, submission_id
-                )
-                if (
-                    concurrent_attempt is not None
-                    and concurrent_attempt.evaluation_status == "completed"
-                ):
-                    return self._completed_outcome(
-                        owner_id, assignment, concurrent_attempt
-                    )
-                raise KnowledgeSubmissionInProgressError(
-                    "This answer is already being evaluated."
-                ) from exc
+            raise KnowledgeSubmissionInProgressError(
+                "This answer is already being evaluated."
+            ) from exc
+        except KnowledgeAssignmentInProgressError as exc:
+            raise KnowledgeSubmissionInProgressError(str(exc)) from exc
         try:
             evaluation = (
                 skipped_evaluation(question)
                 if answer_source == KnowledgeAnswerSource.SKIPPED
                 else await self.evaluation_service.evaluate(question, normalized_answer)
             )
+        except asyncio.CancelledError:
+            self.repository.fail_attempt(attempt)
+            raise
         except Exception:
-            attempt.evaluation_status = "failed"
-            self.repository.save_attempt(attempt)
+            self.repository.fail_attempt(attempt)
             raise
         attempt.score = evaluation.score
         attempt.evaluation_status = "completed"
         attempt.evaluation_payload = evaluation.to_dict()
-        self.repository.save_attempt(attempt)
-        progress = self._update_progress(
-            owner_id=owner_id,
-            question_id=question.id,
-            evaluation=evaluation,
-            practiced_on=submitted_at.date(),
-            submitted_at=submitted_at,
+        completed_assignment = replace(
+            assignment,
+            status=KnowledgeAssignmentStatus.COMPLETED,
+            attempt_id=attempt.id,
+            completed_at=submitted_at,
+            active_attempt_id=None,
+            active_attempt_started_at=None,
         )
-        assignment.status = KnowledgeAssignmentStatus.COMPLETED
-        assignment.attempt_id = attempt.id
-        assignment.completed_at = submitted_at
-        self.repository.save_assignment(assignment)
+        progress = None
+        for _ in range(5):
+            current_progress = self.repository.get_progress(owner_id, question.id)
+            expected_attempt_count = (
+                current_progress.attempt_count if current_progress is not None else 0
+            )
+            progress = self._next_progress(
+                current=current_progress,
+                owner_id=owner_id,
+                question_id=question.id,
+                evaluation=evaluation,
+                practiced_on=submitted_at.date(),
+                submitted_at=submitted_at,
+            )
+            try:
+                self.repository.complete_attempt(
+                    attempt=attempt,
+                    assignment=completed_assignment,
+                    progress=progress,
+                    expected_progress_attempt_count=expected_attempt_count,
+                )
+                break
+            except ConcurrentKnowledgeProgressUpdateError:
+                continue
+            except KnowledgeAssignmentInProgressError as exc:
+                self.repository.fail_attempt(attempt)
+                raise KnowledgeSubmissionInProgressError(str(exc)) from exc
+        else:
+            self.repository.fail_attempt(attempt)
+            raise KnowledgeSubmissionInProgressError(
+                "Knowledge progress changed too frequently; please retry."
+            )
         return KnowledgePracticeOutcome(
-            assignment=assignment,
+            assignment=completed_assignment,
             attempt=attempt,
             evaluation=evaluation,
             progress=progress,
@@ -161,17 +191,17 @@ class KnowledgePracticeWorkflow:
             progress=progress,
         )
 
-    def _update_progress(
+    def _next_progress(
         self,
+        current: Optional[KnowledgeProgress],
         owner_id: str,
         question_id: str,
         evaluation: KnowledgeEvaluationResult,
         practiced_on: date,
         submitted_at: datetime,
     ) -> KnowledgeProgress:
-        progress = self.repository.get_progress(owner_id, question_id) or KnowledgeProgress(
-            owner_id=owner_id,
-            question_id=question_id,
+        progress = replace(current) if current is not None else KnowledgeProgress(
+            owner_id=owner_id, question_id=question_id
         )
         score = evaluation.score
         previous_attempt_on = (
@@ -186,7 +216,13 @@ class KnowledgePracticeWorkflow:
             else round(progress.mastery_score * 0.6 + score * 0.4)
         )
         progress.last_attempt_at = submitted_at
-        progress.last_detected_gaps = list(evaluation.missing_required_labels)
+        progress.last_detected_gaps = [
+            *evaluation.missing_required_labels,
+            *[
+                f"事实错误：{item.explanation}"
+                for item in evaluation.factual_errors
+            ],
+        ]
         if score < 60:
             progress.high_score_streak = 0
             progress.mastery_status = KnowledgeMasteryStatus.LEARNING
@@ -217,5 +253,4 @@ class KnowledgePracticeWorkflow:
                     and previous_next_review_on is not None
                     else practiced_on + timedelta(days=7 if score < 90 else 14)
                 )
-        self.repository.save_progress(progress)
         return progress

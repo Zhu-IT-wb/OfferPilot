@@ -1,13 +1,17 @@
-from datetime import date, datetime
+import sqlite3
+from datetime import date, datetime, timedelta, timezone
 
 from app.models.interview_knowledge import (
     KnowledgeAnswerSource,
+    KnowledgeAssignmentStatus,
     KnowledgeAssignmentType,
     KnowledgeMasteryStatus,
     KnowledgeProgress,
 )
 from app.repositories.interview_knowledge_repository import (
+    ConcurrentKnowledgeProgressUpdateError,
     InMemoryInterviewKnowledgeRepository,
+    KnowledgeAssignmentInProgressError,
 )
 from app.repositories.sqlite_interview_knowledge_repository import (
     SQLiteInterviewKnowledgeRepository,
@@ -138,3 +142,161 @@ def test_sqlite_catalog_sync_disables_questions_removed_from_source(tmp_path) ->
     repository.upsert_questions([questions[0]])
 
     assert [item.id for item in repository.list_questions()] == [questions[0].id]
+
+
+def test_sqlite_answer_completion_rolls_back_all_writes_on_progress_conflict(
+    tmp_path,
+) -> None:
+    repository = SQLiteInterviewKnowledgeRepository(str(tmp_path / "offerpilot.db"))
+    assignment = repository.create_assignment(
+        owner_id="feishu:ou_owner",
+        question_id="knowledge_network_http_001",
+        assigned_on=date(2026, 7, 27),
+        assignment_type=KnowledgeAssignmentType.NEW,
+        recommendation_reason="验证原子提交",
+    )
+    attempt = repository.begin_attempt(
+        owner_id="feishu:ou_owner",
+        question_id=assignment.question_id,
+        assignment_id=assignment.id,
+        answer_text="默认使用持久连接。",
+        answer_source=KnowledgeAnswerSource.TEXT,
+        submitted_at=datetime(2026, 7, 27, 9, 0),
+        submission_id="submission-atomic-finalize",
+    )
+    repository.save_progress(
+        KnowledgeProgress(
+            owner_id="feishu:ou_owner",
+            question_id=assignment.question_id,
+            mastery_status=KnowledgeMasteryStatus.REVIEWING,
+            mastery_score=70,
+            attempt_count=1,
+            last_score=70,
+        )
+    )
+    attempt.evaluation_status = "completed"
+    attempt.score = 90
+    attempt.evaluation_payload = {"score": 90}
+    assignment.status = KnowledgeAssignmentStatus.COMPLETED
+    assignment.attempt_id = attempt.id
+    assignment.completed_at = attempt.submitted_at
+    stale_progress = KnowledgeProgress(
+        owner_id="feishu:ou_owner",
+        question_id=assignment.question_id,
+        mastery_status=KnowledgeMasteryStatus.REVIEWING,
+        mastery_score=90,
+        attempt_count=1,
+        last_score=90,
+    )
+
+    try:
+        repository.complete_attempt(
+            attempt=attempt,
+            assignment=assignment,
+            progress=stale_progress,
+            expected_progress_attempt_count=0,
+        )
+        raise AssertionError("stale progress update should have failed")
+    except ConcurrentKnowledgeProgressUpdateError:
+        pass
+
+    stored_attempt = repository.get_attempt("feishu:ou_owner", attempt.id)
+    stored_assignment = repository.list_assignments("feishu:ou_owner")[0]
+    stored_progress = repository.get_progress(
+        "feishu:ou_owner", assignment.question_id
+    )
+    assert stored_attempt is not None
+    assert stored_attempt.evaluation_status == "pending"
+    assert stored_attempt.score is None
+    assert stored_assignment.status == KnowledgeAssignmentStatus.PENDING
+    assert stored_assignment.attempt_id is None
+    assert stored_assignment.active_attempt_id == attempt.id
+    assert stored_progress is not None
+    assert stored_progress.attempt_count == 1
+    assert stored_progress.last_score == 70
+
+
+def test_sqlite_assignment_lease_rejects_a_second_concurrent_attempt(tmp_path) -> None:
+    database = str(tmp_path / "offerpilot.db")
+    first_repository = SQLiteInterviewKnowledgeRepository(database)
+    second_repository = SQLiteInterviewKnowledgeRepository(database)
+    assignment = first_repository.create_assignment(
+        owner_id="feishu:ou_owner",
+        question_id="knowledge_network_http_001",
+        assigned_on=date(2026, 7, 27),
+        assignment_type=KnowledgeAssignmentType.NEW,
+        recommendation_reason="验证跨实例并发",
+    )
+    first_attempt = first_repository.begin_attempt(
+        owner_id="feishu:ou_owner",
+        question_id=assignment.question_id,
+        assignment_id=assignment.id,
+        answer_text="默认使用持久连接。",
+        answer_source=KnowledgeAnswerSource.TEXT,
+        submitted_at=datetime(2026, 7, 27, 9, 0),
+        submission_id="submission-first-worker",
+    )
+
+    try:
+        second_repository.begin_attempt(
+            owner_id="feishu:ou_owner",
+            question_id=assignment.question_id,
+            assignment_id=assignment.id,
+            answer_text="Host 是必须的请求头。",
+            answer_source=KnowledgeAnswerSource.TEXT,
+            submitted_at=datetime(2026, 7, 27, 9, 0, 1),
+            submission_id="submission-second-worker",
+        )
+        raise AssertionError("a second active attempt should have been rejected")
+    except KnowledgeAssignmentInProgressError:
+        pass
+
+    attempts = first_repository.list_attempts("feishu:ou_owner")
+    assert [item.id for item in attempts] == [first_attempt.id]
+    stored_assignment = first_repository.list_assignments("feishu:ou_owner")[0]
+    assert stored_assignment.active_attempt_id == first_attempt.id
+
+
+def test_sqlite_expired_lease_can_resume_the_same_submission(tmp_path) -> None:
+    database = str(tmp_path / "offerpilot.db")
+    repository = SQLiteInterviewKnowledgeRepository(database)
+    assignment = repository.create_assignment(
+        owner_id="feishu:ou_owner",
+        question_id="knowledge_network_http_001",
+        assigned_on=date(2026, 7, 27),
+        assignment_type=KnowledgeAssignmentType.NEW,
+        recommendation_reason="验证崩溃恢复",
+    )
+    attempt = repository.begin_attempt(
+        owner_id="feishu:ou_owner",
+        question_id=assignment.question_id,
+        assignment_id=assignment.id,
+        answer_text="默认使用持久连接。",
+        answer_source=KnowledgeAnswerSource.TEXT,
+        submitted_at=datetime.now(timezone.utc),
+        submission_id="submission-resume-after-crash",
+    )
+    expired_at = datetime.now(timezone.utc) - timedelta(minutes=16)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """UPDATE knowledge_assignments SET active_attempt_started_at=?
+               WHERE id=?""",
+            (expired_at.isoformat(), assignment.id),
+        )
+        connection.commit()
+
+    resumed = repository.begin_attempt(
+        owner_id="feishu:ou_owner",
+        question_id=assignment.question_id,
+        assignment_id=assignment.id,
+        answer_text="默认使用持久连接。",
+        answer_source=KnowledgeAnswerSource.TEXT,
+        submitted_at=datetime.now(timezone.utc),
+        submission_id="submission-resume-after-crash",
+        existing_attempt_id=attempt.id,
+    )
+
+    assert resumed.id == attempt.id
+    assert len(repository.list_attempts("feishu:ou_owner")) == 1
+    stored_assignment = repository.list_assignments("feishu:ou_owner")[0]
+    assert stored_assignment.active_attempt_id == attempt.id

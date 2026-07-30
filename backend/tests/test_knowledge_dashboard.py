@@ -34,6 +34,7 @@ class FakeLLMService:
             ],
             "matched_bonus_point_ids": [],
             "triggered_misconception_ids": [],
+            "factual_errors": [],
             "evidence": {
                 "http11_required_1": "持久连接",
                 "http11_required_2": "Host",
@@ -575,6 +576,22 @@ def test_llm_configuration_failure_returns_retryable_service_error(monkeypatch) 
     assert "AI 评价暂时不可用" in response.json()["detail"]
     updated = client.get("/api/study/knowledge/today").json()
     assert updated["summary"] == {"handled": 0, "total": 5}
+    monkeypatch.setattr(
+        knowledge_dashboard,
+        "get_knowledge_evaluation_service",
+        lambda: KnowledgeEvaluationService(FakeLLMService()),
+    )
+    retry = client.post(
+        "/api/study/knowledge/answers",
+        json={
+            "assignment_id": assignment_id,
+            "submission_id": "submission-after-llm-recovery",
+            "answer_text": "默认持久连接，并增加 Host 请求头。",
+            "answer_source": "text",
+        },
+    )
+    assert retry.status_code == 200
+    assert retry.json()["progress"]["attempt_count"] == 1
 
 
 def test_pending_duplicate_submission_returns_conflict_without_second_evaluation(
@@ -584,7 +601,7 @@ def test_pending_duplicate_submission_returns_conflict_without_second_evaluation
     assignment_id = client.get("/api/study/knowledge/today").json()["items"][0][
         "assignment_id"
     ]
-    repository.create_attempt(
+    repository.begin_attempt(
         owner_id="feishu:ou_owner",
         question_id="knowledge_network_http_001",
         assignment_id=assignment_id,

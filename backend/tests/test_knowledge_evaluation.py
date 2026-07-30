@@ -1,6 +1,7 @@
 import asyncio
 import json
-from datetime import date, datetime
+import sqlite3
+from datetime import date, datetime, timedelta, timezone
 
 from app.models.interview_knowledge import (
     KnowledgeAnswerSource,
@@ -14,15 +15,21 @@ from app.models.interview_knowledge import (
 from app.repositories.interview_knowledge_repository import (
     InMemoryInterviewKnowledgeRepository,
 )
+from app.repositories.sqlite_interview_knowledge_repository import (
+    SQLiteInterviewKnowledgeRepository,
+)
 from app.services.knowledge_catalog import load_knowledge_catalog
 from app.services.knowledge_evaluation import KnowledgeEvaluationService
-from app.services.knowledge_practice import KnowledgePracticeWorkflow
+from app.services.knowledge_practice import (
+    KnowledgePracticeWorkflow,
+    KnowledgeSubmissionInProgressError,
+)
 from app.services.llm_service import LLMResult
 
 
 class FakeLLMService:
     def __init__(self, payload: dict) -> None:
-        self.payload = payload
+        self.payload = {"factual_errors": [], **payload}
 
     async def generate_text(self, *args, **kwargs) -> LLMResult:
         return LLMResult(
@@ -134,6 +141,88 @@ def test_evaluation_accepts_deepseek_evidence_object() -> None:
     assert len(result.evidence) == 4
 
 
+def test_major_factual_error_caps_score_even_when_rubric_points_are_matched() -> None:
+    question = load_knowledge_catalog().questions[0]
+    answer = (
+        "HTTP/1.1 支持持久连接、Host、缓存增强和分块传输，"
+        "但是每个请求完成后都必须关闭 TCP 连接。"
+    )
+    service = KnowledgeEvaluationService(
+        FakeLLMService(
+            {
+                "matched_required_point_ids": [
+                    "http11_required_1",
+                    "http11_required_2",
+                    "http11_required_3",
+                    "http11_required_4",
+                ],
+                "matched_bonus_point_ids": [],
+                "triggered_misconception_ids": [],
+                "factual_errors": [
+                    {
+                        "quote": "每个请求完成后都必须关闭 TCP 连接",
+                        "explanation": "HTTP/1.1 默认保持连接，不要求每次请求后关闭。",
+                        "severity": "major",
+                    }
+                ],
+                "evidence": {
+                    "http11_required_1": "支持持久连接",
+                    "http11_required_2": "Host",
+                    "http11_required_3": "缓存增强",
+                    "http11_required_4": "分块传输",
+                },
+                "organization_score": 10,
+                "clarity_score": 10,
+                "feedback": "核心机制存在矛盾。",
+                "suggested_improvement": "说明默认持久连接及关闭条件。",
+            }
+        )
+    )
+
+    result = asyncio.run(service.evaluate(question, answer))
+
+    assert result.score == 59
+    assert result.accuracy_score == 0
+    assert [item.to_dict() for item in result.factual_errors] == [
+        {
+            "quote": "每个请求完成后都必须关闭 TCP 连接",
+            "explanation": "HTTP/1.1 默认保持连接，不要求每次请求后关闭。",
+            "severity": "major",
+        }
+    ]
+
+
+def test_factual_error_without_verbatim_answer_evidence_is_ignored() -> None:
+    question = load_knowledge_catalog().questions[0]
+    answer = "HTTP/1.1 默认使用持久连接。"
+    service = KnowledgeEvaluationService(
+        FakeLLMService(
+            {
+                "matched_required_point_ids": ["http11_required_1"],
+                "matched_bonus_point_ids": [],
+                "triggered_misconception_ids": [],
+                "factual_errors": [
+                    {
+                        "quote": "用户没有说过的错误结论",
+                        "explanation": "这条错误是模型臆造的。",
+                        "severity": "critical",
+                    }
+                ],
+                "evidence": {"http11_required_1": "默认使用持久连接"},
+                "organization_score": 5,
+                "clarity_score": 8,
+                "feedback": "命中持久连接。",
+                "suggested_improvement": "继续补充。",
+            }
+        )
+    )
+
+    result = asyncio.run(service.evaluate(question, answer))
+
+    assert result.factual_errors == []
+    assert result.score == 48
+
+
 def test_evaluation_accepts_semantic_evidence_from_a_markdown_table_row() -> None:
     point = KnowledgeRubricPoint(
         id="tree_required_1",
@@ -199,6 +288,7 @@ def test_evaluation_retries_once_after_invalid_model_json() -> None:
         "matched_required_point_ids": ["http11_required_1"],
         "matched_bonus_point_ids": [],
         "triggered_misconception_ids": [],
+        "factual_errors": [],
         "evidence": {
             "http11_required_1": "默认复用 TCP 连接",
         },
@@ -224,6 +314,64 @@ def test_evaluation_retries_once_after_invalid_model_json() -> None:
     )
     assert result.score == 48
     assert result.matched_required_point_ids == ["http11_required_1"]
+
+
+def test_evaluation_retries_when_model_omits_factual_error_check() -> None:
+    question = load_knowledge_catalog().questions[0]
+    answer = "默认复用 TCP 连接。"
+    base_payload = {
+        "matched_required_point_ids": ["http11_required_1"],
+        "matched_bonus_point_ids": [],
+        "triggered_misconception_ids": [],
+        "evidence": {"http11_required_1": "默认复用 TCP 连接"},
+        "organization_score": 5,
+        "clarity_score": 8,
+        "feedback": "命中持久连接。",
+        "suggested_improvement": "继续补充其他改进。",
+    }
+    complete_payload = {**base_payload, "factual_errors": []}
+    llm_service = SequencedLLMService(
+        [json.dumps(base_payload), json.dumps(complete_payload)]
+    )
+
+    result = asyncio.run(KnowledgeEvaluationService(llm_service).evaluate(question, answer))
+
+    assert llm_service.call_count == 2
+    assert result.factual_errors == []
+
+
+def test_evaluation_retries_when_factual_error_shape_is_invalid() -> None:
+    question = load_knowledge_catalog().questions[0]
+    answer = "默认复用 TCP 连接。"
+    base_payload = {
+        "matched_required_point_ids": ["http11_required_1"],
+        "matched_bonus_point_ids": [],
+        "triggered_misconception_ids": [],
+        "evidence": {"http11_required_1": "默认复用 TCP 连接"},
+        "organization_score": 5,
+        "clarity_score": 8,
+        "feedback": "命中持久连接。",
+        "suggested_improvement": "继续补充其他改进。",
+    }
+    invalid_payload = {
+        **base_payload,
+        "factual_errors": [
+            {
+                "quote": "默认复用 TCP 连接",
+                "explanation": "错误的严重级别不应被静默忽略。",
+                "severity": "high",
+            }
+        ],
+    }
+    complete_payload = {**base_payload, "factual_errors": []}
+    llm_service = SequencedLLMService(
+        [json.dumps(invalid_payload), json.dumps(complete_payload)]
+    )
+
+    result = asyncio.run(KnowledgeEvaluationService(llm_service).evaluate(question, answer))
+
+    assert llm_service.call_count == 2
+    assert result.factual_errors == []
 
 
 def test_practice_workflow_saves_result_and_schedules_review() -> None:
@@ -276,6 +424,189 @@ def test_practice_workflow_saves_result_and_schedules_review() -> None:
     assert outcome.assignment.status.value == "completed"
     assert outcome.assignment.attempt_id == outcome.attempt.id
     assert repository.get_attempt("feishu:ou_owner", outcome.attempt.id).score == 70
+
+
+def test_assignment_allows_only_one_evaluation_at_a_time() -> None:
+    class BlockingLLMService:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.call_count = 0
+
+        async def generate_text(self, *args, **kwargs) -> LLMResult:
+            self.call_count += 1
+            self.started.set()
+            await self.release.wait()
+            return LLMResult(
+                "fake",
+                "fake-model",
+                json.dumps(
+                    {
+                        "matched_required_point_ids": ["http11_required_1"],
+                        "matched_bonus_point_ids": [],
+                        "triggered_misconception_ids": [],
+                        "factual_errors": [],
+                        "evidence": {
+                            "http11_required_1": "默认持久连接",
+                        },
+                        "organization_score": 5,
+                        "clarity_score": 8,
+                        "feedback": "命中持久连接。",
+                        "suggested_improvement": "继续补充。",
+                    },
+                    ensure_ascii=False,
+                ),
+                {},
+            )
+
+    async def scenario() -> None:
+        repository = InMemoryInterviewKnowledgeRepository(
+            questions=load_knowledge_catalog().questions
+        )
+        assignment = repository.create_assignment(
+            owner_id="feishu:ou_owner",
+            question_id="knowledge_network_http_001",
+            assigned_on=date(2026, 7, 27),
+            assignment_type=KnowledgeAssignmentType.NEW,
+            recommendation_reason="验证并发提交",
+        )
+        llm = BlockingLLMService()
+        workflow = KnowledgePracticeWorkflow(
+            repository, KnowledgeEvaluationService(llm)
+        )
+        first = asyncio.create_task(
+            workflow.submit_answer(
+                owner_id="feishu:ou_owner",
+                assignment_id=assignment.id,
+                answer_text="默认持久连接。",
+                answer_source=KnowledgeAnswerSource.TEXT,
+                submitted_at=datetime(2026, 7, 27, 9, 0),
+                submission_id="submission-first-device",
+            )
+        )
+        await llm.started.wait()
+        try:
+            await workflow.submit_answer(
+                owner_id="feishu:ou_owner",
+                assignment_id=assignment.id,
+                answer_text="默认持久连接。",
+                answer_source=KnowledgeAnswerSource.TEXT,
+                submitted_at=datetime(2026, 7, 27, 9, 0, 1),
+                submission_id="submission-second-device",
+            )
+            raise AssertionError("concurrent evaluation should have been rejected")
+        except KnowledgeSubmissionInProgressError:
+            pass
+        finally:
+            llm.release.set()
+        outcome = await first
+        assert outcome.progress.attempt_count == 1
+        assert llm.call_count == 1
+        assert len(repository.attempts) == 1
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_evaluation_releases_assignment_lease() -> None:
+    class CancelledEvaluationService:
+        async def evaluate(self, question, answer_text):
+            raise asyncio.CancelledError
+
+    repository = InMemoryInterviewKnowledgeRepository(
+        questions=load_knowledge_catalog().questions
+    )
+    assignment = repository.create_assignment(
+        owner_id="feishu:ou_owner",
+        question_id="knowledge_network_http_001",
+        assigned_on=date(2026, 7, 27),
+        assignment_type=KnowledgeAssignmentType.NEW,
+        recommendation_reason="验证取消清理",
+    )
+    workflow = KnowledgePracticeWorkflow(repository, CancelledEvaluationService())
+
+    try:
+        asyncio.run(
+            workflow.submit_answer(
+                owner_id="feishu:ou_owner",
+                assignment_id=assignment.id,
+                answer_text="默认持久连接。",
+                answer_source=KnowledgeAnswerSource.TEXT,
+                submitted_at=datetime(2026, 7, 27, 9, 0),
+                submission_id="submission-cancelled",
+            )
+        )
+        raise AssertionError("cancelled evaluation should propagate cancellation")
+    except asyncio.CancelledError:
+        pass
+
+    stored_assignment = repository.list_assignments("feishu:ou_owner")[0]
+    stored_attempt = repository.get_attempt_by_submission_id(
+        "feishu:ou_owner", "submission-cancelled"
+    )
+    assert stored_assignment.active_attempt_id is None
+    assert stored_attempt is not None
+    assert stored_attempt.evaluation_status == "failed"
+
+
+def test_workflow_resumes_same_submission_after_expired_sqlite_lease(tmp_path) -> None:
+    database = str(tmp_path / "offerpilot.db")
+    repository = SQLiteInterviewKnowledgeRepository(database)
+    assignment = repository.create_assignment(
+        owner_id="feishu:ou_owner",
+        question_id="knowledge_network_http_001",
+        assigned_on=date(2026, 7, 27),
+        assignment_type=KnowledgeAssignmentType.NEW,
+        recommendation_reason="验证工作流崩溃恢复",
+    )
+    original = repository.begin_attempt(
+        owner_id="feishu:ou_owner",
+        question_id=assignment.question_id,
+        assignment_id=assignment.id,
+        answer_text="默认持久连接。",
+        answer_source=KnowledgeAnswerSource.TEXT,
+        submitted_at=datetime.now(timezone.utc),
+        submission_id="submission-workflow-crash-recovery",
+    )
+    expired_at = datetime.now(timezone.utc) - timedelta(minutes=16)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """UPDATE knowledge_assignments SET active_attempt_started_at=?
+               WHERE id=?""",
+            (expired_at.isoformat(), assignment.id),
+        )
+        connection.commit()
+    workflow = KnowledgePracticeWorkflow(
+        repository,
+        KnowledgeEvaluationService(
+            FakeLLMService(
+                {
+                    "matched_required_point_ids": ["http11_required_1"],
+                    "matched_bonus_point_ids": [],
+                    "triggered_misconception_ids": [],
+                    "evidence": {"http11_required_1": "默认持久连接"},
+                    "organization_score": 5,
+                    "clarity_score": 8,
+                    "feedback": "命中持久连接。",
+                    "suggested_improvement": "继续补充。",
+                }
+            )
+        ),
+    )
+
+    outcome = asyncio.run(
+        workflow.submit_answer(
+            owner_id="feishu:ou_owner",
+            assignment_id=assignment.id,
+            answer_text="默认持久连接。",
+            answer_source=KnowledgeAnswerSource.TEXT,
+            submitted_at=datetime.now(timezone.utc),
+            submission_id="submission-workflow-crash-recovery",
+        )
+    )
+
+    assert outcome.attempt.id == original.id
+    assert outcome.progress.attempt_count == 1
+    assert outcome.assignment.status.value == "completed"
 
 
 def test_skipped_answer_is_recorded_without_calling_llm() -> None:
