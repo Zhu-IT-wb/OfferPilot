@@ -1,5 +1,6 @@
 import hashlib
 import json
+import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
@@ -20,6 +21,7 @@ from app.repositories.offerpilot_repository import (
 )
 from app.repositories.sqlite_offerpilot_repository import SQLiteOfferPilotRepository
 from app.repositories.sqlite_leetcode_repository import SQLiteLeetCodeRepository
+from app.repositories.project_training_repository import ProjectTrainingRepository
 from app.schemas.agent import AgentActionName
 from app.schemas.tool import ToolResult
 from app.services.bitable_event_subscription_service import ensure_bitable_event_subscription
@@ -31,6 +33,14 @@ from app.services.feishu_service import (
     parse_chinese_datetime,
 )
 from app.services.leetcode_catalog import load_hot100_snapshot
+from app.services.project_training import ProjectTrainingWorkflow
+from app.services.project_training_dependencies import (
+    get_default_project_training_repository,
+)
+from app.models.project_training import (
+    ProjectTrainingDifficulty,
+    ProjectTrainingSessionStatus,
+)
 from app.tools import leetcode_tools
 from app.tools.registry import ToolRegistry
 
@@ -81,6 +91,8 @@ def build_offerpilot_tool_registry(
     calendar_service: Any = _DEFAULT_EXTERNAL_SERVICE,
     bitable_service: Any = _DEFAULT_EXTERNAL_SERVICE,
     leetcode_repository: Optional[LeetCodeRepository] = None,
+    project_training_repository: Optional[ProjectTrainingRepository] = None,
+    dashboard_public_base_url: Optional[str] = None,
 ) -> ToolRegistry:
     selected_repository = repository or build_default_offerpilot_repository()
     selected_calendar_service = (
@@ -94,6 +106,14 @@ def build_offerpilot_tool_registry(
         else bitable_service
     )
     selected_leetcode_repository = leetcode_repository or build_default_leetcode_repository()
+    selected_project_training_repository = (
+        project_training_repository or get_default_project_training_repository()
+    )
+    selected_dashboard_base_url = (
+        dashboard_public_base_url
+        if dashboard_public_base_url is not None
+        else settings.dashboard_public_base_url
+    )
     registry = ToolRegistry()
 
     registry.register(
@@ -223,6 +243,42 @@ def build_offerpilot_tool_registry(
         mutating=False,
         optional_slots=["project", "role"],
         examples=["开始模拟面试，项目问云聚图库", "模拟 Java 后端一面"],
+    )
+    registry.register(
+        AgentActionName.START_PROJECT_TRAINING.value,
+        lambda arguments: start_project_training(
+            selected_project_training_repository,
+            arguments,
+            selected_dashboard_base_url,
+        ),
+        description="根据已保存的项目档案创建或恢复项目专项训练，并返回训练页面。",
+        mutating=True,
+        optional_slots=["project", "role", "difficulty"],
+        examples=["开始订单系统项目训练", "围绕 Agent 求职助手做项目深挖训练"],
+    )
+    registry.register(
+        AgentActionName.RESUME_PROJECT_TRAINING.value,
+        lambda arguments: resume_project_training(
+            selected_project_training_repository,
+            arguments,
+            selected_dashboard_base_url,
+        ),
+        description="恢复最近一场未完成的项目训练。",
+        mutating=False,
+        optional_slots=["project", "session_id"],
+        examples=["继续项目训练", "恢复订单系统项目训练"],
+    )
+    registry.register(
+        AgentActionName.GET_PROJECT_TRAINING_SUMMARY.value,
+        lambda arguments: get_project_training_summary(
+            selected_project_training_repository,
+            arguments,
+            selected_dashboard_base_url,
+        ),
+        description="查看最近完成的项目训练总结。",
+        mutating=False,
+        optional_slots=["project", "session_id"],
+        examples=["查看项目训练总结", "订单系统项目训练报告"],
     )
     return registry
 
@@ -2321,6 +2377,210 @@ def start_mock_interview(arguments: Dict[str, Any]) -> ToolResult:
         success=True,
         message=question,
         data={"first_question": question},
+    )
+
+
+def start_project_training(
+    repository: ProjectTrainingRepository,
+    arguments: Dict[str, Any],
+    dashboard_public_base_url: str,
+) -> ToolResult:
+    owner_id = _owner_id_from_arguments(arguments)
+    project, selection = _select_training_project(repository, owner_id, arguments)
+    if project is None:
+        return _project_selection_result(
+            AgentActionName.START_PROJECT_TRAINING,
+            selection,
+            dashboard_public_base_url,
+        )
+    active = next(
+        (
+            item
+            for item in repository.list_sessions(owner_id, project.id)
+            if item.status == ProjectTrainingSessionStatus.IN_PROGRESS
+        ),
+        None,
+    )
+    workflow = ProjectTrainingWorkflow(repository)
+    if active is not None:
+        outcome = workflow.resume(owner_id, active.id)
+        resumed = True
+    else:
+        raw_difficulty = str(arguments.get("difficulty") or "medium")
+        try:
+            difficulty = ProjectTrainingDifficulty(raw_difficulty)
+        except ValueError:
+            difficulty = ProjectTrainingDifficulty.MEDIUM
+        outcome = workflow.start(
+            owner_id=owner_id,
+            project_id=project.id,
+            creation_id=f"agent_{uuid.uuid4().hex}",
+            target_role=str(arguments.get("role") or project.target_role),
+            difficulty=difficulty,
+            max_turns=6,
+        )
+        resumed = False
+    launch_url = _project_training_url(dashboard_public_base_url, outcome.session.id)
+    verb = "继续" if resumed else "开始"
+    return ToolResult(
+        tool_name=AgentActionName.START_PROJECT_TRAINING.value,
+        success=True,
+        message=(
+            f"已为「{project.name}」{verb}项目训练。"
+            + (f"\n打开训练：{launch_url}" if launch_url else "\n请打开 OfferPilot 项目训练页。")
+        ),
+        data={
+            "project_id": project.id,
+            "project_name": project.name,
+            "session_id": outcome.session.id,
+            "current_turn_sequence": (
+                outcome.current_turn.sequence if outcome.current_turn else None
+            ),
+            "launch_url": launch_url,
+            "resumed": resumed,
+        },
+    )
+
+
+def resume_project_training(
+    repository: ProjectTrainingRepository,
+    arguments: Dict[str, Any],
+    dashboard_public_base_url: str,
+) -> ToolResult:
+    owner_id = _owner_id_from_arguments(arguments)
+    session_id = str(arguments.get("session_id") or "").strip()
+    sessions = repository.list_sessions(owner_id)
+    if session_id:
+        session = repository.get_session(owner_id, session_id)
+    else:
+        project_name = str(arguments.get("project") or "").strip().casefold()
+        projects = {item.id: item for item in repository.list_projects(owner_id, True)}
+        session = next(
+            (
+                item
+                for item in sessions
+                if item.status == ProjectTrainingSessionStatus.IN_PROGRESS
+                and (
+                    not project_name
+                    or (
+                        projects.get(item.project_id) is not None
+                        and project_name
+                        in projects[item.project_id].name.casefold()
+                    )
+                )
+            ),
+            None,
+        )
+    if session is None or session.status != ProjectTrainingSessionStatus.IN_PROGRESS:
+        return ToolResult(
+            tool_name=AgentActionName.RESUME_PROJECT_TRAINING.value,
+            success=False,
+            message="没有找到可继续的项目训练，请先选择项目开始一场训练。",
+            data={"launch_url": _projects_url(dashboard_public_base_url)},
+        )
+    project = repository.get_project(owner_id, session.project_id, session.project_version)
+    launch_url = _project_training_url(dashboard_public_base_url, session.id)
+    return ToolResult(
+        tool_name=AgentActionName.RESUME_PROJECT_TRAINING.value,
+        success=True,
+        message=f"继续「{project.name if project else '项目'}」训练：{launch_url}",
+        data={
+            "session_id": session.id,
+            "project_id": session.project_id,
+            "project_name": project.name if project else "历史项目",
+            "launch_url": launch_url,
+            "resumed": True,
+        },
+    )
+
+
+def get_project_training_summary(
+    repository: ProjectTrainingRepository,
+    arguments: Dict[str, Any],
+    dashboard_public_base_url: str,
+) -> ToolResult:
+    owner_id = _owner_id_from_arguments(arguments)
+    session_id = str(arguments.get("session_id") or "").strip()
+    session = repository.get_session(owner_id, session_id) if session_id else next(
+        (
+            item
+            for item in repository.list_sessions(owner_id)
+            if item.status == ProjectTrainingSessionStatus.COMPLETED
+        ),
+        None,
+    )
+    if session is None:
+        return ToolResult(
+            tool_name=AgentActionName.GET_PROJECT_TRAINING_SUMMARY.value,
+            success=False,
+            message="还没有已完成的项目训练总结。",
+            data={"launch_url": _projects_url(dashboard_public_base_url)},
+        )
+    summary = ProjectTrainingWorkflow(repository).summary(owner_id, session.id)
+    launch_url = _project_training_url(dashboard_public_base_url, session.id)
+    return ToolResult(
+        tool_name=AgentActionName.GET_PROJECT_TRAINING_SUMMARY.value,
+        success=True,
+        message=f"最近项目训练得分 {summary.overall_score}。查看完整总结：{launch_url}",
+        data={
+            "session_id": session.id,
+            "overall_score": summary.overall_score,
+            "recommended_topics": summary.recommended_topics,
+            "launch_url": launch_url,
+        },
+    )
+
+
+def _select_training_project(repository, owner_id: str, arguments: Dict[str, Any]):
+    projects = repository.list_projects(owner_id)
+    requested = str(arguments.get("project") or "").strip().casefold()
+    if requested:
+        matches = [
+            item
+            for item in projects
+            if requested == item.name.casefold()
+            or requested in item.name.casefold()
+            or item.name.casefold() in requested
+        ]
+    else:
+        return None, projects
+    return (matches[0], []) if len(matches) == 1 else (None, matches or projects)
+
+
+def _project_selection_result(action, projects, base_url: str) -> ToolResult:
+    url = _projects_url(base_url)
+    if not projects:
+        message = "还没有项目档案，请先创建项目后再开始训练。"
+    else:
+        names = "、".join(item.name for item in projects[:8])
+        message = f"请先选择要训练的项目：{names}。"
+    if url:
+        message += f"\n打开项目训练：{url}"
+    return ToolResult(
+        tool_name=action.value,
+        success=True,
+        message=message,
+        data={
+            "requires_selection": bool(projects),
+            "selection_slot": "project",
+            "candidates": [
+                {"id": item.id, "name": item.name, "target_role": item.target_role}
+                for item in projects[:8]
+            ],
+            "launch_url": url,
+        },
+    )
+
+
+def _projects_url(base_url: str) -> str:
+    return f"{base_url.rstrip('/')}/study/projects" if base_url else ""
+
+
+def _project_training_url(base_url: str, session_id: str) -> str:
+    if not base_url:
+        return ""
+    return (
+        f"{base_url.rstrip('/')}/study/projects/training?session_id={session_id}"
     )
 
 

@@ -133,6 +133,8 @@ class MessageRouter:
             return True
         if "模拟面试" in compact or "mockinterview" in compact:
             return True
+        if "项目训练" in compact or "项目深挖训练" in compact:
+            return True
         if any(word in compact for word in ("周复盘", "本周复盘", "周总结", "本周总结")):
             return True
         return False

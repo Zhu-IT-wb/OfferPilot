@@ -14,6 +14,11 @@ from app.api.routes.knowledge_dashboard import (
     api_router as knowledge_dashboard_api_router,
     router as knowledge_dashboard_router,
 )
+from app.api.routes.project_training_dashboard import (
+    api_router as project_training_api_router,
+    router as project_training_router,
+    training_api_router,
+)
 from app.core.config import Settings, settings
 from app.services.bitable_event_subscription_service import ensure_bitable_event_subscription
 from app.services.bitable_pull_sync_service import BitablePullSyncService
@@ -57,6 +62,17 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         tags=["knowledge-dashboard"],
     )
     app.include_router(knowledge_dashboard_router, tags=["knowledge-dashboard"])
+    app.include_router(
+        project_training_api_router,
+        prefix=app_settings.api_prefix,
+        tags=["project-training"],
+    )
+    app.include_router(project_training_router, tags=["project-training"])
+    app.include_router(
+        training_api_router,
+        prefix=app_settings.api_prefix,
+        tags=["project-training"],
+    )
 
     # 在应用启动时启动多维表格定时拉取同步任务。
     @app.on_event("startup")

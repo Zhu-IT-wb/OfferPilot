@@ -9,9 +9,9 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from app.api.routes.leetcode_dashboard import (
-    _dashboard_open_id,
-    _require_dashboard_open_id,
+from app.services.dashboard_session import (
+    dashboard_open_id,
+    require_dashboard_open_id,
 )
 from app.models.interview_knowledge import (
     KnowledgeAnswerSource,
@@ -43,28 +43,22 @@ from app.services.speech_transcription import (
     SpeechTranscriptionError,
     create_speech_transcription_service,
 )
+from app.services.speech_http import (
+    AUDIO_FORMATS,
+    MAX_AUDIO_BYTES,
+    MAX_AUDIO_DURATION_MS,
+    audio_duration_ms,
+    read_limited_audio,
+    transcribe_audio_request,
+)
 
 
 router = APIRouter(prefix="/study/knowledge")
 api_router = APIRouter(prefix="/study/knowledge")
 _HTML_PATH = Path(__file__).resolve().parents[2] / "web" / "knowledge_dashboard.html"
-_MAX_BAILIAN_DATA_URI_BYTES = 10 * 1024 * 1024
-# Base64 expands input by roughly 4/3. Keep a small margin for the Data URI prefix.
-_MAX_AUDIO_BYTES = ((_MAX_BAILIAN_DATA_URI_BYTES - 64) // 4) * 3
-_MAX_AUDIO_DURATION_MS = 180_000
-_AUDIO_FORMATS = {
-    "audio/webm": "webm",
-    "audio/mp4": "mp4",
-    "audio/x-m4a": "m4a",
-    "audio/m4a": "m4a",
-    "audio/ogg": "ogg",
-    "audio/opus": "opus",
-    "audio/wav": "wav",
-    "audio/x-wav": "wav",
-    "audio/mpeg": "mp3",
-    "audio/mp3": "mp3",
-    "audio/aac": "aac",
-}
+_MAX_AUDIO_BYTES = MAX_AUDIO_BYTES
+_MAX_AUDIO_DURATION_MS = MAX_AUDIO_DURATION_MS
+_AUDIO_FORMATS = AUDIO_FORMATS
 
 
 class KnowledgeAnswerRequest(BaseModel):
@@ -83,7 +77,7 @@ class KnowledgePracticeRequest(BaseModel):
 
 @router.get("")
 async def show_knowledge_dashboard(request: Request):
-    if _dashboard_open_id(request) is None:
+    if dashboard_open_id(request) is None:
         return RedirectResponse(
             url="/leetcode/dashboard/auth/start?redirect=/study/knowledge"
         )
@@ -92,7 +86,7 @@ async def show_knowledge_dashboard(request: Request):
 
 @api_router.get("/today")
 async def get_knowledge_today(request: Request) -> Dict[str, Any]:
-    open_id = _require_dashboard_open_id(request)
+    open_id = require_dashboard_open_id(request)
     owner_id = f"feishu:{open_id}"
     repository = get_default_knowledge_repository()
     repository.save_subscription(
@@ -113,7 +107,7 @@ async def get_knowledge_materials(
     module_id: str = Query(default="", max_length=100),
     chapter_id: str = Query(default="", max_length=100),
 ) -> Dict[str, Any]:
-    _require_dashboard_open_id(request)
+    require_dashboard_open_id(request)
     repository = get_default_knowledge_repository()
     questions = [
         question
@@ -159,7 +153,7 @@ async def get_knowledge_catalog_questions(
     limit: int = Query(default=100, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> Dict[str, Any]:
-    owner_id = f"feishu:{_require_dashboard_open_id(request)}"
+    owner_id = f"feishu:{require_dashboard_open_id(request)}"
     repository = get_default_knowledge_repository()
     questions = [
         question
@@ -186,7 +180,7 @@ async def get_knowledge_catalog_questions(
 async def start_knowledge_practice(
     request: Request, payload: KnowledgePracticeRequest
 ) -> Dict[str, Any]:
-    owner_id = f"feishu:{_require_dashboard_open_id(request)}"
+    owner_id = f"feishu:{require_dashboard_open_id(request)}"
     repository = get_default_knowledge_repository()
     questions = repository.list_questions()
     if payload.question_id:
@@ -229,7 +223,7 @@ async def start_knowledge_practice(
 async def submit_knowledge_answer(
     request: Request, payload: KnowledgeAnswerRequest
 ) -> Dict[str, Any]:
-    owner_id = f"feishu:{_require_dashboard_open_id(request)}"
+    owner_id = f"feishu:{require_dashboard_open_id(request)}"
     repository = get_default_knowledge_repository()
     workflow = KnowledgePracticeWorkflow(
         repository,
@@ -284,70 +278,17 @@ async def transcribe_knowledge_answer(
     request: Request,
     question_id: str = Query(..., min_length=1, max_length=160),
 ) -> Dict[str, str]:
-    _require_dashboard_open_id(request)
+    require_dashboard_open_id(request)
     repository = get_default_knowledge_repository()
     question = repository.get_question(question_id)
     if question is None:
         raise HTTPException(status_code=404, detail="Knowledge question was not found.")
 
-    mime_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    audio_format = _AUDIO_FORMATS.get(mime_type)
-    if audio_format is None:
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail=(
-                "不支持这种录音格式，请改用 WebM、MP4、M4A、Ogg、WAV、MP3 或 AAC。"
-            ),
-        )
-    _audio_duration_ms(request)
-    content_length = request.headers.get("content-length")
-    if content_length:
-        try:
-            if int(content_length) > _MAX_AUDIO_BYTES:
-                raise HTTPException(
-                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                    detail=(
-                        "录音文件不能超过约 7.5 MB（Base64 输入上限为 10 MB）。"
-                    ),
-                )
-        except ValueError:
-            pass
-    audio = await _read_limited_audio(request)
-    if not audio:
-        raise HTTPException(status_code=400, detail="录音内容为空，请重新录制。")
-
-    context = _speech_context(question)
-    try:
-        service = get_speech_transcription_service(request)
-        result = await service.transcribe(
-            audio=audio,
-            audio_format=audio_format,
-            mime_type=mime_type,
-            context=context,
-        )
-        if (
-            result.duration_seconds is not None
-            and result.duration_seconds * 1000 > _MAX_AUDIO_DURATION_MS
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="语音服务检测到录音超过 3 分钟，请缩短后重新录制。",
-            )
-    except SpeechTranscriptionConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        ) from exc
-    except NoSpeechDetectedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=str(exc),
-        ) from exc
-    except SpeechTranscriptionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        ) from exc
+    result = await transcribe_audio_request(
+        request,
+        service=get_speech_transcription_service(request),
+        context=_speech_context(question),
+    )
     return {
         "transcript": result.transcript,
         "provider": result.provider,
@@ -360,7 +301,7 @@ async def get_knowledge_jsapi_config(
     request: Request,
     url: str = Query(..., min_length=1, max_length=2048),
 ) -> Dict[str, Any]:
-    _require_dashboard_open_id(request)
+    require_dashboard_open_id(request)
     page_url = url.split("#", 1)[0]
     _validate_knowledge_page_url(request, page_url)
     try:
@@ -417,35 +358,11 @@ def _validate_knowledge_page_url(request: Request, page_url: str) -> None:
 
 
 def _audio_duration_ms(request: Request) -> int:
-    raw_duration = request.headers.get("x-audio-duration-ms", "")
-    try:
-        duration_ms = int(raw_duration)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="缺少有效的录音时长，请重新录制。",
-        ) from exc
-    if duration_ms <= 0:
-        raise HTTPException(status_code=400, detail="录音时长必须大于 0。")
-    if duration_ms > _MAX_AUDIO_DURATION_MS:
-        raise HTTPException(status_code=400, detail="单次语音回答不能超过 3 分钟。")
-    return duration_ms
+    return audio_duration_ms(request)
 
 
 async def _read_limited_audio(request: Request) -> bytes:
-    chunks = []
-    total_bytes = 0
-    async for chunk in request.stream():
-        total_bytes += len(chunk)
-        if total_bytes > _MAX_AUDIO_BYTES:
-            raise HTTPException(
-                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                detail=(
-                    "录音文件不能超过约 7.5 MB（Base64 输入上限为 10 MB）。"
-                ),
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
+    return await read_limited_audio(request)
 
 
 def _speech_context(question) -> str:

@@ -141,6 +141,30 @@ class RuleBasedAgentPlanner:
                 reason="mock_interview",
             )
 
+        if intent == IntentName.START_PROJECT_TRAINING:
+            return self._plan(
+                classification=classification,
+                action=AgentActionName.START_PROJECT_TRAINING,
+                reply="正在创建或恢复项目训练会话。",
+                reason="start_project_training",
+            )
+
+        if intent == IntentName.RESUME_PROJECT_TRAINING:
+            return self._plan(
+                classification=classification,
+                action=AgentActionName.RESUME_PROJECT_TRAINING,
+                reply="正在查找未完成的项目训练。",
+                reason="resume_project_training",
+            )
+
+        if intent == IntentName.GET_PROJECT_TRAINING_SUMMARY:
+            return self._plan(
+                classification=classification,
+                action=AgentActionName.GET_PROJECT_TRAINING_SUMMARY,
+                reply="正在读取最近的项目训练总结。",
+                reason="get_project_training_summary",
+            )
+
         if intent == IntentName.ANSWER_QUESTION:
             return self._plan(
                 classification=classification,
@@ -435,6 +459,9 @@ class AgentPlanner:
 - update_application
 - add_interview_review
 - start_mock_interview
+- start_project_training
+- resume_project_training
+- get_project_training_summary
 - answer_question
 - ask_help
 - summarize_week
@@ -455,6 +482,9 @@ class AgentPlanner:
 - postpone_task
 - create_interview_review
 - start_mock_interview
+- start_project_training
+- resume_project_training
+- get_project_training_summary
 - record_answer
 - answer_help
 - summarize_week

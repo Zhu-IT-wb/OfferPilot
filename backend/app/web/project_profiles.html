@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>OfferPilot 项目训练</title>
+  <link rel="stylesheet" href="/study/projects/assets/project_training.css">
+</head>
+<body>
+  <header class="topbar"><div><strong>OfferPilot</strong><span>面试训练</span></div><nav><a href="/study/knowledge">八股训练</a><a class="active" href="/study/projects">项目训练</a></nav></header>
+  <main class="layout">
+    <section class="panel intro"><p class="eyebrow">PROJECT INTERVIEW</p><h1>把真实项目讲深、讲清楚</h1><p>保存项目事实，AI 面试官会围绕个人贡献、技术深度、指标和方案取舍连续追问。</p><button class="primary" id="new-project">新建项目档案</button></section>
+    <section><div class="section-title"><div><h2>项目档案</h2><p>历史训练固定引用当时版本，修改档案不会改写旧报告。</p></div></div><div id="projects" class="project-grid"><div class="empty">正在加载…</div></div></section>
+    <section><div class="section-title"><div><h2>训练历史</h2><p>可以继续中断的训练，或查看已完成总结。</p></div></div><div id="history" class="history-list"></div></section>
+  </main>
+  <dialog id="editor"><form method="dialog" id="project-form"><div class="dialog-head"><h2 id="editor-title">新建项目</h2><button value="cancel" class="ghost">关闭</button></div><input type="hidden" id="project-id">
+    <label>项目名称<input id="name" required maxlength="120"></label><label>目标岗位<input id="target-role" maxlength="120" placeholder="Java 后端工程师"></label>
+    <label>项目背景<textarea id="background" rows="3"></textarea></label><label>个人职责（每行一项）<textarea id="responsibilities" rows="3"></textarea></label>
+    <label>技术栈（逗号或换行分隔）<textarea id="tech-stack" rows="2"></textarea></label><label>核心架构<textarea id="architecture" rows="3"></textarea></label>
+    <label>关键决策（每行一项）<textarea id="key-decisions" rows="3"></textarea></label><label>技术难点（每行一项）<textarea id="technical-challenges" rows="3"></textarea></label>
+    <label>量化指标（每行一项）<textarea id="metrics" rows="3"></textarea></label><label>项目结果（每行一项）<textarea id="outcomes" rows="3"></textarea></label>
+    <label>简历描述<textarea id="resume-description" rows="3"></textarea></label><label>补充 Markdown<textarea id="supplemental-text" rows="6"></textarea></label>
+    <p id="form-error" class="error"></p><div class="actions"><button type="button" id="save-project" class="primary">保存项目档案</button></div>
+  </form></dialog>
+  <script src="/study/projects/assets/web_common.js"></script>
+  <script src="/study/projects/assets/project_profiles.js"></script>
+</body></html>

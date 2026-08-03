@@ -30,6 +30,9 @@ Allowed intents:
   pass/fail, offer, or a newly scheduled interview for an existing application.
 - add_interview_review: user submits or starts an interview review.
 - start_mock_interview: user wants to start a mock interview.
+- start_project_training: user wants to start a focused interview drill for one saved project.
+- resume_project_training: user wants to continue an unfinished project training session.
+- get_project_training_summary: user wants to view a completed project training report.
 - answer_question: user is answering an interview question or task prompt.
 - ask_help: user asks for general help or explanation.
 - summarize_week: user wants a weekly review.
@@ -152,6 +155,27 @@ Slot guidance:
                 self._extract_application_slots(text),
             )
 
+        if self._is_project_training_summary(compact):
+            return self._result(
+                IntentName.GET_PROJECT_TRAINING_SUMMARY,
+                0.86,
+                self._extract_project_training_slots(text),
+            )
+
+        if self._is_resume_project_training(compact):
+            return self._result(
+                IntentName.RESUME_PROJECT_TRAINING,
+                0.88,
+                self._extract_project_training_slots(text),
+            )
+
+        if self._is_project_training(compact):
+            return self._result(
+                IntentName.START_PROJECT_TRAINING,
+                0.9,
+                self._extract_project_training_slots(text),
+            )
+
         if self._is_mock_interview(compact):
             return self._result(
                 IntentName.START_MOCK_INTERVIEW,
@@ -271,6 +295,20 @@ Slot guidance:
     @staticmethod
     def _is_mock_interview(compact: str) -> bool:
         return "模拟面试" in compact or "mockinterview" in compact
+
+    @staticmethod
+    def _is_project_training(compact: str) -> bool:
+        return "项目训练" in compact or "项目深挖训练" in compact
+
+    @staticmethod
+    def _is_resume_project_training(compact: str) -> bool:
+        return any(word in compact for word in ("继续项目训练", "恢复项目训练"))
+
+    @staticmethod
+    def _is_project_training_summary(compact: str) -> bool:
+        return "项目训练" in compact and any(
+            word in compact for word in ("总结", "报告", "成绩")
+        )
 
     # 判断 weekly summary 是否成立。
     @staticmethod
@@ -601,6 +639,28 @@ Slot guidance:
         if project_match:
             slots["project"] = project_match.group(1).strip()
 
+        return slots
+
+    def _extract_project_training_slots(self, text: str) -> Dict[str, Any]:
+        slots: Dict[str, Any] = {}
+        patterns = [
+            r"(?:开始|继续|恢复|重新)?\s*(.+?)项目(?:深挖)?训练",
+            r"围绕\s*(.+?)\s*(?:开始)?项目(?:深挖)?训练",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                project = match.group(1).strip(" ，,。；;：:")
+                if project and project not in {"一个", "我的", "这个"}:
+                    slots["project"] = project
+                    break
+        role = self._extract_role(text)
+        if role:
+            slots["role"] = role
+        if "高级" in text or "困难" in text:
+            slots["difficulty"] = "advanced"
+        elif "基础" in text or "简单" in text:
+            slots["difficulty"] = "basic"
         return slots
 
     # 从输入数据中提取 role。

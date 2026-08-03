@@ -11,6 +11,7 @@ from app.repositories.leetcode_repository import InMemoryLeetCodeRepository
 from app.repositories.offerpilot_repository import InMemoryOfferPilotRepository
 from app.schemas.agent import AgentActionName, AgentResponse
 from app.schemas.intent import IntentName
+from app.schemas.tool import ToolResult
 from app.services.feishu_service import FeishuBitableRecordResult
 from app.services.feishu_service import FeishuMessageResult, FeishuRequestError
 from app.services.leetcode_catalog import load_hot100_snapshot
@@ -154,6 +155,83 @@ def test_feishu_today_leetcode_reply_is_an_interactive_card(monkeypatch) -> None
     assert response.json()["reply_sent"] is True
     assert cards[0][0] == "ou_card"
     assert cards[0][1]["header"]["title"]["content"] == "🎯 今日 LeetCode · 3 题"
+
+
+def test_feishu_project_training_reply_is_an_interactive_launch_card(monkeypatch) -> None:
+    _disable_feishu_token(monkeypatch)
+    cards = []
+
+    class FakeAgentOrchestrator:
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
+            return AgentResponse(
+                intent=IntentName.START_PROJECT_TRAINING,
+                confidence=1.0,
+                action=AgentActionName.START_PROJECT_TRAINING,
+                reply="已创建项目训练。",
+                tool_result=ToolResult(
+                    tool_name="start_project_training",
+                    success=True,
+                    message="已创建项目训练。",
+                    data={
+                        "project_name": "高并发订单系统",
+                        "session_id": "project_session_123",
+                        "launch_url": "https://offerpilot.example.com/study/projects/training?session_id=project_session_123",
+                        "resumed": False,
+                    },
+                ),
+            )
+
+    class FakeFeishuMessageService:
+        def is_configured(self):
+            return True
+
+        async def send_interactive_message(self, receive_id, card):
+            cards.append((receive_id, card))
+            return FeishuMessageResult(message_id="om_project", raw_response={"code": 0})
+
+    monkeypatch.setattr(feishu, "AgentOrchestrator", FakeAgentOrchestrator)
+    monkeypatch.setattr(feishu, "FeishuMessageService", FakeFeishuMessageService)
+    client = TestClient(create_app(Settings(debug_routes_enabled=False)))
+
+    response = client.post(
+        "/api/feishu/events",
+        json={
+            "header": {"event_type": "im.message.receive_v1"},
+            "event": {
+                "sender": {"sender_id": {"open_id": "ou_project"}},
+                "message": {"message_type": "text", "content": {"text": "开始项目训练"}},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert cards[0][1]["header"]["title"]["content"] == "🎙 项目训练已准备好"
+    button = cards[0][1]["elements"][-1]["actions"][0]
+    assert button["text"]["content"] == "进入训练"
+    assert "project_session_123" in button["url"]
+
+
+def test_feishu_project_selection_card_has_one_action_per_candidate() -> None:
+    card = feishu._build_project_training_card(
+        AgentActionName.START_PROJECT_TRAINING,
+        ToolResult(
+            tool_name="start_project_training",
+            success=True,
+            message="请选择项目。",
+            data={
+                "requires_selection": True,
+                "launch_url": "https://offerpilot.example.com/study/projects",
+                "candidates": [
+                    {"id": "project_order", "name": "订单系统"},
+                    {"id": "project_agent", "name": "AI Agent"},
+                ],
+            },
+        ),
+    )
+
+    actions = card["elements"][-1]["actions"]
+    assert [item["text"]["content"] for item in actions] == ["订单系统", "AI Agent"]
+    assert actions[0]["url"].endswith("start_project_id=project_order")
 
 
 def test_feishu_card_button_records_leetcode_result(monkeypatch) -> None:

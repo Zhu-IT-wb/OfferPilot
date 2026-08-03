@@ -18,6 +18,10 @@ from app.services.leetcode_dashboard_auth import (
     FeishuDashboardAuthError,
     FeishuDashboardAuthService,
 )
+from app.services.dashboard_session import (
+    dashboard_open_id,
+    require_dashboard_open_id,
+)
 from app.services.leetcode_recommendation import LeetCodeRecommendationWorkflow
 from app.tools.offerpilot_tools import get_default_leetcode_repository
 
@@ -230,32 +234,21 @@ def _is_secure_request(request: Request) -> bool:
 
 
 def _dashboard_open_id(request: Request) -> Optional[str]:
-    token = request.cookies.get("offerpilot_dashboard_session")
-    if not token:
-        return None
-    app_settings = request.app.state.settings
-    session_secret = app_settings.dashboard_session_secret or app_settings.feishu_app_secret
-    try:
-        payload = DashboardTokenSigner(session_secret).verify(
-            token,
-            purpose="dashboard_session",
-        )
-    except DashboardTokenError:
-        return None
-    open_id = payload.get("open_id")
-    return open_id if isinstance(open_id, str) and open_id else None
+    return dashboard_open_id(request)
 
 
 def _require_dashboard_open_id(request: Request) -> str:
-    open_id = _dashboard_open_id(request)
-    if open_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Dashboard session is missing or expired.",
-        )
-    return open_id
+    return require_dashboard_open_id(request)
 
 
 def _safe_dashboard_redirect(value: object) -> str:
-    allowed = {"/leetcode/dashboard", "/study/knowledge"}
-    return value if isinstance(value, str) and value in allowed else "/leetcode/dashboard"
+    allowed = {"/leetcode/dashboard", "/study/knowledge", "/study/projects"}
+    if isinstance(value, str) and value in allowed:
+        return value
+    if isinstance(value, str) and value.startswith(
+        "/study/projects/training?session_id=project_session_"
+    ):
+        session_id = value.split("?session_id=", 1)[1]
+        if session_id.replace("_", "").isalnum() and len(session_id) <= 160:
+            return value
+    return "/leetcode/dashboard"

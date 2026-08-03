@@ -25,7 +25,7 @@ where = ["."]
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["web/*.html"]
+app = ["web/*.html", "web/*.css", "web/*.js"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

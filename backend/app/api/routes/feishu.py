@@ -5,6 +5,7 @@ from datetime import datetime
 from hmac import compare_digest
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, status
@@ -105,6 +106,7 @@ async def handle_feishu_event(payload: Dict[str, Any]):
         user_id=user_id,
         text=agent_response.reply,
         action=agent_response.action,
+        tool_result=agent_response.tool_result,
     )
     if reply_status["sent"]:
         logger.info(
@@ -146,6 +148,7 @@ async def _send_agent_reply(
     user_id: Optional[str],
     text: str,
     action: AgentActionName,
+    tool_result=None,
 ) -> Dict[str, Any]:
     if not user_id:
         return {
@@ -173,6 +176,15 @@ async def _send_agent_reply(
                 receive_id=user_id,
                 card=card,
             )
+        elif action in {
+            AgentActionName.START_PROJECT_TRAINING,
+            AgentActionName.RESUME_PROJECT_TRAINING,
+            AgentActionName.GET_PROJECT_TRAINING_SUMMARY,
+        } and tool_result is not None:
+            result = await service.send_interactive_message(
+                receive_id=user_id,
+                card=_build_project_training_card(action, tool_result),
+            )
         else:
             result = await service.send_text_message(receive_id=user_id, text=text)
     except (FeishuConfigurationError, FeishuRequestError) as exc:
@@ -184,6 +196,73 @@ async def _send_agent_reply(
     return {
         "sent": True,
         "message_id": result.message_id,
+    }
+
+
+def _build_project_training_card(action, tool_result) -> Dict[str, Any]:
+    data = tool_result.data
+    launch_url = str(data.get("launch_url") or "")
+    project_name = str(data.get("project_name") or "项目专项训练")
+    if action == AgentActionName.GET_PROJECT_TRAINING_SUMMARY:
+        title = "📊 项目训练总结"
+        button_text = "查看总结"
+    elif data.get("requires_selection"):
+        title = "请选择训练项目"
+        button_text = "选择项目"
+    else:
+        title = "🎙 项目训练已准备好"
+        button_text = "继续训练" if data.get("resumed") else "进入训练"
+    elements = [
+        {
+            "tag": "markdown",
+            "content": f"**{project_name}**\n\n{tool_result.message}",
+        }
+    ]
+    candidates = data.get("candidates") if data.get("requires_selection") else None
+    if launch_url and isinstance(candidates, list) and candidates:
+        separator = "&" if "?" in launch_url else "?"
+        elements.append(
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "type": "primary" if index == 0 else "default",
+                        "text": {
+                            "tag": "plain_text",
+                            "content": str(candidate.get("name") or "选择项目")[:40],
+                        },
+                        "url": (
+                            f"{launch_url}{separator}start_project_id="
+                            f"{quote(str(candidate.get('id') or ''))}"
+                        ),
+                    }
+                    for index, candidate in enumerate(candidates[:5])
+                    if candidate.get("id")
+                ],
+            }
+        )
+    elif launch_url:
+        elements.append(
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "type": "primary",
+                        "text": {"tag": "plain_text", "content": button_text},
+                        "url": launch_url,
+                    }
+                ],
+            }
+        )
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "blue",
+            "title": {"tag": "plain_text", "content": title},
+        },
+        "elements": elements,
     }
 
 
