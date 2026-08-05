@@ -69,6 +69,9 @@ class ProjectProfile:
     outcomes: List[str] = field(default_factory=list)
     resume_description: str = ""
     supplemental_text: str = ""
+    source_repository_url: str = ""
+    source_commit_sha: str = ""
+    source_discovery_job_id: str = ""
     status: ProjectProfileStatus = ProjectProfileStatus.ACTIVE
     version: int = 1
     content_hash: str = ""
@@ -90,6 +93,9 @@ class ProjectProfile:
             "outcomes": list(self.outcomes),
             "resume_description": self.resume_description,
             "supplemental_text": self.supplemental_text,
+            "source_repository_url": self.source_repository_url,
+            "source_commit_sha": self.source_commit_sha,
+            "source_discovery_job_id": self.source_discovery_job_id,
             "status": self.status.value,
             "version": self.version,
             "content_hash": self.content_hash,
@@ -129,6 +135,14 @@ class ProjectEvidence:
     topic_tags: List[str]
     content_hash: str
     order: int
+    source_type: str = "profile_field"
+    source_path: str = ""
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
+    confidence: float = 1.0
+    source_commit_sha: str = ""
+    source_evidence_id: str = ""
+    grounded_claim: str = ""
 
 
 @dataclass

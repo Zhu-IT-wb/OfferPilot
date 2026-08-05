@@ -4,15 +4,21 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>OfferPilot 项目训练</title>
   <link rel="stylesheet" href="/study/projects/assets/project_training.css">
+  <link rel="stylesheet" href="/study/projects/assets/project_discovery.css">
 </head>
 <body>
   <header class="topbar"><div><strong>OfferPilot</strong><span>面试训练</span></div><nav><a href="/study/knowledge">八股训练</a><a class="active" href="/study/projects">项目训练</a></nav></header>
   <main class="layout">
-    <section class="panel intro"><p class="eyebrow">PROJECT INTERVIEW</p><h1>把真实项目讲深、讲清楚</h1><p>保存项目事实，AI 面试官会围绕个人贡献、技术深度、指标和方案取舍连续追问。</p><button class="primary" id="new-project">新建项目档案</button></section>
+    <section class="panel intro"><p class="eyebrow">PROJECT INTERVIEW</p><h1>把真实项目讲深、讲清楚</h1><p>提交公开 GitHub 仓库，AI 会从代码证据生成待确认的项目档案，再围绕个人贡献、技术深度和方案取舍训练。</p><button class="primary" id="new-project">分析 GitHub 项目</button></section>
     <section><div class="section-title"><div><h2>项目档案</h2><p>历史训练固定引用当时版本，修改档案不会改写旧报告。</p></div></div><div id="projects" class="project-grid"><div class="empty">正在加载…</div></div></section>
     <section><div class="section-title"><div><h2>训练历史</h2><p>可以继续中断的训练，或查看已完成总结。</p></div></div><div id="history" class="history-list"></div></section>
   </main>
-  <dialog id="editor"><form method="dialog" id="project-form"><div class="dialog-head"><h2 id="editor-title">新建项目</h2><button value="cancel" class="ghost">关闭</button></div><input type="hidden" id="project-id">
+  <dialog id="importer"><form method="dialog" id="import-form"><div class="dialog-head"><h2>分析公开 GitHub 项目</h2><button value="cancel" class="ghost">关闭</button></div><input type="hidden" id="import-project-id">
+    <label class="full-row">公开仓库地址<input id="repository-url" type="url" required maxlength="500" placeholder="https://github.com/owner/repository"></label>
+    <div class="notice full-row"><strong>代码会发送给当前配置的 AI 服务分析。</strong><br>只支持公开仓库。请勿把业务数据、个人信息、密钥或内部代码提交到公开仓库；OfferPilot 只保存少量证据摘录，不保存完整仓库。</div>
+    <p id="import-error" class="error"></p><div class="actions"><button type="button" id="start-import" class="primary">开始分析</button></div>
+  </form></dialog>
+  <dialog id="editor"><form method="dialog" id="project-form"><div class="dialog-head"><h2 id="editor-title">编辑项目</h2><button value="cancel" class="ghost">关闭</button></div><input type="hidden" id="project-id">
     <label>项目名称<input id="name" required maxlength="120"></label><label>目标岗位<input id="target-role" maxlength="120" placeholder="Java 后端工程师"></label>
     <label>项目背景<textarea id="background" rows="3"></textarea></label><label>个人职责（每行一项）<textarea id="responsibilities" rows="3"></textarea></label>
     <label>技术栈（逗号或换行分隔）<textarea id="tech-stack" rows="2"></textarea></label><label>核心架构<textarea id="architecture" rows="3"></textarea></label>

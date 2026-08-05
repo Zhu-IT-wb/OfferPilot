@@ -19,6 +19,9 @@ from app.api.routes.project_training_dashboard import (
     router as project_training_router,
     training_api_router,
 )
+from app.api.routes.project_discovery_dashboard import (
+    router as project_discovery_api_router,
+)
 from app.core.config import Settings, settings
 from app.services.bitable_event_subscription_service import ensure_bitable_event_subscription
 from app.services.bitable_pull_sync_service import BitablePullSyncService
@@ -29,6 +32,12 @@ from app.services.knowledge_dependencies import (
 )
 from app.services.knowledge_corpus import KnowledgeCorpusSyncError
 from app.services.knowledge_push_service import KnowledgePushService
+from app.services.project_discovery_dependencies import (
+    build_project_discovery_services,
+)
+from app.services.project_training_dependencies import (
+    get_default_project_training_repository,
+)
 from app.tools.offerpilot_tools import (
     get_default_leetcode_repository,
     get_default_offerpilot_repository,
@@ -45,6 +54,9 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         description="OfferPilot backend service for job search preparation workflows.",
     )
     app.state.settings = app_settings
+    app.state.project_discovery_services = build_project_discovery_services(
+        app_settings, get_default_project_training_repository()
+    )
     app.include_router(agent_router, prefix=app_settings.api_prefix, tags=["agent"])
     app.include_router(feishu_router, prefix=app_settings.api_prefix, tags=["feishu"])
     if app_settings.debug_routes_enabled:
@@ -72,6 +84,11 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         training_api_router,
         prefix=app_settings.api_prefix,
         tags=["project-training"],
+    )
+    app.include_router(
+        project_discovery_api_router,
+        prefix=app_settings.api_prefix,
+        tags=["project-discovery"],
     )
 
     # 在应用启动时启动多维表格定时拉取同步任务。
@@ -128,6 +145,9 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         app.state.knowledge_push_service = knowledge_push_service
         knowledge_push_service.start()
 
+        if app_settings.project_discovery_enabled:
+            app.state.project_discovery_services.runner.start()
+
     # 在应用关闭时停止多维表格定时拉取同步任务。
     @app.on_event("shutdown")
     async def stop_bitable_pull_sync() -> None:
@@ -140,6 +160,9 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         knowledge_push_service = getattr(app.state, "knowledge_push_service", None)
         if knowledge_push_service is not None:
             await knowledge_push_service.stop()
+        discovery_services = getattr(app.state, "project_discovery_services", None)
+        if discovery_services is not None:
+            await discovery_services.runner.stop()
 
     return app
 

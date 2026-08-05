@@ -1,6 +1,7 @@
 const { escapeHtml, newId, requestJson } = OfferPilotWeb;
 const projectsApi = "/api/study/projects";
 const sessionsApi = "/api/study/project-training/sessions";
+const discoveryApi = "/api/study/project-discovery/jobs";
 let projects = [];
 
 function formLines(id) {
@@ -43,6 +44,7 @@ function renderProjects() {
             <div class="actions">
               <button class="primary" data-start="${project.id}">开始训练</button>
               <button class="secondary" data-edit="${project.id}">编辑</button>
+              ${project.source_repository_url ? `<button class="secondary" data-reanalyze="${project.id}">重新分析代码</button>` : ""}
               <button class="ghost" data-archive="${project.id}">归档</button>
             </div>
           </article>`,
@@ -56,6 +58,9 @@ function renderProjects() {
   });
   document.querySelectorAll("[data-archive]").forEach((button) => {
     button.onclick = () => archiveProject(button.dataset.archive);
+  });
+  document.querySelectorAll("[data-reanalyze]").forEach((button) => {
+    button.onclick = () => openImporter(projects.find((item) => item.id === button.dataset.reanalyze));
   });
 }
 
@@ -107,8 +112,9 @@ async function start(projectId) {
     `/study/projects/training?session_id=${encodeURIComponent(payload.session.id)}`;
 }
 
-function openEditor(project = {}) {
-  document.getElementById("editor-title").textContent = project.id ? "编辑项目" : "新建项目";
+function openEditor(project) {
+  if (!project || !project.id) return;
+  document.getElementById("editor-title").textContent = "编辑项目";
   document.getElementById("project-id").value = project.id || "";
   const textFields = [
     ["name", "name"], ["target-role", "target_role"],
@@ -142,8 +148,8 @@ async function save() {
     supplemental_text: value("supplemental-text"),
   };
   try {
-    await requestJson(id ? `${projectsApi}/${id}` : projectsApi, {
-      method: id ? "PUT" : "POST",
+    await requestJson(`${projectsApi}/${id}`, {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
@@ -154,13 +160,38 @@ async function save() {
   }
 }
 
+function openImporter(project = {}) {
+  document.getElementById("import-project-id").value = project.id || "";
+  document.getElementById("repository-url").value = project.source_repository_url || "";
+  document.getElementById("import-error").textContent = "";
+  document.getElementById("importer").showModal();
+}
+
+async function startImport() {
+  const button = document.getElementById("start-import");
+  const repositoryUrl = document.getElementById("repository-url").value.trim();
+  const projectId = document.getElementById("import-project-id").value || null;
+  button.disabled = true;
+  try {
+    const payload = await requestJson(discoveryApi, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({repository_url: repositoryUrl, request_id: newId("discovery"), project_id: projectId}),
+    });
+    location.href = `/study/projects/discovery?job_id=${encodeURIComponent(payload.job.id)}`;
+  } catch (error) {
+    document.getElementById("import-error").textContent = error.message;
+    button.disabled = false;
+  }
+}
+
 async function archiveProject(id) {
   if (!confirm("归档后不能开始新的训练，历史记录仍会保留。确定归档？")) return;
   await requestJson(`${projectsApi}/${id}/archive`, { method: "POST" });
   await load();
 }
 
-document.getElementById("new-project").onclick = () => openEditor();
+document.getElementById("new-project").onclick = () => openImporter();
+document.getElementById("start-import").onclick = startImport;
 document.getElementById("save-project").onclick = save;
 load().catch((error) => {
   document.getElementById("projects").innerHTML =

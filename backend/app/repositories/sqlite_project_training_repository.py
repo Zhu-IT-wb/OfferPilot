@@ -25,8 +25,11 @@ from app.repositories.project_training_repository import (
     InMemoryProjectTrainingRepository,
     ProjectTrainingSubmissionInProgressError,
     _answer_lease_expired,
+    _inherit_code_evidence,
+    _project_discovery_evidence,
     _profile_values,
     _project_content_hash,
+    _source_values,
     build_project_evidence,
 )
 
@@ -57,8 +60,53 @@ class SQLiteProjectTrainingRepository:
                 **_profile_values(values),
             )
             updated.content_hash = _project_content_hash(updated)
-            self._store_project(connection, updated)
+            inherited = _inherit_code_evidence(
+                updated,
+                self._list_project_evidence(
+                    connection, owner_id, project_id, current.version
+                ),
+            )
+            self._store_project(connection, updated, inherited)
             return updated
+
+    def create_discovered_project(self, owner_id, values, discovery_evidence):
+        values = dict(values)
+        discovery_job_id = str(values.get("source_discovery_job_id") or "")
+        with self._transaction() as connection:
+            existing = self._get_project_by_discovery_job(
+                connection, owner_id, discovery_job_id
+            )
+            if existing is not None:
+                return existing
+            project_id = values.pop("project_id", None)
+            if project_id:
+                current = self._get_project(connection, owner_id, project_id)
+                if current is None or current.status != ProjectProfileStatus.ACTIVE:
+                    raise ValueError("要更新的项目不存在或已归档。")
+                project = replace(
+                    current, version=current.version + 1,
+                    updated_at=datetime.now().astimezone(),
+                    **_profile_values(values), **_source_values(values),
+                )
+            else:
+                project = InMemoryProjectTrainingRepository().create_project(
+                    owner_id, values
+                )
+                project.source_repository_url = values.get("source_repository_url", "")
+                project.source_commit_sha = values.get("source_commit_sha", "")
+                project.source_discovery_job_id = discovery_job_id
+                project.content_hash = _project_content_hash(project)
+            converted = _project_discovery_evidence(project, discovery_evidence)
+            self._store_project(connection, project, converted)
+            return project
+
+    def get_project_by_discovery_job(self, owner_id, discovery_job_id):
+        if not discovery_job_id:
+            return None
+        with self._connect() as connection:
+            return self._get_project_by_discovery_job(
+                connection, owner_id, discovery_job_id
+            )
 
     def get_project(self, owner_id: str, project_id: str, version=None):
         with self._connect() as connection:
@@ -88,15 +136,9 @@ class SQLiteProjectTrainingRepository:
 
     def list_project_evidence(self, owner_id: str, project_id: str, version: int):
         with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT payload FROM project_evidence
-                WHERE owner_id=? AND project_id=? AND project_version=?
-                ORDER BY evidence_order
-                """,
-                (owner_id, project_id, version),
-            ).fetchall()
-        return [ProjectEvidence(**json.loads(row["payload"])) for row in rows]
+            return self._list_project_evidence(
+                connection, owner_id, project_id, version
+            )
 
     def archive_project(self, owner_id: str, project_id: str):
         with self._transaction() as connection:
@@ -474,7 +516,7 @@ class SQLiteProjectTrainingRepository:
     def _transaction(self):
         return _SQLiteTransaction(self._connect())
 
-    def _store_project(self, connection, project: ProjectProfile) -> None:
+    def _store_project(self, connection, project: ProjectProfile, extra_evidence=None) -> None:
         payload = _dump(project)
         connection.execute(
             """
@@ -501,7 +543,12 @@ class SQLiteProjectTrainingRepository:
             """,
             (project.owner_id, project.id, project.version, payload),
         )
-        for evidence in build_project_evidence(project):
+        generated = build_project_evidence(project)
+        additional = [
+            replace(item, order=len(generated) + index)
+            for index, item in enumerate(extra_evidence or [])
+        ]
+        for evidence in generated + additional:
             connection.execute(
                 """
                 INSERT INTO project_evidence(
@@ -535,6 +582,44 @@ class SQLiteProjectTrainingRepository:
                 (owner_id, project_id, version),
             ).fetchone()
         return _project(json.loads(row["payload"])) if row else None
+
+    @staticmethod
+    def _get_project_by_discovery_job(connection, owner_id, discovery_job_id):
+        if not discovery_job_id:
+            return None
+        rows = connection.execute(
+            """
+            SELECT payload FROM project_profile_versions
+            WHERE owner_id=? ORDER BY version DESC
+            """,
+            (owner_id,),
+        ).fetchall()
+        for row in rows:
+            project = _project(json.loads(row["payload"]))
+            if project.source_discovery_job_id == discovery_job_id:
+                return project
+        return None
+
+    @staticmethod
+    def _list_project_evidence(connection, owner_id, project_id, version):
+        rows = connection.execute(
+            """
+            SELECT payload FROM project_evidence
+            WHERE owner_id=? AND project_id=? AND project_version=?
+            ORDER BY evidence_order
+            """, (owner_id, project_id, version)
+        ).fetchall()
+        result = []
+        for row in rows:
+            value = json.loads(row["payload"])
+            value.setdefault("source_type", "profile_field")
+            value.setdefault("source_path", "")
+            value.setdefault("start_line", None)
+            value.setdefault("end_line", None)
+            value.setdefault("confidence", 1.0)
+            value.setdefault("source_commit_sha", "")
+            result.append(ProjectEvidence(**value))
+        return result
 
     @staticmethod
     def _get_session(connection, owner_id, session_id):
@@ -702,6 +787,9 @@ class _SQLiteTransaction:
 
 def _project(value: dict) -> ProjectProfile:
     data = dict(value)
+    data.setdefault("source_repository_url", "")
+    data.setdefault("source_commit_sha", "")
+    data.setdefault("source_discovery_job_id", "")
     data["status"] = ProjectProfileStatus(data["status"])
     data["created_at"] = datetime.fromisoformat(data["created_at"])
     data["updated_at"] = datetime.fromisoformat(data["updated_at"])

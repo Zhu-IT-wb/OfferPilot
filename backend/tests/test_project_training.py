@@ -675,7 +675,7 @@ def test_project_pages_expose_profile_training_and_voice_flows(monkeypatch) -> N
     voice_asset = client.get("/study/projects/assets/voice_recorder.js")
 
     assert projects_page.status_code == 200
-    assert "新建项目档案" in projects_page.text
+    assert "分析 GitHub 项目" in projects_page.text
     assert "/api/study/project-training/sessions" in client.get(
         "/study/projects/assets/project_profiles.js"
     ).text

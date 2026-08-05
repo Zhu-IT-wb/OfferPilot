@@ -135,6 +135,18 @@ class Settings:
         "OFFERPILOT_KNOWLEDGE_MARKDOWN_SYNC_ENABLED",
         True,
     )
+    project_discovery_enabled: bool = _get_bool_env(
+        "OFFERPILOT_PROJECT_DISCOVERY_ENABLED", True
+    )
+    project_discovery_max_concurrency: int = _get_int_env(
+        "OFFERPILOT_PROJECT_DISCOVERY_MAX_CONCURRENCY", 1
+    )
+    project_discovery_clone_timeout_seconds: int = _get_int_env(
+        "OFFERPILOT_PROJECT_DISCOVERY_CLONE_TIMEOUT_SECONDS", 120
+    )
+    project_discovery_max_git_metadata_mb: int = _get_int_env(
+        "OFFERPILOT_PROJECT_DISCOVERY_MAX_GIT_METADATA_MB", 100
+    )
     asr_provider: str = os.getenv("OFFERPILOT_ASR_PROVIDER", "bailian")
     asr_api_key: str = os.getenv("OFFERPILOT_ASR_API_KEY", "")
     asr_workspace_id: str = os.getenv("OFFERPILOT_ASR_WORKSPACE_ID", "")

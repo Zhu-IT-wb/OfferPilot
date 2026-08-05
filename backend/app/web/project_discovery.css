@@ -1,0 +1,10 @@
+.discovery-shell{max-width:900px;margin:28px auto;padding:0 18px;display:grid;gap:18px}
+.progress-card,.draft-card,.evidence-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px}
+.progress-track{height:10px;background:#eaecf0;border-radius:99px;overflow:hidden;margin-top:12px}
+.progress-bar{height:100%;width:0;background:var(--primary);transition:width .25s}
+.muted{color:var(--muted)}.draft-section{padding:12px 0;border-bottom:1px solid var(--line)}
+.draft-section:last-child{border:0}.evidence-card details{border-top:1px solid var(--line);padding:10px 0}
+.evidence-card pre{white-space:pre-wrap;word-break:break-word;background:#101828;color:#eaecf0;padding:12px;border-radius:8px;overflow:auto}
+.status-pill{display:inline-block;border-radius:99px;background:var(--primary-soft);color:var(--primary);padding:3px 9px;font-size:12px}
+#import-form{padding:24px;display:grid;gap:14px}.full-row,#import-form>.actions,#import-form>.error{grid-column:1/-1}
+.notice{padding:14px;border-radius:10px;background:#fffaeb;color:#7a2e0e}

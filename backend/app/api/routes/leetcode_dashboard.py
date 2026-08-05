@@ -251,4 +251,10 @@ def _safe_dashboard_redirect(value: object) -> str:
         session_id = value.split("?session_id=", 1)[1]
         if session_id.replace("_", "").isalnum() and len(session_id) <= 160:
             return value
+    if isinstance(value, str) and value.startswith(
+        "/study/projects/discovery?job_id=discovery_"
+    ):
+        job_id = value.split("?job_id=", 1)[1]
+        if job_id.replace("_", "").isalnum() and len(job_id) <= 160:
+            return value
     return "/leetcode/dashboard"

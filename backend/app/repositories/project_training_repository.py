@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+import threading
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -48,6 +49,12 @@ class ProjectTrainingRepository(Protocol):
     def create_project(self, owner_id: str, values: dict) -> ProjectProfile: ...
     def update_project(
         self, owner_id: str, project_id: str, values: dict
+    ) -> Optional[ProjectProfile]: ...
+    def create_discovered_project(
+        self, owner_id: str, values: dict, discovery_evidence: list
+    ) -> ProjectProfile: ...
+    def get_project_by_discovery_job(
+        self, owner_id: str, discovery_job_id: str
     ) -> Optional[ProjectProfile]: ...
     def get_project(
         self, owner_id: str, project_id: str, version: Optional[int] = None
@@ -137,6 +144,7 @@ class InMemoryProjectTrainingRepository:
     answers: Dict[Tuple[str, str], ProjectTrainingAnswer] = field(default_factory=dict)
     progress: Dict[Tuple[str, str, str], ProjectTopicProgress] = field(default_factory=dict)
     summaries: Dict[Tuple[str, str], ProjectTrainingSummary] = field(default_factory=dict)
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def create_project(self, owner_id: str, values: dict) -> ProjectProfile:
         now = datetime.now().astimezone()
@@ -166,8 +174,61 @@ class InMemoryProjectTrainingRepository:
             **_profile_values(values),
         )
         updated.content_hash = _project_content_hash(updated)
-        self._store_project_version(updated)
+        inherited = _inherit_code_evidence(
+            updated,
+            self.evidence.get((owner_id, project_id, current.version), []),
+        )
+        self._store_project_version(updated, extra_evidence=inherited)
         return replace(updated)
+
+    def create_discovered_project(self, owner_id, values, discovery_evidence):
+        with self.lock:
+            return self._create_discovered_project(
+                owner_id, values, discovery_evidence
+            )
+
+    def _create_discovered_project(self, owner_id, values, discovery_evidence):
+        values = dict(values)
+        discovery_job_id = str(values.get("source_discovery_job_id") or "")
+        existing = self.get_project_by_discovery_job(owner_id, discovery_job_id)
+        if existing is not None:
+            return existing
+        project_id = values.pop("project_id", None)
+        if project_id:
+            current = self.projects.get((owner_id, project_id))
+            if current is None or current.status != ProjectProfileStatus.ACTIVE:
+                raise ValueError("要更新的项目不存在或已归档。")
+            now = datetime.now().astimezone()
+            project = replace(
+                current, version=current.version + 1, updated_at=now,
+                **_profile_values(values), **_source_values(values),
+            )
+        else:
+            now = datetime.now().astimezone()
+            project = ProjectProfile(
+                id=f"project_{uuid.uuid4().hex}", owner_id=owner_id,
+                status=ProjectProfileStatus.ACTIVE, version=1,
+                created_at=now, updated_at=now,
+                **_profile_values(values), **_source_values(values),
+            )
+        project.content_hash = _project_content_hash(project)
+        evidence = _project_discovery_evidence(project, discovery_evidence)
+        self._store_project_version(project, extra_evidence=evidence)
+        return replace(project)
+
+    def get_project_by_discovery_job(self, owner_id, discovery_job_id):
+        if not discovery_job_id:
+            return None
+        item = next(
+            (
+                project
+                for (stored_owner, _, _), project in self.project_versions.items()
+                if stored_owner == owner_id
+                and project.source_discovery_job_id == discovery_job_id
+            ),
+            None,
+        )
+        return replace(item) if item else None
 
     def get_project(
         self, owner_id: str, project_id: str, version: Optional[int] = None
@@ -507,15 +568,18 @@ class InMemoryProjectTrainingRepository:
         summary = self.summaries.get((owner_id, session_id))
         return replace(summary) if summary is not None else None
 
-    def _store_project_version(self, project: ProjectProfile) -> None:
+    def _store_project_version(self, project: ProjectProfile, extra_evidence=None) -> None:
         snapshot = replace(project)
         self.projects[(project.owner_id, project.id)] = snapshot
         self.project_versions[(project.owner_id, project.id, project.version)] = replace(
             snapshot
         )
-        self.evidence[(project.owner_id, project.id, project.version)] = (
-            build_project_evidence(snapshot)
-        )
+        generated = build_project_evidence(snapshot)
+        additional = list(extra_evidence or [])
+        self.evidence[(project.owner_id, project.id, project.version)] = generated + [
+            replace(item, order=len(generated) + index)
+            for index, item in enumerate(additional)
+        ]
 
 
 def build_project_evidence(project: ProjectProfile) -> List[ProjectEvidence]:
@@ -618,9 +682,52 @@ _LIST_FIELDS = {
 
 def _project_content_hash(project: ProjectProfile) -> str:
     payload = {field: getattr(project, field) for field in PROJECT_PROFILE_FIELDS}
+    payload.update(_source_values(project.__dict__))
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
+
+
+def _source_values(values: dict) -> dict:
+    return {
+        field: str(values.get(field) or "").strip()
+        for field in (
+            "source_repository_url", "source_commit_sha", "source_discovery_job_id"
+        )
+    }
+
+
+def _project_discovery_evidence(project, items):
+    result = []
+    for index, item in enumerate(items):
+        content = str(item.excerpt).strip()
+        if not content:
+            continue
+        result.append(ProjectEvidence(
+            id=f"evidence_{hashlib.sha256(f'{project.id}:{project.version}:{item.id}'.encode()).hexdigest()[:24]}",
+            owner_id=project.owner_id, project_id=project.id,
+            project_version=project.version, source_field=item.target_field,
+            heading=("用户补充" if item.source_type == "user_statement" else item.file_path),
+            content=content, topic_tags=[item.topic] if item.topic else [],
+            content_hash=item.content_hash, order=index, source_type=item.source_type,
+            source_path=item.file_path, start_line=item.start_line,
+            end_line=item.end_line, confidence=item.confidence,
+            source_commit_sha=item.commit_sha,
+            source_evidence_id=item.id, grounded_claim=item.claim,
+        ))
+    return result
+
+
+def _inherit_code_evidence(project, items):
+    return [
+        replace(
+            item,
+            id=f"evidence_{hashlib.sha256(f'{project.id}:{project.version}:inherited:{item.id}'.encode()).hexdigest()[:24]}",
+            project_version=project.version,
+        )
+        for item in items
+        if item.source_type == "code"
+    ]
 
 
 def _answer_lease_expired(started_at: datetime) -> bool:

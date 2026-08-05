@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN"><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>OfferPilot 项目代码分析</title>
+  <link rel="stylesheet" href="/study/projects/assets/project_training.css">
+  <link rel="stylesheet" href="/study/projects/assets/project_discovery.css">
+</head><body>
+  <header class="topbar"><div><strong>OfferPilot</strong><span>项目代码分析</span></div><nav><a href="/study/knowledge">八股训练</a><a class="active" href="/study/projects">项目训练</a></nav></header>
+  <main class="discovery-shell">
+    <a href="/study/projects">← 返回项目列表</a>
+    <section class="progress-card"><div class="progress-line"><strong id="status-label">准备读取任务…</strong><span id="progress-value">0%</span></div><div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div><p id="stage-text" class="muted"></p><div id="stats"></div><div id="warnings"></div><p id="error" class="error"></p><div id="task-actions" class="actions"></div></section>
+    <section id="draft" class="draft-card" hidden></section>
+    <section id="evidence" class="evidence-card" hidden></section>
+    <section id="question" class="question-card" hidden></section>
+    <section id="confirm" class="draft-card" hidden><h2>确认项目档案</h2><p>确认后会创建版本化项目档案，代码证据和你的补充说明会用于后续项目训练。</p><div class="actions"><button id="confirm-project" class="primary">确认并创建档案</button></div><p id="confirm-error" class="error"></p></section>
+  </main>
+  <script src="/study/projects/assets/web_common.js"></script>
+  <script src="/study/projects/assets/project_discovery.js"></script>
+</body></html>

@@ -36,11 +36,14 @@ api_router = APIRouter(prefix="/study/projects")
 training_api_router = APIRouter(prefix="/study/project-training")
 _HTML_PATH = Path(__file__).resolve().parents[2] / "web" / "project_profiles.html"
 _TRAINING_HTML_PATH = Path(__file__).resolve().parents[2] / "web" / "project_training.html"
+_DISCOVERY_HTML_PATH = Path(__file__).resolve().parents[2] / "web" / "project_discovery.html"
 _WEB_ROOT = _HTML_PATH.parent
 _ASSETS = {
     "project_training.css",
     "project_profiles.js",
     "project_training.js",
+    "project_discovery.js",
+    "project_discovery.css",
     "voice_recorder.js",
     "web_common.js",
 }
@@ -103,6 +106,18 @@ async def show_project_training(request: Request):
             url=f"/leetcode/dashboard/auth/start?redirect={redirect}"
         )
     return HTMLResponse(_TRAINING_HTML_PATH.read_text(encoding="utf-8"))
+
+
+@router.get("/discovery")
+async def show_project_discovery(request: Request):
+    if dashboard_open_id(request) is None:
+        redirect = request.url.path
+        if request.url.query:
+            redirect += f"?{request.url.query}"
+        return RedirectResponse(
+            url=f"/leetcode/dashboard/auth/start?redirect={redirect}"
+        )
+    return HTMLResponse(_DISCOVERY_HTML_PATH.read_text(encoding="utf-8"))
 
 
 @router.get("/assets/{asset_name}")
