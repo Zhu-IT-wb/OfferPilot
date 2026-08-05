@@ -147,13 +147,7 @@ class BailianSpeechTranscriptionProvider:
 
         try:
             response_payload = response.json()
-            output = (
-                response_payload.get("output")
-                if isinstance(response_payload, dict)
-                else None
-            )
-            text = output.get("text") if isinstance(output, dict) else None
-            transcript = text.strip() if isinstance(text, str) else ""
+            transcript = _provider_transcript(response_payload)
         except ValueError as exc:
             raise SpeechTranscriptionError("语音服务返回了无法解析的结果。") from exc
         if not transcript:
@@ -229,3 +223,28 @@ def _provider_error_detail(response: httpx.Response) -> str:
         return f"HTTP {response.status_code}"
     message = payload.get("message") or payload.get("code")
     return str(message)[:160] if message else f"HTTP {response.status_code}"
+
+
+def _provider_transcript(payload: object) -> str:
+    """Read both documented and observed Fun-ASR-Flash response envelopes."""
+    if not isinstance(payload, dict):
+        return ""
+    output = payload.get("output")
+    candidates = [
+        output.get("text") if isinstance(output, dict) else None,
+        _sentence_text(output),
+        _sentence_text(output.get("output")) if isinstance(output, dict) else None,
+        _sentence_text(payload),
+        payload.get("text"),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return ""
+
+
+def _sentence_text(container: object) -> object:
+    if not isinstance(container, dict):
+        return None
+    sentence = container.get("sentence")
+    return sentence.get("text") if isinstance(sentence, dict) else None

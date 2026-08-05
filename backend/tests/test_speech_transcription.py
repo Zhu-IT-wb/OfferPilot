@@ -64,6 +64,67 @@ def test_bailian_provider_sends_bearer_base64_format_and_safe_context() -> None:
     assert audio_input["data"] == "data:audio/webm;base64,dGVzdC1hdWRpbw=="
 
 
+@pytest.mark.parametrize(
+    ("response_payload", "expected_transcript"),
+    [
+        (
+            {
+                "sentence": {
+                    "sentence_end": True,
+                    "text": "Hello World，这里是阿里巴巴语音实验室。",
+                }
+            },
+            "Hello World，这里是阿里巴巴语音实验室。",
+        ),
+        (
+            {
+                "output": {
+                    "sentence": {
+                        "sentence_end": True,
+                        "text": "JVM 通过垃圾回收管理内存。",
+                    }
+                }
+            },
+            "JVM 通过垃圾回收管理内存。",
+        ),
+        (
+            {
+                "output": {
+                    "output": {
+                        "sentence": {
+                            "sentence_end": True,
+                            "text": "Redis 可以用作缓存。",
+                        }
+                    }
+                }
+            },
+            "Redis 可以用作缓存。",
+        ),
+    ],
+)
+def test_bailian_provider_reads_fun_asr_flash_response_shapes(
+    response_payload: dict, expected_transcript: str
+) -> None:
+    provider = BailianSpeechTranscriptionProvider(
+        api_key="sk-test",
+        workspace_id="ws-test",
+        model="fun-asr-flash-2026-06-15",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=response_payload)
+        ),
+    )
+
+    result = asyncio.run(
+        provider.transcribe(
+            audio=b"test-audio",
+            audio_format="webm",
+            mime_type="audio/webm",
+        )
+    )
+
+    assert result.transcript == expected_transcript
+
+
 def test_transcription_service_limits_context_to_300_characters() -> None:
     captured = {}
 
