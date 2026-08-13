@@ -27,8 +27,23 @@ function render(job) {
   document.getElementById("progress-bar").style.width = `${job.progress}%`;
   document.getElementById("stage-text").textContent = stages[job.stage] || "";
   const stats = job.stats || {};
-  document.getElementById("stats").innerHTML = stats.file_count ?
-    `<span class="status-pill">${stats.file_count} 个文件</span> <span class="status-pill">分析 ${stats.analyzed_file_count || 0} 个</span> <span class="status-pill">${escapeHtml(Object.keys(stats.languages || {}).join(" / ") || "语言待识别")}</span>` : "";
+  const evidenceFileCount = stats.evidence_file_count ?? stats.analyzed_file_count ?? 0;
+  const statPills = [];
+  if (stats.file_count) {
+    statPills.push(`<span class="status-pill">${Number(stats.file_count)} 个文件</span>`);
+    statPills.push(`<span class="status-pill">证据来自 ${Number(evidenceFileCount)} 个文件</span>`);
+    statPills.push(`<span class="status-pill">${escapeHtml(Object.keys(stats.languages || {}).join(" / ") || "语言待识别")}</span>`);
+  }
+  if (stats.model_turn_count) {
+    statPills.push(`<span class="status-pill">模型 ${Number(stats.model_turn_count)} 轮</span>`);
+  }
+  if (stats.tool_call_count) {
+    statPills.push(`<span class="status-pill">工具 ${Number(stats.tool_call_count)} 次</span>`);
+  }
+  if (stats.total_tokens) {
+    statPills.push(`<span class="status-pill">累计 ${Number(stats.total_tokens).toLocaleString()} tokens</span>`);
+  }
+  document.getElementById("stats").innerHTML = statPills.join(" ");
   document.getElementById("warnings").innerHTML = (job.warnings || []).map((item) => `<p class="warning">${escapeHtml(item)}</p>`).join("");
   document.getElementById("error").textContent = job.error_message || "";
   renderActions(job); renderDraft(job); renderEvidence(job); renderQuestion(job);

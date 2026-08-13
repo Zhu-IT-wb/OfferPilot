@@ -16,6 +16,10 @@ class LLMRequestError(RuntimeError):
     """Raised when the LLM provider request fails."""
 
 
+class LLMTimeoutError(LLMRequestError):
+    """Raised when the LLM provider does not respond before the timeout."""
+
+
 # 承载外部服务调用后的结构化结果。
 @dataclass(frozen=True)
 class LLMResult:
@@ -75,11 +79,11 @@ class LLMService:
         try:
             response_data = await self._post_chat_completions(payload)
         except httpx.HTTPStatusError as exc:
-            raise LLMRequestError(
-                f"LLM provider returned HTTP {exc.response.status_code}: {exc.response.text}"
-            ) from exc
+            raise self._build_http_status_error(exc) from exc
+        except httpx.TimeoutException as exc:
+            raise self._build_timeout_error(exc) from exc
         except httpx.HTTPError as exc:
-            raise LLMRequestError(f"LLM provider request failed: {exc}") from exc
+            raise self._build_http_error(exc) from exc
 
         content = self._extract_content(response_data)
         return LLMResult(
@@ -91,16 +95,70 @@ class LLMService:
 
     # 发送 POST 请求处理 chat completions。
     async def _post_chat_completions(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """向兼容 Chat Completions 的供应商发送一次模型请求。"""
+
         url = f"{self.base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+        async with httpx.AsyncClient(
+            timeout=self._build_http_timeout()
+        ) as client:
             response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             return response.json()
+
+    def _build_http_timeout(self) -> httpx.Timeout:
+        """限制连接等待为十秒，并把配置时长用于模型响应读取。"""
+
+        return httpx.Timeout(
+            self.timeout_seconds,
+            connect=min(10.0, self.timeout_seconds),
+        )
+
+    def _build_timeout_error(
+        self,
+        exc: httpx.TimeoutException,
+    ) -> LLMTimeoutError:
+        """把无文本的 HTTPX 超时转换成包含类型和时长的错误。"""
+
+        timeout_text = f"{self.timeout_seconds:g}"
+        return LLMTimeoutError(
+            "LLM provider request timed out after "
+            f"{timeout_text} seconds "
+            f"({type(exc).__name__})."
+        )
+
+    @staticmethod
+    def _build_http_status_error(
+        exc: httpx.HTTPStatusError,
+    ) -> LLMRequestError:
+        """把 HTTP 状态异常转换成包含类型、状态码和正文兜底的错误。"""
+
+        detail = (
+            exc.response.text.strip()
+            or "empty response body"
+        )
+        return LLMRequestError(
+            "LLM provider request failed "
+            f"({type(exc).__name__}, "
+            f"HTTP {exc.response.status_code}): "
+            f"{detail}"
+        )
+
+    @staticmethod
+    def _build_http_error(
+        exc: httpx.HTTPError,
+    ) -> LLMRequestError:
+        """保留 HTTP 异常类型，并为无文本异常补充可读说明。"""
+
+        detail = str(exc).strip() or "no additional detail"
+        return LLMRequestError(
+            "LLM provider request failed "
+            f"({type(exc).__name__}): {detail}"
+        )
 
     # 构造 messages。
     @staticmethod

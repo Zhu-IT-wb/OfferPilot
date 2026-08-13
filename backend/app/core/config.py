@@ -116,6 +116,36 @@ class Settings:
     llm_base_url: str = os.getenv("OFFERPILOT_LLM_BASE_URL", "https://api.deepseek.com")
     llm_model: str = os.getenv("OFFERPILOT_LLM_MODEL", "deepseek-v4-flash")
     llm_timeout_seconds: float = float(os.getenv("OFFERPILOT_LLM_TIMEOUT_SECONDS", "30"))
+    project_analysis_llm_timeout_seconds: float = float(
+        os.getenv(
+            "OFFERPILOT_PROJECT_ANALYSIS_LLM_TIMEOUT_SECONDS",
+            "180",
+        )
+    )
+    project_analysis_max_model_turns: int = _get_int_env(
+        "OFFERPILOT_PROJECT_ANALYSIS_MAX_MODEL_TURNS",
+        30,
+    )
+    project_analysis_max_tool_calls: int = _get_int_env(
+        "OFFERPILOT_PROJECT_ANALYSIS_MAX_TOOL_CALLS",
+        80,
+    )
+    project_analysis_max_total_tokens: int = _get_int_env(
+        "OFFERPILOT_PROJECT_ANALYSIS_MAX_TOTAL_TOKENS",
+        1_500_000,
+    )
+    project_analysis_max_request_chars: int = _get_int_env(
+        "OFFERPILOT_PROJECT_ANALYSIS_MAX_REQUEST_CHARS",
+        400_000,
+    )
+    project_analysis_max_findings: int = _get_int_env(
+        "OFFERPILOT_PROJECT_ANALYSIS_MAX_FINDINGS",
+        24,
+    )
+    project_analysis_max_quote_chars: int = _get_int_env(
+        "OFFERPILOT_PROJECT_ANALYSIS_MAX_QUOTE_CHARS",
+        400,
+    )
     llm_planner_enabled: bool = _get_bool_env("OFFERPILOT_LLM_PLANNER_ENABLED", True)
     llm_planner_fallback_enabled: bool = _get_bool_env(
         "OFFERPILOT_LLM_PLANNER_FALLBACK_ENABLED",
