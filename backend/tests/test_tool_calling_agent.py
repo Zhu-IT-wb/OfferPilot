@@ -721,6 +721,62 @@ def test_two_invalid_terminal_submissions_fail_without_third_attempt() -> None:
     assert len(model.calls) == 2
 
 
+def test_terminal_failure_reports_each_validation_error() -> None:
+    """两次 terminal 校验都失败时，最终异常必须保留具体修正原因。"""
+
+    model = ScriptedModel([
+        _tool_turn("bad-detail-1", "submit_analysis", {"attempt": 1}),
+        _tool_turn("bad-detail-2", "submit_analysis", {"attempt": 2}),
+    ])
+    errors = iter([
+        "evidence_by_field contains unknown field: project_overview",
+        "finding F7 quote does not match the declared source range",
+    ])
+
+    async def reject(arguments):
+        return AgentToolResult(
+            data={"error": {"message": next(errors)}},
+            is_error=True,
+        )
+
+    registry = AgentToolRegistry([
+        FunctionAgentTool(
+            AgentToolDefinition(
+                "submit_analysis",
+                "Submit.",
+                {"type": "object"},
+            ),
+            reject,
+        )
+    ])
+    progress = []
+
+    with pytest.raises(AgentProtocolError) as raised:
+        asyncio.run(
+            ToolCallingAgent(
+                model=model,
+                tool_registry=registry,
+                terminal_tool_name="submit_analysis",
+            ).run(
+                [{"role": "user", "content": "分析"}],
+                progress_callback=progress.append,
+            )
+        )
+
+    message = str(raised.value)
+    assert "after 2 attempts" in message
+    assert "1. evidence_by_field contains unknown field" in message
+    assert "2. finding F7 quote does not match" in message
+    last_model_event = next(
+        snapshot.last_event
+        for snapshot in reversed(progress)
+        if snapshot.last_event.get("event") == "model_turn"
+    )
+    assert last_model_event["tools"][0]["error"].startswith(
+        "finding F7 quote does not match"
+    )
+
+
 def test_second_invalid_submission_over_budget_still_has_no_third_attempt() -> None:
     """第二次坏提交同时越过预算时也必须优先执行提交次数上限。"""
 

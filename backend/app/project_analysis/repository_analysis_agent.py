@@ -15,6 +15,7 @@ from app.project_analysis.repository_command_executor import (
     RepositoryCommandExecutor,
 )
 from app.project_analysis.repository_analysis_result import (
+    ALLOWED_TARGET_FIELDS,
     DEFAULT_MAX_FINDINGS,
     DEFAULT_MAX_QUOTE_CHARS,
     REQUIRED_COVERAGE_AREAS,
@@ -343,6 +344,10 @@ class RepositoryAnalysisAgent:
             ],
             "additionalProperties": False,
         }
+        evidence_list_schema = {
+            "type": "array",
+            "items": {"type": "string"},
+        }
         return FunctionAgentTool(
             definition=AgentToolDefinition(
                 name="submit_analysis",
@@ -361,10 +366,17 @@ class RepositoryAnalysisAgent:
                         },
                         "evidence_by_field": {
                             "type": "object",
-                            "additionalProperties": {
-                                "type": "array",
-                                "items": {"type": "string"},
+                            "description": (
+                                "Map project profile fields to grounded "
+                                "finding IDs. Do not use coverage area keys."
+                            ),
+                            "properties": {
+                                field_name: evidence_list_schema
+                                for field_name in sorted(
+                                    ALLOWED_TARGET_FIELDS
+                                )
                             },
+                            "additionalProperties": False,
                         },
                         "coverage": {
                             "type": "object",

@@ -232,6 +232,38 @@ def test_analysis_agent_exposes_constrained_repository_command(
     assert len(model.calls) == 1
 
 
+def test_submit_analysis_schema_restricts_evidence_mapping_fields(
+    tmp_path,
+) -> None:
+    """模型 Schema 必须在生成阶段阻止 coverage 字段混入证据映射。"""
+
+    workspace = FakeWorkspace("https://github.com/example/project")
+    workspace.repository_dir = str(tmp_path)
+    model = CapturingModel()
+
+    asyncio.run(RepositoryAnalysisAgent(model=model).analyze(workspace))
+
+    submit_schema = next(
+        tool["function"]["parameters"]
+        for tool in model.calls[0]["tools"]
+        if tool["function"]["name"] == "submit_analysis"
+    )
+    mapping_schema = submit_schema["properties"]["evidence_by_field"]
+
+    assert set(mapping_schema["properties"]) == {
+        "name",
+        "background",
+        "tech_stack",
+        "architecture",
+        "key_decisions",
+        "technical_challenges",
+        "resume_description",
+        "supplemental_text",
+    }
+    assert mapping_schema["additionalProperties"] is False
+    assert "project_overview" not in mapping_schema["properties"]
+
+
 def test_submit_analysis_rejects_incomplete_coverage_and_allows_retry(
     tmp_path,
 ) -> None:

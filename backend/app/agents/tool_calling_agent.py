@@ -107,6 +107,7 @@ class ToolCallingAgent:
         result_cache: Dict[str, AgentToolResult] = {}
         consecutive_no_progress = 0
         invalid_terminal_submissions = 0
+        terminal_validation_errors: List[str] = []
         soft_warning_sent = False
         emergency_reason: Optional[str] = None
         tool_schemas = self._tool_registry.model_schemas()
@@ -257,6 +258,8 @@ class ToolCallingAgent:
                         "cache_hit": cache_hit,
                         "made_progress": made_progress,
                     }
+                    if result.is_error:
+                        event["error"] = self._terminal_error_message(result)
                     trace.append(event)
                     self._notify_progress(
                         progress_callback,
@@ -304,6 +307,9 @@ class ToolCallingAgent:
 
                     if tool_call.name == self._terminal_tool_name:
                         invalid_terminal_submissions += 1
+                        terminal_validation_errors.append(
+                            self._terminal_error_message(result)
+                        )
 
                     consecutive_no_progress = (
                         0 if made_progress else consecutive_no_progress + 1
@@ -329,8 +335,10 @@ class ToolCallingAgent:
                     >= self._limits.max_invalid_terminal_submissions
                 ):
                     raise AgentProtocolError(
-                        "Model failed to produce a valid terminal submission "
-                        f"after {invalid_terminal_submissions} attempts."
+                        self._terminal_submission_failure_message(
+                            invalid_terminal_submissions,
+                            terminal_validation_errors,
+                        )
                     )
 
                 # A terminal submission is allowed to finish the current turn
@@ -396,13 +404,19 @@ class ToolCallingAgent:
                     )
                 if self._terminal_tool_name:
                     invalid_terminal_submissions += 1
+                    terminal_validation_errors.append(
+                        "Model stopped without calling the required "
+                        f"{self._terminal_tool_name} tool."
+                    )
                     if (
                         invalid_terminal_submissions
                         >= self._limits.max_invalid_terminal_submissions
                     ):
                         raise AgentProtocolError(
-                            "Model stopped without the required terminal "
-                            f"submission {invalid_terminal_submissions} times."
+                            self._terminal_submission_failure_message(
+                                invalid_terminal_submissions,
+                                terminal_validation_errors,
+                            )
                         )
                     history.append(
                         self._meta_message(
@@ -702,8 +716,14 @@ class ToolCallingAgent:
         trace: List[Dict[str, Any]],
         turn_number: int,
     ) -> List[Dict[str, Any]]:
-        return [
-            {
+        summaries: List[Dict[str, Any]] = []
+        for event in trace:
+            if (
+                event.get("event") != "tool_call"
+                or event.get("turn") != turn_number
+            ):
+                continue
+            summary = {
                 "name": event["tool"],
                 "arguments": event["arguments"],
                 "success": event["success"],
@@ -711,10 +731,10 @@ class ToolCallingAgent:
                 "cache_hit": event["cache_hit"],
                 "made_progress": event["made_progress"],
             }
-            for event in trace
-            if event.get("event") == "tool_call"
-            and event.get("turn") == turn_number
-        ]
+            if "error" in event:
+                summary["error"] = event["error"]
+            summaries.append(summary)
+        return summaries
 
     @staticmethod
     def _argument_summary(tool_call: ModelToolCall) -> str:
@@ -735,6 +755,25 @@ class ToolCallingAgent:
         if isinstance(error, dict):
             return str(error.get("message") or "invalid terminal submission")
         return "invalid terminal submission"
+
+    @staticmethod
+    def _terminal_submission_failure_message(
+        attempts: int,
+        errors: List[str],
+    ) -> str:
+        """生成可直接持久化和展示的 terminal 校验失败说明。"""
+
+        header = (
+            "Model failed to produce a valid terminal submission "
+            f"after {attempts} attempts."
+        )
+        if not errors:
+            return header
+        details = "\n".join(
+            f"{index}. {message[:180]}"
+            for index, message in enumerate(errors, start=1)
+        )
+        return f"{header}\nValidation errors:\n{details}"
 
     @staticmethod
     def _result(
