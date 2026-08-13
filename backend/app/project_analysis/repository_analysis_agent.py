@@ -118,6 +118,7 @@ findings 必须遵守：
 13. coverage 必须包含全部七个维度；status 只能是 covered、not_found 或 not_applicable。
 14. covered 必须引用有效 Finding；每个 not_found 都必须有一条以 `[维度名]` 开头的对应 warning。
 15. 不要求穷举文件；每个维度有代表性证据或明确缺失判断即可提交。
+16. submit_analysis 返回校验错误后，必须重新读取错误中指定的文件范围并修正或删除对应 Finding；禁止原样重复提交。
 """.strip()
 
 
@@ -223,7 +224,7 @@ class RepositoryAnalysisAgent:
             """验证模型的主动完成提交并将有效载荷标为 terminal。"""
 
             try:
-                await parser.parse_submission(
+                validated = await parser.parse_submission(
                     arguments,
                     workspace,
                 )
@@ -245,7 +246,12 @@ class RepositoryAnalysisAgent:
             return AgentToolResult(
                 data={"accepted": True},
                 terminal_content=json.dumps(
-                    arguments,
+                    {
+                        "findings": validated.findings,
+                        "evidence_by_field": validated.evidence_by_field,
+                        "coverage": validated.coverage or {},
+                        "warnings": validated.warnings,
+                    },
                     ensure_ascii=False,
                     separators=(",", ":"),
                 ),

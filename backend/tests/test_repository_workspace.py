@@ -267,6 +267,36 @@ def test_read_file_resumes_character_truncated_line_without_skipping() -> None:
     assert third["content"] == "kl\nne"
 
 
+def test_locate_exact_quote_returns_nearest_exact_occurrence() -> None:
+    """精确原文重定位在多处命中时选择距离模型声明行最近的一处。"""
+
+    workspace = _opened_workspace()
+    raw_content = b"target\na\nb\ntarget\n"
+
+    async def fake_git(*arguments, max_output_bytes=1024 * 1024):
+        return str(len(raw_content))
+
+    async def fake_git_bytes(
+        *arguments,
+        max_output_bytes=1024 * 1024,
+        allowed_return_codes=(0,),
+    ):
+        return raw_content
+
+    workspace._git = fake_git
+    workspace._git_bytes = fake_git_bytes
+
+    located = asyncio.run(
+        workspace.locate_exact_quote(
+            "README.md",
+            "target",
+            near_line=3,
+        )
+    )
+
+    assert located == (4, 4)
+
+
 def test_search_code_parses_matches_filters_paths_and_truncates() -> None:
     """验证代码搜索解析结果、过滤屏蔽路径并限制返回数量。"""
 

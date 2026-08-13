@@ -108,6 +108,7 @@ class ToolCallingAgent:
         consecutive_no_progress = 0
         invalid_terminal_submissions = 0
         terminal_validation_errors: List[str] = []
+        invalid_terminal_payloads = set()
         soft_warning_sent = False
         emergency_reason: Optional[str] = None
         tool_schemas = self._tool_registry.model_schemas()
@@ -306,10 +307,21 @@ class ToolCallingAgent:
                         )
 
                     if tool_call.name == self._terminal_tool_name:
-                        invalid_terminal_submissions += 1
-                        terminal_validation_errors.append(
-                            self._terminal_error_message(result)
-                        )
+                        if cache_key in invalid_terminal_payloads:
+                            event["duplicate_submission"] = True
+                            history.append(
+                                self._meta_message(
+                                    "你重复提交了完全相同且已被拒绝的结果。"
+                                    "不要再次原样提交；请按工具错误重新读取对应"
+                                    "文件范围并修正或删除该 Finding。"
+                                )
+                            )
+                        else:
+                            invalid_terminal_payloads.add(cache_key)
+                            invalid_terminal_submissions += 1
+                            terminal_validation_errors.append(
+                                self._terminal_error_message(result)
+                            )
 
                     consecutive_no_progress = (
                         0 if made_progress else consecutive_no_progress + 1
@@ -733,6 +745,8 @@ class ToolCallingAgent:
             }
             if "error" in event:
                 summary["error"] = event["error"]
+            if event.get("duplicate_submission"):
+                summary["duplicate_submission"] = True
             summaries.append(summary)
         return summaries
 

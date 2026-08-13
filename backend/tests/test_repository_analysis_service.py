@@ -405,6 +405,82 @@ def test_submit_analysis_rejects_any_invalid_finding_and_allows_retry(
     assert result.completion_reason == "terminal_tool"
 
 
+def test_submit_analysis_returns_relocated_evidence_range(tmp_path) -> None:
+    """terminal 工具必须返回后端校正后的证据范围，而非原始坏行号。"""
+
+    workspace = FakeWorkspace("https://github.com/example/project")
+    workspace.repository_dir = str(tmp_path)
+
+    async def locate_exact_quote(path, quote, near_line=1):
+        assert path == "app/main.py"
+        assert quote == "app = FastAPI()"
+        return 7, 7
+
+    async def read_file(path, start_line=1, end_line=None):
+        return {
+            "path": path,
+            "content": (
+                "different source line"
+                if start_line == 3
+                else "app = FastAPI()"
+            ),
+            "start_line": start_line,
+            "end_line": end_line or start_line,
+            "total_lines": 7,
+            "truncated": False,
+            "has_more": False,
+            "next_start_line": None,
+        }
+
+    workspace.locate_exact_quote = locate_exact_quote
+    workspace.read_file = read_file
+    model = CapturingModel()
+    original_complete = model.complete
+
+    async def complete(messages, tools, options):
+        turn = await original_complete(messages, tools, options)
+        payload = dict(turn.tool_calls[0].arguments)
+        payload["findings"] = [
+            {
+                **payload["findings"][0],
+                "start_line": 3,
+                "end_line": 3,
+            }
+        ]
+        return ModelTurn(
+            assistant_message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "relocate-submit",
+                    "type": "function",
+                    "function": {
+                        "name": "submit_analysis",
+                        "arguments": json.dumps(payload),
+                    },
+                }],
+            },
+            tool_calls=[ModelToolCall(
+                id="relocate-submit",
+                name="submit_analysis",
+                arguments=payload,
+            )],
+            content="",
+            reasoning_content=None,
+            finish_reason="tool_calls",
+            usage=TokenUsage(1, 1, 2),
+            provider="fake",
+            model="fake-model",
+        )
+
+    model.complete = complete
+    result = asyncio.run(RepositoryAnalysisAgent(model=model).analyze(workspace))
+    normalized = json.loads(result.content)
+
+    assert normalized["findings"][0]["start_line"] == 7
+    assert normalized["findings"][0]["end_line"] == 7
+
+
 class FakeAgent:
     """返回固定 Agent 结果或抛出预设异常的分析 Agent 替身。"""
 

@@ -71,6 +71,18 @@ class FakeWorkspace:
             "truncated": requested_end < len(lines),
         }
 
+    async def locate_exact_quote(self, path, quote, near_line=1):
+        """在测试文件中精确定位 quote 的真实行范围。"""
+
+        content = self.files.get(path)
+        if content is None:
+            raise RepositoryAccessError("Repository file does not exist.")
+        position = content.find(quote)
+        if position < 0:
+            return None
+        start_line = content.count("\n", 0, position) + 1
+        return start_line, start_line + quote.count("\n")
+
 
 def _finding(
     *,
@@ -678,3 +690,44 @@ def test_submission_requires_warning_for_each_not_found_area() -> None:
                 FakeWorkspace(),
             )
         )
+
+
+def test_submission_relocates_exact_quote_with_wrong_line_range() -> None:
+    """quote 在同一文件中真实存在时，terminal 校验应安全修正错误行号。"""
+
+    parser = RepositoryAnalysisResultParser()
+    finding = _finding(
+        start_line=1,
+        end_line=1,
+        quote="@app.get('/health')",
+    )
+    coverage = {
+        area: {
+            "status": "covered" if area == "architecture" else "not_applicable",
+            "evidence_ids": ["F1"] if area == "architecture" else [],
+        }
+        for area in (
+            "project_overview",
+            "tech_stack",
+            "architecture",
+            "business_flows",
+            "data_and_integrations",
+            "testing_and_reliability",
+            "deployment",
+        )
+    }
+
+    result = asyncio.run(
+        parser.parse_submission(
+            {
+                "findings": [finding],
+                "evidence_by_field": {"tech_stack": ["F1"]},
+                "coverage": coverage,
+                "warnings": [],
+            },
+            FakeWorkspace(),
+        )
+    )
+
+    assert result.findings[0]["start_line"] == 4
+    assert result.findings[0]["end_line"] == 4

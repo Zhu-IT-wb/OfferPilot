@@ -777,6 +777,58 @@ def test_terminal_failure_reports_each_validation_error() -> None:
     )
 
 
+def test_identical_invalid_terminal_payload_does_not_consume_retry() -> None:
+    """原样重复失败 payload 不能耗尽最后一次真正的修正机会。"""
+
+    repeated = {"findings": [{"id": "F2", "quote": "bad"}]}
+    corrected = {"findings": [{"id": "F2", "quote": "exact"}]}
+    model = ScriptedModel([
+        _tool_turn("bad-repeat-1", "submit_analysis", repeated),
+        _tool_turn("bad-repeat-2", "submit_analysis", repeated),
+        _tool_turn("good-repeat-3", "submit_analysis", corrected),
+    ])
+
+    async def submit(arguments):
+        if arguments == corrected:
+            return AgentToolResult(
+                data={"accepted": True},
+                terminal_content=json.dumps(arguments),
+            )
+        return AgentToolResult(
+            data={
+                "error": {
+                    "message": (
+                        "finding F2 quote does not match; re-read the path "
+                        "and range, then correct or remove F2"
+                    )
+                }
+            },
+            is_error=True,
+        )
+
+    registry = AgentToolRegistry([
+        FunctionAgentTool(
+            AgentToolDefinition(
+                "submit_analysis",
+                "Submit.",
+                {"type": "object"},
+            ),
+            submit,
+        )
+    ])
+
+    result = asyncio.run(
+        ToolCallingAgent(
+            model=model,
+            tool_registry=registry,
+            terminal_tool_name="submit_analysis",
+        ).run([{"role": "user", "content": "分析"}])
+    )
+
+    assert len(model.calls) == 3
+    assert result.completion_reason == "terminal_tool"
+
+
 def test_second_invalid_submission_over_budget_still_has_no_third_attempt() -> None:
     """第二次坏提交同时越过预算时也必须优先执行提交次数上限。"""
 

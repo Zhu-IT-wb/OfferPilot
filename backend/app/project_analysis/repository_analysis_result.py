@@ -259,9 +259,24 @@ class RepositoryAnalysisResultParser:
 
             if finding["quote"] not in actual_content:
                 if strict_submission:
+                    relocated = await self._relocate_exact_quote(
+                        workspace,
+                        finding,
+                    )
+                    if relocated is not None:
+                        finding = {
+                            **finding,
+                            "start_line": relocated[0],
+                            "end_line": relocated[1],
+                        }
+                        grounded_findings.append(finding)
+                        continue
                     raise RepositoryAnalysisValidationError(
-                        f"finding {finding_id} quote does not match "
-                        "the declared source range."
+                        f"finding {finding_id} quote was not found exactly in "
+                        f"{finding['path']} near lines "
+                        f"{finding['start_line']}-{finding['end_line']}; "
+                        "re-read that file range and correct or remove this "
+                        "finding."
                     )
                 warnings.append(
                     f"已忽略原文不匹配的结论："
@@ -321,6 +336,25 @@ class RepositoryAnalysisResultParser:
             ),
             coverage=coverage,
         )
+
+    @staticmethod
+    async def _relocate_exact_quote(
+        workspace: GitHubRepositoryWorkspace,
+        finding: Dict[str, Any],
+    ) -> Optional[tuple]:
+        """仅在 Workspace 能精确找到同文件原文时修正模型行号。"""
+
+        locator = getattr(workspace, "locate_exact_quote", None)
+        if locator is None:
+            return None
+        try:
+            return await locator(
+                path=finding["path"],
+                quote=finding["quote"],
+                near_line=finding["start_line"],
+            )
+        except RepositoryAccessError:
+            return None
 
     @staticmethod
     def _parse_coverage(

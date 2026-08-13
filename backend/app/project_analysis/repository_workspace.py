@@ -522,6 +522,72 @@ class GitHubRepositoryWorkspace:
             "truncated": truncated,
         }
 
+    async def locate_exact_quote(
+        self,
+        path: str,
+        quote: str,
+        near_line: int = 1,
+    ) -> Optional[Tuple[int, int]]:
+        """在同一安全文件中精确定位原文，并优先选择靠近声明行的位置。"""
+
+        self._require_open()
+        normalized_path = self._normalize_file_path(path)
+        if normalized_path not in self._all_paths:
+            raise RepositoryAccessError(
+                "Repository file does not exist or is blocked."
+            )
+        if not quote:
+            raise RepositoryAccessError("quote cannot be empty.")
+
+        size_text = await self._git(
+            "cat-file",
+            "-s",
+            f"HEAD:{normalized_path}",
+        )
+        try:
+            file_size = int(size_text.strip())
+        except ValueError as exc:
+            raise RepositoryAccessError(
+                "Repository file size is invalid."
+            ) from exc
+        if file_size > self.max_file_bytes:
+            raise RepositoryAccessError(
+                "Repository file exceeds the size limit."
+            )
+
+        raw_content = await self._git_bytes(
+            "show",
+            f"HEAD:{normalized_path}",
+            max_output_bytes=self.max_file_bytes,
+        )
+        if b"\0" in raw_content:
+            raise RepositoryAccessError(
+                "Binary repository files cannot be read."
+            )
+        try:
+            text = raw_content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RepositoryAccessError(
+                "Repository file is not valid UTF-8 text."
+            ) from exc
+
+        occurrences = []
+        offset = 0
+        while True:
+            position = text.find(quote, offset)
+            if position < 0:
+                break
+            start_line = text.count("\n", 0, position) + 1
+            end_line = start_line + quote.count("\n")
+            occurrences.append((start_line, end_line))
+            offset = position + max(1, len(quote))
+        if not occurrences:
+            return None
+        return min(
+            occurrences,
+            key=lambda lines: abs(lines[0] - near_line),
+        )
+
     async def close(self) -> None:
         """重置 Workspace 状态并从磁盘删除临时仓库目录。"""
 
