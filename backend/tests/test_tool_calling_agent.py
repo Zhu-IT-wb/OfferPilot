@@ -944,3 +944,128 @@ def test_hard_turn_limit_uses_one_forced_terminal_submission() -> None:
         "function": {"name": "submit_analysis"},
     }
     assert result.completion_reason == "emergency_finalize"
+
+
+def test_hard_turn_limit_accepts_verified_partial_terminal_content() -> None:
+    """应急提交有坏证据时，应保留工具已核验的部分结果。"""
+
+    partial_content = json.dumps({"findings": [{"id": "F2"}]})
+    model = ScriptedModel([
+        _tool_turn("read-1", "read_file", {"path": "README.md"}),
+        _tool_turn("submit-2", "submit_analysis", {"findings": ["F1", "F2"]}),
+    ])
+
+    async def read_file(arguments):
+        return AgentToolResult(data={"content": "README"})
+
+    async def submit(arguments):
+        return AgentToolResult(
+            data={
+                "error": {
+                    "code": "invalid_analysis_submission",
+                    "message": "finding F1 quote does not match",
+                }
+            },
+            is_error=True,
+            terminal_content=partial_content,
+            verified_partial=True,
+        )
+
+    registry = AgentToolRegistry([
+        FunctionAgentTool(
+            AgentToolDefinition("read_file", "Read.", {"type": "object"}),
+            read_file,
+        ),
+        FunctionAgentTool(
+            AgentToolDefinition("submit_analysis", "Submit.", {"type": "object"}),
+            submit,
+        ),
+    ])
+
+    result = asyncio.run(
+        ToolCallingAgent(
+            model=model,
+            tool_registry=registry,
+            limits=ToolCallingAgentLimits(max_model_turns=1),
+            terminal_tool_name="submit_analysis",
+        ).run([{"role": "user", "content": "分析"}])
+    )
+
+    assert result.content == partial_content
+    assert result.completion_reason == "emergency_finalize"
+
+
+def test_normal_retry_limit_accepts_verified_partial_terminal_content() -> None:
+    """普通提交修正耗尽时也应返回工具已核验的部分结果。"""
+
+    partial_content = json.dumps({"findings": [{"id": "F1"}]})
+    model = ScriptedModel([
+        _tool_turn("bad-1", "submit_analysis", {"attempt": 1}),
+        _tool_turn("bad-2", "submit_analysis", {"attempt": 2}),
+    ])
+
+    async def submit(arguments):
+        return AgentToolResult(
+            data={"error": {"message": "one fact was invalid"}},
+            is_error=True,
+            terminal_content=partial_content,
+            verified_partial=True,
+        )
+
+    registry = AgentToolRegistry([
+        FunctionAgentTool(
+            AgentToolDefinition(
+                "submit_analysis",
+                "Submit.",
+                {"type": "object"},
+            ),
+            submit,
+        )
+    ])
+
+    result = asyncio.run(
+        ToolCallingAgent(
+            model=model,
+            tool_registry=registry,
+            terminal_tool_name="submit_analysis",
+        ).run([{"role": "user", "content": "分析"}])
+    )
+
+    assert result.content == partial_content
+    assert result.completion_reason == "partial_terminal_tool"
+
+
+def test_hard_turn_limit_rejects_unverified_error_terminal_content() -> None:
+    """普通错误不能仅凭携带 terminal_content 被当成可信部分结果。"""
+
+    model = ScriptedModel([
+        _tool_turn("submit-1", "submit_analysis", {"bad": True}),
+    ])
+
+    async def submit(arguments):
+        return AgentToolResult(
+            data={"error": {"message": "unverified result"}},
+            is_error=True,
+            terminal_content='{"findings": [{"id": "unsafe"}]}',
+        )
+
+    registry = AgentToolRegistry([
+        FunctionAgentTool(
+            AgentToolDefinition(
+                "submit_analysis",
+                "Submit.",
+                {"type": "object"},
+            ),
+            submit,
+        )
+    ])
+
+    with pytest.raises(AgentLimitExceededError, match="invalid result"):
+        asyncio.run(
+            ToolCallingAgent(
+                model=model,
+                tool_registry=registry,
+                limits=ToolCallingAgentLimits(max_model_turns=0),
+                terminal_tool_name="submit_analysis",
+            ).run([{"role": "user", "content": "分析"}])
+        )

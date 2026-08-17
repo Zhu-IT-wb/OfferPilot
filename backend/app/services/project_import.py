@@ -520,6 +520,7 @@ class ProjectImportWorkflow:
         job.progress = 0
         job.error_code = ""
         job.error_message = ""
+        job.stats = {}
         self.repository.save(job)
         return job
 

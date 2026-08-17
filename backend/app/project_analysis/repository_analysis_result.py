@@ -34,15 +34,21 @@ ALLOWED_COVERAGE_STATUSES = {
     "not_applicable",
 }
 
-DEFAULT_MAX_FINDINGS = 24
+DEFAULT_MAX_FINDINGS = 12
 DEFAULT_MAX_QUOTE_CHARS = 400
 DEFAULT_MAX_WARNINGS = 8
 DEFAULT_MAX_WARNING_CHARS = 200
+SOURCE_RANGE_VERIFIED_CONFIDENCE = 0.5
 SUBMISSION_FIELDS = {
-    "findings",
-    "evidence_by_field",
-    "coverage",
-    "warnings",
+    "facts",
+    "unknowns",
+}
+FACT_FIELDS = {
+    "claim",
+    "category",
+    "path",
+    "start_line",
+    "end_line",
 }
 FINDING_FIELDS = {
     "id",
@@ -55,7 +61,6 @@ FINDING_FIELDS = {
     "quote",
     "confidence",
 }
-
 
 
 class RepositoryAnalysisValidationError(ValueError):
@@ -127,7 +132,7 @@ class RepositoryAnalysisResultParser:
         payload: Dict[str, Any],
         workspace: GitHubRepositoryWorkspace,
     ) -> RepositoryAnalysisResult:
-        """验证 terminal 工具提交，包括显式分析覆盖状态。"""
+        """验证模型提交的轻量事实，并由后端生成完整 Finding。"""
 
         if not isinstance(payload, dict):
             raise RepositoryAnalysisValidationError(
@@ -145,11 +150,120 @@ class RepositoryAnalysisResultParser:
                 "submit_analysis contains unknown fields: "
                 + ", ".join(sorted(unknown))
             )
-        return await self._parse_payload(
+        return await self._parse_fact_submission(
             payload,
             workspace,
-            require_coverage=True,
-            strict_submission=True,
+        )
+
+    async def _parse_fact_submission(
+        self,
+        payload: Dict[str, Any],
+        workspace: GitHubRepositoryWorkspace,
+    ) -> RepositoryAnalysisResult:
+        """逐条校验事实；单条失败只形成 warning，不拒绝整份结果。"""
+
+        raw_facts = payload.get("facts")
+        if not isinstance(raw_facts, list):
+            raise RepositoryAnalysisValidationError(
+                "facts must be a list."
+            )
+        raw_unknowns = payload.get("unknowns")
+        if not isinstance(raw_unknowns, list):
+            raise RepositoryAnalysisValidationError(
+                "unknowns must be a list."
+            )
+        unknowns = self._parse_warnings(
+            raw_unknowns,
+            strict=False,
+        )
+        validation_warnings: List[str] = []
+        findings: List[Dict[str, Any]] = []
+
+        for index, raw_fact in enumerate(
+            raw_facts[:self._max_findings],
+            start=1,
+        ):
+            try:
+                fact = self._parse_fact(raw_fact)
+            except RepositoryAnalysisValidationError as exc:
+                validation_warnings.append(
+                    f"已忽略第 {index} 条无效事实：{exc}"
+                )
+                continue
+
+            if (
+                fact["end_line"]
+                - fact["start_line"]
+                + 1
+                > self._max_evidence_lines
+            ):
+                validation_warnings.append(
+                    f"已忽略证据范围过大的事实：{fact['path']}"
+                )
+                continue
+
+            try:
+                file_region = await workspace.read_file(
+                    path=fact["path"],
+                    start_line=fact["start_line"],
+                    end_line=fact["end_line"],
+                )
+            except RepositoryAccessError as exc:
+                validation_warnings.append(
+                    f"已忽略无法读取的事实 {fact['path']}：{exc}"
+                )
+                continue
+
+            excerpt = str(
+                file_region.get("content") or ""
+            ).strip()
+            if not excerpt:
+                validation_warnings.append(
+                    f"已忽略没有代码内容的事实：{fact['path']}"
+                )
+                continue
+            if len(excerpt) > self._max_quote_chars:
+                excerpt = excerpt[:self._max_quote_chars].rstrip()
+                validation_warnings.append(
+                    f"证据摘录过长，后端已截断：{fact['path']}"
+                )
+
+            finding_id = f"F{len(findings) + 1}"
+            findings.append({
+                "id": finding_id,
+                "claim": fact["claim"],
+                "topic": fact["category"],
+                "target_field": fact["category"],
+                "path": str(file_region.get("path") or fact["path"]),
+                "start_line": int(
+                    file_region.get("start_line") or fact["start_line"]
+                ),
+                "end_line": int(
+                    file_region.get("end_line") or fact["end_line"]
+                ),
+                "quote": excerpt,
+                # 后端只核验来源范围可读，不能自动证明 claim 的语义蕴含。
+                "confidence": SOURCE_RANGE_VERIFIED_CONFIDENCE,
+            })
+
+        if len(raw_facts) > self._max_findings:
+            validation_warnings.append(
+                "模型返回的事实超过数量限制，多余部分已忽略。"
+            )
+        if not findings:
+            raise RepositoryAnalysisValidationError(
+                "No verified facts were found."
+            )
+
+        evidence_by_field = self._build_evidence_by_field(findings)
+        return RepositoryAnalysisResult(
+            draft=self._build_draft(workspace, findings),
+            findings=findings,
+            evidence_by_field=evidence_by_field,
+            warnings=self._limit_warnings(
+                self._deduplicate(validation_warnings + unknowns)
+            ),
+            coverage=None,
         )
 
     async def _parse_payload(
@@ -169,6 +283,7 @@ class RepositoryAnalysisResultParser:
             payload.get("coverage"),
             warnings,
             require=require_coverage,
+            enforce_not_found_warnings=strict_submission,
         )
 
         raw_findings = payload.get("findings")
@@ -258,19 +373,19 @@ class RepositoryAnalysisResultParser:
             ).strip()
 
             if finding["quote"] not in actual_content:
+                relocated = await self._relocate_exact_quote(
+                    workspace,
+                    finding,
+                )
+                if relocated is not None:
+                    finding = {
+                        **finding,
+                        "start_line": relocated[0],
+                        "end_line": relocated[1],
+                    }
+                    grounded_findings.append(finding)
+                    continue
                 if strict_submission:
-                    relocated = await self._relocate_exact_quote(
-                        workspace,
-                        finding,
-                    )
-                    if relocated is not None:
-                        finding = {
-                            **finding,
-                            "start_line": relocated[0],
-                            "end_line": relocated[1],
-                        }
-                        grounded_findings.append(finding)
-                        continue
                     raise RepositoryAnalysisValidationError(
                         f"finding {finding_id} quote was not found exactly in "
                         f"{finding['path']} near lines "
@@ -361,6 +476,7 @@ class RepositoryAnalysisResultParser:
         raw_coverage: Any,
         warnings: List[str],
         require: bool,
+        enforce_not_found_warnings: bool,
     ) -> Dict[str, Dict[str, Any]]:
         """读取模型对每个分析维度的明确完成判断。"""
 
@@ -432,7 +548,7 @@ class RepositoryAnalysisResultParser:
                 for warning in warnings
             )
         ]
-        if unexplained:
+        if unexplained and enforce_not_found_warnings:
             raise RepositoryAnalysisValidationError(
                 "coverage not_found areas require matching warnings using "
                 "the [area] prefix: "
@@ -667,6 +783,68 @@ class RepositoryAnalysisResultParser:
             "end_line": end_line,
             "quote": quote,
             "confidence": confidence,
+        }
+
+    def _parse_fact(
+        self,
+        raw_fact: Any,
+    ) -> Dict[str, Any]:
+        """校验模型提交的最小事实，不接受后端拥有的证据字段。"""
+
+        if not isinstance(raw_fact, dict):
+            raise RepositoryAnalysisValidationError(
+                "Fact must be an object."
+            )
+        unknown = raw_fact.keys() - FACT_FIELDS
+        missing = FACT_FIELDS - raw_fact.keys()
+        if missing:
+            raise RepositoryAnalysisValidationError(
+                "Fact is missing fields: "
+                + ", ".join(sorted(missing))
+            )
+        if unknown:
+            raise RepositoryAnalysisValidationError(
+                "Fact contains unknown fields: "
+                + ", ".join(sorted(unknown))
+            )
+
+        claim = self._required_text(
+            raw_fact,
+            "claim",
+            max_length=300,
+        )
+        category = self._required_text(
+            raw_fact,
+            "category",
+            max_length=100,
+        )
+        path = self._required_text(
+            raw_fact,
+            "path",
+            max_length=1000,
+        )
+        if category not in ALLOWED_TARGET_FIELDS:
+            raise RepositoryAnalysisValidationError(
+                "Fact category is not allowed."
+            )
+        start_line = self._positive_integer(
+            raw_fact,
+            "start_line",
+        )
+        end_line = self._positive_integer(
+            raw_fact,
+            "end_line",
+        )
+        if end_line < start_line:
+            raise RepositoryAnalysisValidationError(
+                "Fact end_line cannot be smaller than start_line."
+            )
+        return {
+            "claim": claim,
+            "category": category,
+            "path": path,
+            "start_line": start_line,
+            "end_line": end_line,
         }
 
     @staticmethod

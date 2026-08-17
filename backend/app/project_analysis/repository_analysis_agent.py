@@ -18,7 +18,6 @@ from app.project_analysis.repository_analysis_result import (
     ALLOWED_TARGET_FIELDS,
     DEFAULT_MAX_FINDINGS,
     DEFAULT_MAX_QUOTE_CHARS,
-    REQUIRED_COVERAGE_AREAS,
     RepositoryAnalysisResultParser,
     RepositoryAnalysisValidationError,
 )
@@ -46,7 +45,7 @@ _PROJECT_ANALYSIS_SYSTEM_PROMPT_TEMPLATE = """
 4. 只能使用提供的 list_files、read_file、search_code、run_repository_command 和 submit_analysis 工具。
 5. run_repository_command 不是完整 Shell，只能使用其说明中列出的只读命令；argv 必须按参数拆分，不能传入 Shell 命令字符串。
 6. 不得猜测用户的个人职责、生产指标、业务成果和线上事故。
-7. 无法从代码确认的信息必须留空或放入 warnings。
+7. 无法从代码确认的信息必须放入 unknowns，不得猜测。
 
 分析过程：
 
@@ -56,75 +55,49 @@ _PROJECT_ANALYSIS_SYSTEM_PROMPT_TEMPLATE = """
 4. 根据需要使用 search_code 搜索类名、函数、路由、配置或依赖。
 5. 当目录统计、跨文件搜索或 Git 元数据能减少重复读取时，可以使用 run_repository_command。
 6. 阅读测试、部署、异常处理和可靠性相关代码。
-7. 当各覆盖维度已经有代表性证据，或已明确调查但未找到时，调用 submit_analysis 主动结束分析。
+7. 当项目定位、核心能力、技术栈和架构已有代表性证据时，调用 submit_analysis 主动结束分析。
 8. 优先读取与结论直接相关的局部行范围，避免重复读取已经检查过的文件。
 9. 当核心架构、技术栈、关键选型、测试和可靠性已有代表性证据时立即停止探索，不要穷举全部文件。
 
 不得使用普通文本宣布完成；最终结果必须通过 submit_analysis 工具提交。
 
-submit_analysis 参数必须符合：
+submit_analysis 只提交少量代码事实和未确认事项：
 
 {
-  "findings": [
+  "facts": [
     {
-      "id": "F1",
-      "claim": "单条技术结论",
-      "topic": "architecture",
-      "target_field": "architecture",
+      "claim": "项目采用控制面与执行面分离的两平面架构",
+      "category": "architecture",
       "path": "src/example.py",
       "start_line": 10,
-      "end_line": 20,
-      "quote": "文件中的原始代码摘录",
-      "confidence": 0.9
+      "end_line": 20
     }
   ],
-  "evidence_by_field": {
-    "architecture": ["F1"]
-  },
-  "coverage": {
-    "project_overview": {"status": "covered", "evidence_ids": ["F1"]},
-    "tech_stack": {"status": "not_found", "evidence_ids": []},
-    "architecture": {"status": "covered", "evidence_ids": ["F1"]},
-    "business_flows": {"status": "not_found", "evidence_ids": []},
-    "data_and_integrations": {"status": "not_applicable", "evidence_ids": []},
-    "testing_and_reliability": {"status": "not_found", "evidence_ids": []},
-    "deployment": {"status": "not_found", "evidence_ids": []}
-  },
-  "warnings": [
-    "[tech_stack] 未找到可验证的依赖或技术栈信息。",
-    "[business_flows] 未找到可验证的业务流程。",
-    "[testing_and_reliability] 未找到测试或可靠性代码。",
-    "[deployment] 未找到部署配置。"
+  "unknowns": [
+    "没有找到生产部署配置。"
   ]
 }
 
-findings 必须遵守：
+facts 必须遵守：
 
-1. 每条 finding 只表达一个结论。
+1. 每条 fact 只表达一个能够由指定代码范围支持的结论。
 2. path 必须是实际读取过的文件。
 3. start_line 和 end_line 必须对应实际代码行。
-4. quote 必须是文件中的连续原文。
-5. evidence_by_field 只能引用真实存在的 finding ID。
-6. target_field 只能是：
+4. 不要提交 quote、Finding ID、confidence、coverage 或字段映射；后端会读取原文并生成这些数据。
+5. category 只能是：
    name、background、tech_stack、architecture、
    key_decisions、technical_challenges、
    resume_description、supplemental_text。
-7. confidence 必须在 0 到 1 之间。
-8. findings 最多返回 __MAX_FINDINGS__ 条，只保留对面试训练最有价值且不重复的结论。
-9. quote 必须选择能够证明 claim 的最短连续原文，最多 __MAX_QUOTE_CHARS__ 个字符。
-10. claim 必须是最多 300 个字符的简洁结论，禁止重复 quote 中的长代码。
-11. warnings 最多返回 8 条，每条最多 200 个字符。
-12. 后端会根据验证后的 findings 重建项目档案，不要返回 project_profile 字段。
-13. coverage 必须包含全部七个维度；status 只能是 covered、not_found 或 not_applicable。
-14. covered 必须引用有效 Finding；每个 not_found 都必须有一条以 `[维度名]` 开头的对应 warning。
-15. 不要求穷举文件；每个维度有代表性证据或明确缺失判断即可提交。
-16. submit_analysis 返回校验错误后，必须重新读取错误中指定的文件范围并修正或删除对应 Finding；禁止原样重复提交。
+6. facts 最多返回 __MAX_FINDINGS__ 条；优先选择 1 条项目定位、1～2 条技术栈、2～4 条架构/核心能力及少量关键流程或技术挑战。
+7. 不要罗列每个类和模块，只保留能够形成完整项目理解的代表性事实。
+8. claim 必须是最多 300 个字符的简洁结论，不能超出指定代码范围能够证明的内容。
+9. unknowns 最多返回 8 条普通说明，不要求特殊前缀。
+10. 后端会逐条读取范围并生成证据；单条事实无效时会自动丢弃，不需要整份重写。
 """.strip()
 
 
 def build_project_analysis_system_prompt(
     max_findings: int,
-    max_quote_chars: int,
 ) -> str:
     """根据生产输出限制生成与解析器一致的 Agent 系统提示词。"""
 
@@ -132,20 +105,11 @@ def build_project_analysis_system_prompt(
         raise ValueError(
             "max_findings must be positive."
         )
-    if max_quote_chars < 1:
-        raise ValueError(
-            "max_quote_chars must be positive."
-        )
-
     return (
         _PROJECT_ANALYSIS_SYSTEM_PROMPT_TEMPLATE
         .replace(
             "__MAX_FINDINGS__",
             str(max_findings),
-        )
-        .replace(
-            "__MAX_QUOTE_CHARS__",
-            str(max_quote_chars),
         )
     )
 
@@ -153,9 +117,9 @@ def build_project_analysis_system_prompt(
 PROJECT_ANALYSIS_SYSTEM_PROMPT = (
     build_project_analysis_system_prompt(
         max_findings=DEFAULT_MAX_FINDINGS,
-        max_quote_chars=DEFAULT_MAX_QUOTE_CHARS,
     )
 )
+
 
 class RepositoryAnalysisAgent:
     """使用只读工具自主探索并分析项目代码"""
@@ -196,7 +160,6 @@ class RepositoryAnalysisAgent:
         self._system_prompt = (
             build_project_analysis_system_prompt(
                 max_findings=max_findings,
-                max_quote_chars=max_quote_chars,
             )
         )
     async def analyze(
@@ -249,7 +212,6 @@ class RepositoryAnalysisAgent:
                     {
                         "findings": validated.findings,
                         "evidence_by_field": validated.evidence_by_field,
-                        "coverage": validated.coverage or {},
                         "warnings": validated.warnings,
                     },
                     ensure_ascii=False,
@@ -259,7 +221,8 @@ class RepositoryAnalysisAgent:
 
         tools.append(
             self._build_submit_analysis_tool(
-                submit_analysis_handler
+                submit_analysis_handler,
+                self._max_findings,
             )
         )
 
@@ -294,7 +257,7 @@ class RepositoryAnalysisAgent:
         )
 
     @staticmethod
-    def _build_submit_analysis_tool(handler):
+    def _build_submit_analysis_tool(handler, max_findings):
         """构造项目分析 Agent 的唯一完成工具。"""
 
         from app.tools.agent_tool import (
@@ -302,104 +265,57 @@ class RepositoryAnalysisAgent:
             FunctionAgentTool,
         )
 
-        coverage_properties = {
-            area: {
-                "type": "object",
-                "properties": {
-                    "status": {
-                        "type": "string",
-                        "enum": [
-                            "covered",
-                            "not_found",
-                            "not_applicable",
-                        ],
-                    },
-                    "evidence_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                    },
-                },
-                "required": ["status", "evidence_ids"],
-                "additionalProperties": False,
-            }
-            for area in REQUIRED_COVERAGE_AREAS
-        }
-        finding_schema = {
+        fact_schema = {
             "type": "object",
             "properties": {
-                "id": {"type": "string"},
-                "claim": {"type": "string"},
-                "topic": {"type": "string"},
-                "target_field": {"type": "string"},
-                "path": {"type": "string"},
-                "start_line": {"type": "integer"},
-                "end_line": {"type": "integer"},
-                "quote": {"type": "string"},
-                "confidence": {"type": "number"},
+                "claim": {"type": "string", "maxLength": 300},
+                "category": {
+                    "type": "string",
+                    "enum": sorted(ALLOWED_TARGET_FIELDS),
+                },
+                "path": {"type": "string", "maxLength": 1000},
+                "start_line": {"type": "integer", "minimum": 1},
+                "end_line": {"type": "integer", "minimum": 1},
             },
             "required": [
-                "id",
                 "claim",
-                "topic",
-                "target_field",
+                "category",
                 "path",
                 "start_line",
                 "end_line",
-                "quote",
-                "confidence",
             ],
             "additionalProperties": False,
-        }
-        evidence_list_schema = {
-            "type": "array",
-            "items": {"type": "string"},
         }
         return FunctionAgentTool(
             definition=AgentToolDefinition(
                 name="submit_analysis",
                 description=(
                     "Submit the completed repository analysis. Call this when "
-                    "all coverage areas are either supported by representative "
-                    "evidence, not found after investigation, or not applicable. "
-                    "A rejected submission returns precise validation errors."
+                    "the project is understood. Submit only representative "
+                    "facts with source ranges; the backend creates evidence IDs "
+                    "and excerpts and drops individual invalid facts."
                 ),
                 parameters={
                     "type": "object",
                     "properties": {
-                        "findings": {
+                        "facts": {
                             "type": "array",
-                            "items": finding_schema,
+                            "items": fact_schema,
+                            "minItems": 1,
+                            "maxItems": max_findings,
                         },
-                        "evidence_by_field": {
-                            "type": "object",
-                            "description": (
-                                "Map project profile fields to grounded "
-                                "finding IDs. Do not use coverage area keys."
-                            ),
-                            "properties": {
-                                field_name: evidence_list_schema
-                                for field_name in sorted(
-                                    ALLOWED_TARGET_FIELDS
-                                )
+                        "unknowns": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "maxLength": 200,
                             },
-                            "additionalProperties": False,
-                        },
-                        "coverage": {
-                            "type": "object",
-                            "properties": coverage_properties,
-                            "required": list(REQUIRED_COVERAGE_AREAS),
-                            "additionalProperties": False,
-                        },
-                        "warnings": {
-                            "type": "array",
-                            "items": {"type": "string"},
+                            "maxItems": 8,
                         },
                     },
                     "required": [
-                        "findings",
-                        "evidence_by_field",
-                        "coverage",
-                        "warnings",
+                        "facts",
+                        "unknowns",
                     ],
                     "additionalProperties": False,
                 },

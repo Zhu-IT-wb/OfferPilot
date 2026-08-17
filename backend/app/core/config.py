@@ -140,7 +140,7 @@ class Settings:
     )
     project_analysis_max_findings: int = _get_int_env(
         "OFFERPILOT_PROJECT_ANALYSIS_MAX_FINDINGS",
-        24,
+        12,
     )
     project_analysis_max_quote_chars: int = _get_int_env(
         "OFFERPILOT_PROJECT_ANALYSIS_MAX_QUOTE_CHARS",

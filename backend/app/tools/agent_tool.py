@@ -30,6 +30,19 @@ class AgentToolResult:
     data: Dict[str,Any]
     is_error: bool = False
     terminal_content: Optional[str] = None
+    verified_partial: bool = False
+
+    def __post_init__(self) -> None:
+        """只允许错误工具显式标记已核验的部分 terminal 结果。"""
+
+        if self.verified_partial and (
+            not self.is_error
+            or self.terminal_content is None
+        ):
+            raise ValueError(
+                "verified_partial requires an error result with "
+                "terminal_content."
+            )
 
     def to_model_message(
         self,

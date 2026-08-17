@@ -109,6 +109,7 @@ class ToolCallingAgent:
         invalid_terminal_submissions = 0
         terminal_validation_errors: List[str] = []
         invalid_terminal_payloads = set()
+        verified_partial_content: Optional[str] = None
         soft_warning_sent = False
         emergency_reason: Optional[str] = None
         tool_schemas = self._tool_registry.model_schemas()
@@ -307,13 +308,15 @@ class ToolCallingAgent:
                         )
 
                     if tool_call.name == self._terminal_tool_name:
+                        if result.verified_partial:
+                            verified_partial_content = result.terminal_content
                         if cache_key in invalid_terminal_payloads:
                             event["duplicate_submission"] = True
                             history.append(
                                 self._meta_message(
                                     "你重复提交了完全相同且已被拒绝的结果。"
                                     "不要再次原样提交；请按工具错误重新读取对应"
-                                    "文件范围并修正或删除该 Finding。"
+                                    "文件范围并修正或删除对应无效项。"
                                 )
                             )
                         else:
@@ -346,6 +349,22 @@ class ToolCallingAgent:
                     invalid_terminal_submissions
                     >= self._limits.max_invalid_terminal_submissions
                 ):
+                    if verified_partial_content is not None:
+                        trace.append({
+                            "event": "partial_terminal_finalize",
+                            "turn": len(turns),
+                            "attempts": invalid_terminal_submissions,
+                            "success": True,
+                        })
+                        return self._result(
+                            verified_partial_content,
+                            history,
+                            turns,
+                            usage,
+                            tool_call_count,
+                            "partial_terminal_tool",
+                            trace,
+                        )
                     raise AgentProtocolError(
                         self._terminal_submission_failure_message(
                             invalid_terminal_submissions,
@@ -499,7 +518,8 @@ class ToolCallingAgent:
         compacted_history.append(
             self._meta_message(
                 "探索预算已经结束。不得继续探索。请立即根据现有证据调用 "
-                f"{terminal_name}。无法确认的事项标记为 not_found 并写入 warnings。"
+                f"{terminal_name}。无法确认的事项按该工具的当前 Schema 说明提交，"
+                "不要编造。"
             )
         )
         emergency_options = replace(
@@ -550,7 +570,10 @@ class ToolCallingAgent:
         tool_call_count += 1
         compacted_history.append(dict(turn.assistant_message))
         compacted_history.append(result.to_model_message(tool_call.id))
-        if result.is_error or result.terminal_content is None:
+        if (
+            result.terminal_content is None
+            or (result.is_error and not result.verified_partial)
+        ):
             raise AgentLimitExceededError(
                 "Agent reached the safety limit and submitted an invalid result: "
                 + self._terminal_error_message(result)
@@ -559,9 +582,10 @@ class ToolCallingAgent:
             {
                 "name": terminal_name,
                 "arguments": self._argument_summary(tool_call),
-                "success": True,
+                "success": not result.is_error,
                 "cache_hit": False,
                 "made_progress": True,
+                "partial": result.verified_partial,
             }
         ]
         self._notify_progress(
@@ -581,6 +605,7 @@ class ToolCallingAgent:
                 "turn": len(turns),
                 "tool": terminal_name,
                 "success": True,
+                "partial": result.verified_partial,
             }
         )
         return self._result(

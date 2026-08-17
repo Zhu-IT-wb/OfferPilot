@@ -110,6 +110,25 @@ def _finding(
     }
 
 
+def _fact(
+    *,
+    claim="项目使用 FastAPI 提供 HTTP 接口。",
+    category="tech_stack",
+    path="app/main.py",
+    start_line=1,
+    end_line=2,
+):
+    """创建模型提交的轻量代码事实。"""
+
+    return {
+        "claim": claim,
+        "category": category,
+        "path": path,
+        "start_line": start_line,
+        "end_line": end_line,
+    }
+
+
 def _payload(
     findings,
     *,
@@ -491,15 +510,15 @@ def test_parser_enforces_finding_and_line_limits() -> None:
     )
 
 
-def test_parser_defaults_to_twenty_four_findings() -> None:
-    """验证默认结果预算只保留二十四条高价值代码结论。"""
+def test_parser_defaults_to_twelve_findings() -> None:
+    """验证默认结果预算只保留十二条代表性代码结论。"""
 
     parser = RepositoryAnalysisResultParser()
     findings = [
         _finding(
             finding_id=f"F{index}",
         )
-        for index in range(1, 26)
+        for index in range(1, 14)
     ]
 
     result = asyncio.run(
@@ -509,8 +528,8 @@ def test_parser_defaults_to_twenty_four_findings() -> None:
         )
     )
 
-    assert len(result.findings) == 24
-    assert result.findings[-1]["id"] == "F24"
+    assert len(result.findings) == 12
+    assert result.findings[-1]["id"] == "F12"
     assert any(
         "超过数量限制" in warning
         for warning in result.warnings
@@ -616,118 +635,100 @@ def test_parser_does_not_trust_raw_project_profile() -> None:
     assert result.draft["outcomes"] == []
 
 
-def test_submission_rejects_unknown_coverage_area() -> None:
-    """terminal coverage 必须严格拒绝 Schema 未声明的额外维度。"""
-
-    parser = RepositoryAnalysisResultParser()
-    coverage = {
-        area: {
-            "status": "covered" if area == "architecture" else "not_applicable",
-            "evidence_ids": ["F1"] if area == "architecture" else [],
-        }
-        for area in (
-            "project_overview",
-            "tech_stack",
-            "architecture",
-            "business_flows",
-            "data_and_integrations",
-            "testing_and_reliability",
-            "deployment",
-        )
-    }
-    coverage["security"] = {"status": "not_applicable", "evidence_ids": []}
-
-    with pytest.raises(
-        RepositoryAnalysisValidationError,
-        match="unknown areas: security",
-    ):
-        asyncio.run(
-            parser.parse_submission(
-                {
-                    "findings": [_finding()],
-                    "evidence_by_field": {"tech_stack": ["F1"]},
-                    "coverage": coverage,
-                    "warnings": [],
-                },
-                FakeWorkspace(),
-            )
-        )
-
-
-def test_submission_requires_warning_for_each_not_found_area() -> None:
-    """每个 not_found 覆盖维度都必须有可机器关联的 warning。"""
-
-    parser = RepositoryAnalysisResultParser()
-    coverage = {
-        area: {
-            "status": "covered" if area == "architecture" else "not_applicable",
-            "evidence_ids": ["F1"] if area == "architecture" else [],
-        }
-        for area in (
-            "project_overview",
-            "tech_stack",
-            "architecture",
-            "business_flows",
-            "data_and_integrations",
-            "testing_and_reliability",
-            "deployment",
-        )
-    }
-    coverage["deployment"] = {"status": "not_found", "evidence_ids": []}
-
-    with pytest.raises(
-        RepositoryAnalysisValidationError,
-        match="deployment",
-    ):
-        asyncio.run(
-            parser.parse_submission(
-                {
-                    "findings": [_finding()],
-                    "evidence_by_field": {"tech_stack": ["F1"]},
-                    "coverage": coverage,
-                    "warnings": ["一条无法关联到维度的说明。"],
-                },
-                FakeWorkspace(),
-            )
-        )
-
-
-def test_submission_relocates_exact_quote_with_wrong_line_range() -> None:
-    """quote 在同一文件中真实存在时，terminal 校验应安全修正错误行号。"""
-
-    parser = RepositoryAnalysisResultParser()
-    finding = _finding(
-        start_line=1,
-        end_line=1,
-        quote="@app.get('/health')",
-    )
-    coverage = {
-        area: {
-            "status": "covered" if area == "architecture" else "not_applicable",
-            "evidence_ids": ["F1"] if area == "architecture" else [],
-        }
-        for area in (
-            "project_overview",
-            "tech_stack",
-            "architecture",
-            "business_flows",
-            "data_and_integrations",
-            "testing_and_reliability",
-            "deployment",
-        )
-    }
+def test_fact_submission_builds_backend_owned_finding() -> None:
+    """模型只提交事实和位置，ID、原文及映射由后端生成。"""
 
     result = asyncio.run(
-        parser.parse_submission(
+        RepositoryAnalysisResultParser().parse_submission(
             {
-                "findings": [finding],
-                "evidence_by_field": {"tech_stack": ["F1"]},
-                "coverage": coverage,
-                "warnings": [],
+                "facts": [_fact()],
+                "unknowns": ["没有找到部署配置。"],
             },
             FakeWorkspace(),
         )
     )
 
-    assert result.findings[0]["start_line"] == 4
-    assert result.findings[0]["end_line"] == 4
+    assert result.findings == [{
+        "id": "F1",
+        "claim": "项目使用 FastAPI 提供 HTTP 接口。",
+        "topic": "tech_stack",
+        "target_field": "tech_stack",
+        "path": "app/main.py",
+        "start_line": 1,
+        "end_line": 2,
+        "quote": "from fastapi import FastAPI\napp = FastAPI()",
+        "confidence": 0.5,
+    }]
+    assert result.evidence_by_field == {"tech_stack": ["F1"]}
+    assert result.warnings == ["没有找到部署配置。"]
+
+
+def test_fact_submission_drops_bad_fact_without_rejecting_result() -> None:
+    """单条路径或范围无效时只删除该事实，保留其余验证结果。"""
+
+    result = asyncio.run(
+        RepositoryAnalysisResultParser().parse_submission(
+            {
+                "facts": [
+                    _fact(path="missing.py"),
+                    _fact(
+                        claim="项目暴露健康检查接口。",
+                        category="architecture",
+                        start_line=4,
+                        end_line=6,
+                    ),
+                ],
+                "unknowns": [],
+            },
+            FakeWorkspace(),
+        )
+    )
+
+    assert [finding["id"] for finding in result.findings] == ["F1"]
+    assert result.findings[0]["quote"] == (
+        "@app.get('/health')\ndef health():\n    return {'status': 'ok'}"
+    )
+    assert any("missing.py" in warning for warning in result.warnings)
+
+
+def test_fact_submission_prioritizes_backend_validation_warnings() -> None:
+    """warning 预算不足时，优先保留后端丢弃事实的原因。"""
+
+    result = asyncio.run(
+        RepositoryAnalysisResultParser().parse_submission(
+            {
+                "facts": [
+                    _fact(path="missing.py"),
+                    _fact(),
+                ],
+                "unknowns": [
+                    f"未确认事项 {index}"
+                    for index in range(8)
+                ],
+            },
+            FakeWorkspace(),
+        )
+    )
+
+    assert len(result.warnings) == 8
+    assert any("missing.py" in warning for warning in result.warnings)
+
+
+def test_fact_submission_rejects_legacy_model_managed_protocol() -> None:
+    """terminal 不再要求模型维护 Finding ID、quote 和 coverage。"""
+
+    with pytest.raises(
+        RepositoryAnalysisValidationError,
+        match="missing required fields: facts, unknowns",
+    ):
+        asyncio.run(
+            RepositoryAnalysisResultParser().parse_submission(
+                {
+                    "findings": [_finding()],
+                    "evidence_by_field": {"tech_stack": ["F1"]},
+                    "coverage": {},
+                    "warnings": [],
+                },
+                FakeWorkspace(),
+            )
+        )

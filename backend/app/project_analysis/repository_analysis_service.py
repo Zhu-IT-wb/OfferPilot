@@ -160,7 +160,10 @@ class RepositoryAnalysisService:
                 result_status=(
                     "partial"
                     if agent_result.completion_reason
-                    == "emergency_finalize"
+                    in {
+                        "emergency_finalize",
+                        "partial_terminal_tool",
+                    }
                     else "complete"
                 ),
                 trace=tuple([

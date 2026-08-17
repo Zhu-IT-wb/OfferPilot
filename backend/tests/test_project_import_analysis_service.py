@@ -509,6 +509,31 @@ def test_workflow_preserves_latest_stage_and_usage_on_failure() -> None:
     }
 
 
+def test_retry_clears_previous_runtime_stats() -> None:
+    """重新分析从干净的运行指标开始，不混入上一轮轨迹。"""
+
+    jobs = InMemoryProjectDiscoveryRepository()
+    workflow = ProjectImportWorkflow(
+        repository=jobs,
+        project_repository=InMemoryProjectTrainingRepository(),
+        analysis_service=ObservableFailingAnalysisService(),
+    )
+    job = workflow.start(
+        owner_id="feishu:owner",
+        repository_url="https://github.com/example/retry-stats",
+        request_id="retry-stats-1234",
+    )
+    failed = asyncio.run(workflow.run(job.id))
+
+    assert failed.stats["runtime_trace"]
+
+    retried = workflow.retry("feishu:owner", job.id)
+
+    assert retried.status == ProjectDiscoveryStatus.QUEUED
+    assert retried.stats == {}
+    assert retried.retry_count == 1
+
+
 def test_workflow_renews_lease_during_slow_agent_analysis() -> None:
     """验证长时间没有阶段变化时独立心跳仍会刷新租约。"""
 
@@ -630,7 +655,7 @@ def test_production_dependencies_use_repository_analysis_service() -> None:
             project_analysis_max_request_chars=(
                 400_000
             ),
-            project_analysis_max_findings=24,
+            project_analysis_max_findings=12,
             project_analysis_max_quote_chars=400,
         ),
         InMemoryProjectTrainingRepository(),
@@ -669,7 +694,7 @@ def test_production_dependencies_use_repository_analysis_service() -> None:
     )
     assert (
         analysis_service._parser._max_findings
-        == 24
+        == 12
     )
     assert (
         analysis_service._parser._max_quote_chars

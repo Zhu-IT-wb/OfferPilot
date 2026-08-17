@@ -4,6 +4,7 @@ import json
 import pytest
 
 from app.agents.tool_calling_agent import (
+    ToolCallingAgentLimits,
     ToolCallingAgentResult,
 )
 from app.models.tool_calling import (
@@ -87,10 +88,10 @@ def test_analysis_prompt_uses_compact_grounded_output_contract() -> None:
     assert '"project_profile"' not in (
         PROJECT_ANALYSIS_SYSTEM_PROMPT
     )
-    assert "findings 最多返回 24 条" in (
+    assert "facts 最多返回 12 条" in (
         PROJECT_ANALYSIS_SYSTEM_PROMPT
     )
-    assert "quote" in PROJECT_ANALYSIS_SYSTEM_PROMPT
+    assert "不要提交 quote" in PROJECT_ANALYSIS_SYSTEM_PROMPT
     assert "run_repository_command" in (
         PROJECT_ANALYSIS_SYSTEM_PROMPT
     )
@@ -100,10 +101,8 @@ def test_analysis_prompt_uses_compact_grounded_output_contract() -> None:
 
     custom_prompt = build_project_analysis_system_prompt(
         max_findings=7,
-        max_quote_chars=123,
     )
-    assert "findings 最多返回 7 条" in custom_prompt
-    assert "最多 123 个字符" in custom_prompt
+    assert "facts 最多返回 7 条" in custom_prompt
 
 
 class CapturingModel:
@@ -125,48 +124,14 @@ class CapturingModel:
             }
         )
         payload = {
-            "findings": [
-                {
-                    "id": "F1",
-                    "claim": "后端使用 FastAPI",
-                    "topic": "architecture",
-                    "target_field": "architecture",
-                    "path": "app/main.py",
-                    "start_line": 1,
-                    "end_line": 1,
-                    "quote": "app = FastAPI()",
-                    "confidence": 0.95,
-                }
-            ],
-            "evidence_by_field": {"architecture": ["F1"]},
-            "coverage": {
-                name: {
-                    "status": (
-                        "covered" if name == "architecture" else "not_found"
-                    ),
-                    "evidence_ids": ["F1"] if name == "architecture" else [],
-                }
-                for name in (
-                    "project_overview",
-                    "tech_stack",
-                    "architecture",
-                    "business_flows",
-                    "data_and_integrations",
-                    "testing_and_reliability",
-                    "deployment",
-                )
-            },
-            "warnings": [
-                f"[{name}] 未找到可验证证据。"
-                for name in (
-                    "project_overview",
-                    "tech_stack",
-                    "business_flows",
-                    "data_and_integrations",
-                    "testing_and_reliability",
-                    "deployment",
-                )
-            ],
+            "facts": [{
+                "claim": "后端使用 FastAPI",
+                "category": "architecture",
+                "path": "app/main.py",
+                "start_line": 1,
+                "end_line": 1,
+            }],
+            "unknowns": [],
         }
         arguments = json.dumps(payload, ensure_ascii=False)
         return ModelTurn(
@@ -232,10 +197,10 @@ def test_analysis_agent_exposes_constrained_repository_command(
     assert len(model.calls) == 1
 
 
-def test_submit_analysis_schema_restricts_evidence_mapping_fields(
+def test_submit_analysis_schema_only_requires_lightweight_facts(
     tmp_path,
 ) -> None:
-    """模型 Schema 必须在生成阶段阻止 coverage 字段混入证据映射。"""
+    """模型只负责结论与位置，不负责 Finding 的派生字段。"""
 
     workspace = FakeWorkspace("https://github.com/example/project")
     workspace.repository_dir = str(tmp_path)
@@ -248,23 +213,25 @@ def test_submit_analysis_schema_restricts_evidence_mapping_fields(
         for tool in model.calls[0]["tools"]
         if tool["function"]["name"] == "submit_analysis"
     )
-    mapping_schema = submit_schema["properties"]["evidence_by_field"]
-
-    assert set(mapping_schema["properties"]) == {
-        "name",
-        "background",
-        "tech_stack",
-        "architecture",
-        "key_decisions",
-        "technical_challenges",
-        "resume_description",
-        "supplemental_text",
+    assert set(submit_schema["properties"]) == {"facts", "unknowns"}
+    assert set(submit_schema["required"]) == {"facts", "unknowns"}
+    assert submit_schema["additionalProperties"] is False
+    facts_schema = submit_schema["properties"]["facts"]
+    assert facts_schema["maxItems"] == 12
+    fact_schema = facts_schema["items"]
+    assert set(fact_schema["properties"]) == {
+        "claim",
+        "category",
+        "path",
+        "start_line",
+        "end_line",
     }
-    assert mapping_schema["additionalProperties"] is False
-    assert "project_overview" not in mapping_schema["properties"]
+    assert fact_schema["additionalProperties"] is False
+    assert "quote" not in fact_schema["properties"]
+    assert "id" not in fact_schema["properties"]
 
 
-def test_submit_analysis_rejects_incomplete_coverage_and_allows_retry(
+def test_submit_analysis_rejects_invalid_top_level_facts_and_allows_retry(
     tmp_path,
 ) -> None:
     """无效提交作为工具错误返回模型，修正后可正常完成。"""
@@ -276,12 +243,7 @@ def test_submit_analysis_rejects_incomplete_coverage_and_allows_retry(
 
     async def complete(messages, tools, options):
         if not model.calls:
-            bad_payload = {
-                "findings": [],
-                "evidence_by_field": {},
-                "coverage": {},
-                "warnings": [],
-            }
+            bad_payload = {"facts": "invalid", "unknowns": []}
             model.calls.append(
                 {
                     "messages": [dict(message) for message in messages],
@@ -327,14 +289,14 @@ def test_submit_analysis_rejects_incomplete_coverage_and_allows_retry(
     )
     retry_tool_result = json.loads(bad_result_message["content"])
     assert retry_tool_result["success"] is False
-    assert "coverage" in retry_tool_result["data"]["error"]["message"]
+    assert "facts" in retry_tool_result["data"]["error"]["message"]
     assert result.completion_reason == "terminal_tool"
 
 
-def test_submit_analysis_rejects_any_invalid_finding_and_allows_retry(
+def test_submit_analysis_drops_invalid_fact_without_retry(
     tmp_path,
 ) -> None:
-    """terminal 提交包含一条伪造证据时必须整体拒绝而非静默丢弃。"""
+    """单条无效事实被后端丢弃，不再迫使模型重写整份结果。"""
 
     workspace = FakeWorkspace("https://github.com/example/project")
     workspace.repository_dir = str(tmp_path)
@@ -345,24 +307,11 @@ def test_submit_analysis_rejects_any_invalid_finding_and_allows_retry(
         if not model.calls:
             valid_turn = await original_complete(messages, tools, options)
             bad_payload = dict(valid_turn.tool_calls[0].arguments)
-            bad_payload["findings"] = [
-                *bad_payload["findings"],
-                {
-                    **bad_payload["findings"][0],
-                    "id": "F_BAD",
-                    "path": "missing.py",
-                },
+            valid_fact = bad_payload["facts"][0]
+            bad_payload["facts"] = [
+                {**valid_fact, "category": "not-a-category"},
+                valid_fact,
             ]
-            bad_payload["evidence_by_field"] = {
-                **bad_payload["evidence_by_field"],
-                "tech_stack": ["F_BAD"],
-            }
-            model.calls.clear()
-            model.calls.append({
-                "messages": [dict(message) for message in messages],
-                "tools": tools,
-                "options": options,
-            })
             return ModelTurn(
                 assistant_message={
                     "role": "assistant",
@@ -393,46 +342,90 @@ def test_submit_analysis_rejects_any_invalid_finding_and_allows_retry(
     model.complete = complete
     result = asyncio.run(RepositoryAnalysisAgent(model=model).analyze(workspace))
 
-    assert len(model.calls) == 2
-    rejected = next(
-        message
-        for message in model.calls[1]["messages"]
-        if message.get("tool_call_id") == "bad-finding-submit"
-    )
-    payload = json.loads(rejected["content"])
-    assert payload["success"] is False
-    assert "F_BAD" in payload["data"]["error"]["message"]
+    assert len(model.calls) == 1
+    payload = json.loads(result.content)
+    assert [finding["id"] for finding in payload["findings"]] == ["F1"]
+    assert any("category" in warning for warning in payload["warnings"])
     assert result.completion_reason == "terminal_tool"
 
 
-def test_submit_analysis_returns_relocated_evidence_range(tmp_path) -> None:
-    """terminal 工具必须返回后端校正后的证据范围，而非原始坏行号。"""
+def test_emergency_submission_keeps_only_verified_findings(tmp_path) -> None:
+    """安全上限后的坏事实不应让其余已核验证据一起丢失。"""
+
+    workspace = FakeWorkspace("https://github.com/example/project")
+    workspace.repository_dir = str(tmp_path)
+    model = CapturingModel()
+    original_complete = model.complete
+
+    async def complete(messages, tools, options):
+        valid_turn = await original_complete(messages, tools, options)
+        payload = dict(valid_turn.tool_calls[0].arguments)
+        valid_fact = payload["facts"][0]
+        payload["facts"] = [
+            {**valid_fact, "category": "not-a-category"},
+            valid_fact,
+        ]
+        arguments = json.dumps(payload, ensure_ascii=False)
+        return ModelTurn(
+            assistant_message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "emergency-submit",
+                    "type": "function",
+                    "function": {
+                        "name": "submit_analysis",
+                        "arguments": arguments,
+                    },
+                }],
+            },
+            tool_calls=[ModelToolCall(
+                id="emergency-submit",
+                name="submit_analysis",
+                arguments=payload,
+            )],
+            content="",
+            reasoning_content=None,
+            finish_reason="tool_calls",
+            usage=TokenUsage(1, 1, 2),
+            provider="fake",
+            model="fake-model",
+        )
+
+    model.complete = complete
+    result = asyncio.run(
+        RepositoryAnalysisAgent(
+            model=model,
+            limits=ToolCallingAgentLimits(max_model_turns=0),
+        ).analyze(workspace)
+    )
+    content = json.loads(result.content)
+
+    assert result.completion_reason == "emergency_finalize"
+    assert [finding["id"] for finding in content["findings"]] == ["F1"]
+    assert content["evidence_by_field"] == {"architecture": ["F1"]}
+    assert "coverage" not in content
+    assert any("category" in warning for warning in content["warnings"])
+
+
+def test_submit_analysis_returns_backend_owned_evidence(tmp_path) -> None:
+    """terminal 工具由后端读取并生成原文与最终证据范围。"""
 
     workspace = FakeWorkspace("https://github.com/example/project")
     workspace.repository_dir = str(tmp_path)
 
-    async def locate_exact_quote(path, quote, near_line=1):
-        assert path == "app/main.py"
-        assert quote == "app = FastAPI()"
-        return 7, 7
-
     async def read_file(path, start_line=1, end_line=None):
         return {
             "path": path,
-            "content": (
-                "different source line"
-                if start_line == 3
-                else "app = FastAPI()"
-            ),
-            "start_line": start_line,
-            "end_line": end_line or start_line,
+            "content": "app = FastAPI()",
+            "start_line": 7,
+            "end_line": 7,
             "total_lines": 7,
             "truncated": False,
             "has_more": False,
             "next_start_line": None,
         }
 
-    workspace.locate_exact_quote = locate_exact_quote
     workspace.read_file = read_file
     model = CapturingModel()
     original_complete = model.complete
@@ -440,9 +433,9 @@ def test_submit_analysis_returns_relocated_evidence_range(tmp_path) -> None:
     async def complete(messages, tools, options):
         turn = await original_complete(messages, tools, options)
         payload = dict(turn.tool_calls[0].arguments)
-        payload["findings"] = [
+        payload["facts"] = [
             {
-                **payload["findings"][0],
+                **payload["facts"][0],
                 "start_line": 3,
                 "end_line": 3,
             }
@@ -479,6 +472,34 @@ def test_submit_analysis_returns_relocated_evidence_range(tmp_path) -> None:
 
     assert normalized["findings"][0]["start_line"] == 7
     assert normalized["findings"][0]["end_line"] == 7
+    assert normalized["findings"][0]["quote"] == "app = FastAPI()"
+
+
+def test_real_agent_result_round_trips_through_service(tmp_path) -> None:
+    """轻量提交经真实 Agent 规范化后可被 Service 再次解析。"""
+
+    factory = FakeWorkspaceFactory()
+
+    def workspace_factory(repository_url):
+        workspace = factory(repository_url)
+        workspace.repository_dir = str(tmp_path)
+        return workspace
+
+    service = RepositoryAnalysisService(
+        agent=RepositoryAnalysisAgent(model=CapturingModel()),
+        workspace_factory=workspace_factory,
+    )
+
+    run = asyncio.run(
+        service.analyze("https://github.com/example/project")
+    )
+
+    assert [
+        finding["id"]
+        for finding in run.analysis.findings
+    ] == ["F1"]
+    assert run.analysis.coverage == {}
+    assert run.result_status == "complete"
 
 
 class FakeAgent:
