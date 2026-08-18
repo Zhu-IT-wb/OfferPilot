@@ -1,11 +1,11 @@
 # OfferPilot Backend
 
-OfferPilot 后端服务第一阶段采用 FastAPI 搭建，当前只包含最小可运行骨架和健康检查接口。
+OfferPilot 后端基于 FastAPI，承载 Agent 编排、受控 Tool Calling、求职业务状态、飞书集成、学习中心、GitHub 项目分析与项目面试训练。
 
 ## Quick Start
 
 ```bash
-cd /Users/will/Developer/OfferPilot/backend
+cd OfferPilot/backend
 python3 -m venv .venv
 .venv/bin/python -m pip install -U pip
 .venv/bin/python -m pip install -e ".[dev]"
@@ -29,15 +29,16 @@ http://127.0.0.1:8000/api/health
 - FastAPI 应用入口；
 - `/api/health` 健康检查接口；
 - `/api/agent/message` 正式 Agent 消息入口；
-- `/api/feishu/events` 飞书事件回调草案，支持 challenge、文本消息提取和文本回复发送；
+- `/api/feishu/events` 飞书事件回调，支持 challenge、文本消息提取、Agent 回复与事件审计；
 - `/api/debug/llm` 大模型调用调试接口，仅用于本地/开发环境；
 - `/api/debug/intent` 意图识别调试接口，仅用于本地/开发环境；
 - `/api/debug/agent` Agent 编排调试接口，仅用于本地/开发环境；
-- 本地内存版工具执行，包括今日任务、投递创建、任务完成等；
+- 投递、任务、面试、日历与多维表格工具执行，写操作支持确认；
 - LeetCode Hot 100 本地目录、每日推荐、反馈、间隔复习与飞书定时推送；
-- 领域模型与 repository 边界，当前以内存实现承载数据；
+- GitHub 项目发现、只读代码分析、项目画像确认与项目面试训练；
+- 领域模型与 Repository 边界，支持内存与 SQLite 持久化；
 - 基础配置模块；
-- 后续模块目录预留。
+- 学习中心和项目训练 Dashboard。
 
 ## Debug Routes
 
@@ -208,7 +209,7 @@ LRU 看题解完成
 推荐与反馈的主界面是“刷题计划”网页。定时消息只保留进度摘要和工作台入口，题目结果在网页中点击记录；文本回复继续作为兼容入口。
 
 ```env
-OFFERPILOT_DASHBOARD_PUBLIC_BASE_URL=https://sculptor-jester-deskwork.ngrok-free.dev
+OFFERPILOT_DASHBOARD_PUBLIC_BASE_URL=https://your-domain.example
 OFFERPILOT_DASHBOARD_OAUTH_SCOPE=auth:user.id:read
 OFFERPILOT_DASHBOARD_SESSION_SECRET=replace-with-a-random-secret
 ```
@@ -218,20 +219,18 @@ OfferPilot 机器人会话顶部点击 `+`，添加网页链接并命名为“�
 开放平台为同一个应用添加“网页应用”能力，将桌面端主页和移动端主页都设为：
 
 ```text
-https://sculptor-jester-deskwork.ngrok-free.dev/leetcode/dashboard
+https://your-domain.example/leetcode/dashboard
 ```
 
 应用能力变更后需要创建版本并发布。
 
-`ngrok-free.dev` 只适合临时开发。ngrok 免费版会对首次浏览器访问显示
-`ERR_NGROK_6024` 安全确认页；手机端可点击 **Visit Site** 继续访问，但后端无法替
-飞书 WebView 添加 `ngrok-skip-browser-warning` 请求头。正式使用时应换成无访问确认
-页的稳定 HTTPS 域名（或付费 ngrok 域名）。
+临时隧道只适合本地联调。正式演示应使用没有访问确认页的稳定 HTTPS 域名，避免飞书
+WebView 被第三方确认页面阻断。
 
 飞书开放平台“安全设置”中的 OAuth 重定向 URL：
 
 ```text
-https://sculptor-jester-deskwork.ngrok-free.dev/leetcode/dashboard/auth/callback
+https://your-domain.example/leetcode/dashboard/auth/callback
 ```
 
 还需要把公网域名加入 H5 可信域名。域名变更时必须同步更新网页应用主页或会话标签页、
