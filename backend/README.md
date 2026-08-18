@@ -129,7 +129,7 @@ FEISHU_APP_SECRET=your_app_secret
 配置 DeepSeek API Key：
 
 ```bash
-cd /Users/will/Developer/OfferPilot/backend
+cd OfferPilot/backend
 cp .env.example .env
 ```
 
