@@ -18,15 +18,130 @@
     <div class="notice full-row"><strong>代码会发送给当前配置的 AI 服务分析。</strong><br>只支持公开仓库。请勿把业务数据、个人信息、密钥或内部代码提交到公开仓库；OfferPilot 只保存少量证据摘录，不保存完整仓库。</div>
     <p id="import-error" class="error"></p><div class="actions"><button type="button" id="start-import" class="primary">开始分析</button></div>
   </form></dialog>
-  <dialog id="editor"><form method="dialog" id="project-form"><div class="dialog-head"><h2 id="editor-title">编辑项目</h2><button value="cancel" class="ghost">关闭</button></div><input type="hidden" id="project-id">
-    <label>项目名称<input id="name" required maxlength="120"></label><label>目标岗位<input id="target-role" maxlength="120" placeholder="Java 后端工程师"></label>
-    <label>项目背景<textarea id="background" rows="3"></textarea></label><label>个人职责（每行一项）<textarea id="responsibilities" rows="3"></textarea></label>
-    <label>技术栈（逗号或换行分隔）<textarea id="tech-stack" rows="2"></textarea></label><label>核心架构<textarea id="architecture" rows="3"></textarea></label>
-    <label>关键决策（每行一项）<textarea id="key-decisions" rows="3"></textarea></label><label>技术难点（每行一项）<textarea id="technical-challenges" rows="3"></textarea></label>
-    <label>量化指标（每行一项）<textarea id="metrics" rows="3"></textarea></label><label>项目结果（每行一项）<textarea id="outcomes" rows="3"></textarea></label>
-    <label>简历描述<textarea id="resume-description" rows="3"></textarea></label><label>补充 Markdown<textarea id="supplemental-text" rows="6"></textarea></label>
-    <p id="form-error" class="error"></p><div class="actions"><button type="button" id="save-project" class="primary">保存项目档案</button></div>
-  </form></dialog>
+  <dialog id="editor" class="profile-editor">
+    <form id="project-form" class="editor-workspace">
+      <input type="hidden" id="project-id">
+      <header class="editor-header">
+        <div>
+          <span class="editor-kicker">项目档案</span>
+          <h2 id="editor-title">完善项目表达</h2>
+        </div>
+        <button type="button" id="close-editor" class="icon-button" aria-label="关闭编辑器" title="关闭">×</button>
+      </header>
+
+      <aside class="editor-steps" aria-label="编辑进度">
+        <button type="button" class="editor-step is-active" data-step-target="0"><span>1</span><strong>基本信息</strong><small>项目从哪里来</small></button>
+        <button type="button" class="editor-step" data-step-target="1"><span>2</span><strong>我的贡献</strong><small>明确个人边界</small></button>
+        <button type="button" class="editor-step" data-step-target="2"><span>3</span><strong>难点与决策</strong><small>讲清技术深度</small></button>
+        <button type="button" class="editor-step" data-step-target="3"><span>4</span><strong>结果与简历</strong><small>沉淀可用表达</small></button>
+      </aside>
+
+      <main class="editor-content">
+        <section class="editor-pane is-active" data-editor-step="0">
+          <div class="pane-heading"><span>第 1 步，共 4 步</span><h3>先确定这是一个什么项目</h3><p>项目来源会改变后续问题，不需要一开始就写完整的背景介绍。</p></div>
+          <fieldset class="choice-field">
+            <legend>项目来源</legend>
+            <div class="source-options" id="project-source-options">
+              <label><input type="radio" name="project-source" value="independent"><span><strong>个人独立开发</strong><small>从想法到实现由你主导</small></span></label>
+              <label><input type="radio" name="project-source" value="open_source"><span><strong>网上 / 开源项目</strong><small>学习、复现或二次开发</small></span></label>
+              <label><input type="radio" name="project-source" value="internship"><span><strong>实习 / 工作项目</strong><small>来自真实业务与团队协作</small></span></label>
+              <label><input type="radio" name="project-source" value="course"><span><strong>课程 / 比赛项目</strong><small>有明确任务或评审目标</small></span></label>
+              <label><input type="radio" name="project-source" value="team"><span><strong>团队项目</strong><small>多人共同设计和开发</small></span></label>
+            </div>
+          </fieldset>
+          <div class="field-grid">
+            <label>项目名称<input id="name" required maxlength="120" autocomplete="off"></label>
+            <label>目标岗位<input id="target-role" maxlength="120" placeholder="例如：Agent 开发工程师"></label>
+          </div>
+          <label><span id="background-label">项目要解决什么问题</span><textarea id="background" rows="4" maxlength="3000" placeholder="用 1—3 句话说明目标用户、使用场景和要解决的问题。"></textarea><small id="background-help">不用写技术实现，先讲清为什么要做。</small></label>
+        </section>
+
+        <section class="editor-pane" data-editor-step="1">
+          <div class="pane-heading"><span>第 2 步，共 4 步</span><h3>只保留你真正做过的事情</h3><p>先选职责类型，再确认 AI 从代码中识别出的候选内容。没有内容时可按句式补充。</p></div>
+          <fieldset class="choice-field">
+            <legend>我参与了哪些工作</legend>
+            <div class="chip-options" id="responsibility-categories">
+              <label><input type="checkbox" value="planning"><span>需求与方案设计</span></label>
+              <label><input type="checkbox" value="agent_workflow"><span>Agent 工作流设计</span></label>
+              <label><input type="checkbox" value="core_development"><span>核心模块开发</span></label>
+              <label><input type="checkbox" value="integration"><span>工具与外部系统集成</span></label>
+              <label><input type="checkbox" value="data_storage"><span>数据与存储</span></label>
+              <label><input type="checkbox" value="quality"><span>测试与质量保障</span></label>
+              <label><input type="checkbox" value="deployment"><span>部署与运维</span></label>
+              <label><input type="checkbox" value="collaboration"><span>文档与团队协作</span></label>
+            </div>
+          </fieldset>
+          <div class="guided-field">
+            <div class="field-heading"><div><strong>我的具体贡献</strong><small id="responsibility-hint">推荐句式：负责 [模块] 的 [设计/实现]，解决 [具体问题]。</small></div><button type="button" class="text-button" data-add-row="responsibilities">＋ 添加一项</button></div>
+            <div id="responsibilities-list" class="editable-list"></div>
+          </div>
+        </section>
+
+        <section class="editor-pane" data-editor-step="2">
+          <div class="pane-heading"><span>第 3 步，共 4 步</span><h3>把“怎么做”升级为“为什么这样做”</h3><p>代码分析得到的内容只是候选，请删除不属于你的部分，并补上取舍原因。</p></div>
+          <div class="guided-field">
+            <div class="field-heading"><div><strong>关键决策</strong><small>推荐句式：为了 [目标]，选择 [方案] 而不是 [备选]，因为 [取舍]。</small></div><button type="button" class="text-button" data-add-row="key-decisions">＋ 添加决策</button></div>
+            <div id="key-decisions-list" class="editable-list"></div>
+          </div>
+          <div class="guided-field">
+            <div class="field-heading"><div><strong>技术难点</strong><small>写清现象、定位过程和最终解决方式，避免只写“性能优化”。</small></div><button type="button" class="text-button" data-add-row="technical-challenges">＋ 添加难点</button></div>
+            <div id="technical-challenges-list" class="editable-list"></div>
+          </div>
+          <details class="advanced-fields">
+            <summary>技术细节（可选）</summary>
+            <div class="field-grid">
+              <label>技术栈<input id="tech-stack" placeholder="Python, LangGraph, FastAPI"></label>
+              <label>核心架构<textarea id="architecture" rows="5" maxlength="5000"></textarea></label>
+            </div>
+          </details>
+        </section>
+
+        <section class="editor-pane" data-editor-step="3">
+          <div class="pane-heading"><span>第 4 步，共 4 步</span><h3>如实说明结果，不强行编数字</h3><p>没有线上数据也没关系，测试、验收、交付和可运行产品都可以作为结果。</p></div>
+          <fieldset class="choice-field">
+            <legend>目前有什么证据</legend>
+            <div class="segmented-options" id="metrics-status-options">
+              <label><input type="radio" name="metrics-status" value="quantified"><span>有具体数据</span></label>
+              <label><input type="radio" name="metrics-status" value="validated"><span>只有测试或验收结果</span></label>
+              <label><input type="radio" name="metrics-status" value="none"><span>暂时没有</span></label>
+            </div>
+          </fieldset>
+          <div class="guided-field" id="metrics-group">
+            <div class="field-heading"><div><strong id="metrics-title">量化指标</strong><small id="metrics-hint">只填写能够解释来源的数据。</small></div><button type="button" class="text-button" data-add-row="metrics">＋ 添加证据</button></div>
+            <div id="metrics-list" class="editable-list"></div>
+          </div>
+          <fieldset class="choice-field">
+            <legend>这个项目取得了哪些结果</legend>
+            <div class="chip-options" id="outcome-categories">
+              <label><input type="checkbox" value="working_product"><span>完成可运行产品</span></label>
+              <label><input type="checkbox" value="technical_solution"><span>解决核心技术问题</span></label>
+              <label><input type="checkbox" value="efficiency_quality"><span>提升效率或质量</span></label>
+              <label><input type="checkbox" value="real_users"><span>真实用户使用</span></label>
+              <label><input type="checkbox" value="delivery"><span>开源或完成交付</span></label>
+              <label><input type="checkbox" value="test_acceptance"><span>完成测试验收</span></label>
+            </div>
+          </fieldset>
+          <div class="guided-field">
+            <div class="field-heading"><div><strong>项目结果</strong><small>推荐句式：完成 [交付物]，通过 [验证方式]，解决 [问题]。</small></div><button type="button" class="text-button" data-add-row="outcomes">＋ 添加结果</button></div>
+            <div id="outcomes-list" class="editable-list"></div>
+          </div>
+          <div class="resume-preview">
+            <div class="field-heading"><div><strong>简历描述预览</strong><small>基于你确认过的内容生成，可继续修改。</small></div><button type="button" id="generate-resume" class="secondary">重新生成</button></div>
+            <textarea id="resume-description" rows="6" maxlength="3000" placeholder="确认前面的信息后，可在这里生成一版简历描述。"></textarea>
+          </div>
+          <details class="advanced-fields">
+            <summary>补充材料（可选）</summary>
+            <label>Markdown 笔记<textarea id="supplemental-text" rows="7" maxlength="20000"></textarea></label>
+          </details>
+        </section>
+      </main>
+
+      <footer class="editor-footer">
+        <p id="form-error" class="error" role="alert"></p>
+        <div><button type="button" id="previous-step" class="ghost">上一步</button><button type="button" id="next-step" class="primary">下一步</button><button type="button" id="save-project" class="primary" hidden>保存项目档案</button></div>
+      </footer>
+    </form>
+  </dialog>
   <script src="/study/projects/assets/web_common.js"></script>
   <script src="/study/projects/assets/project_profiles.js"></script>
 </body></html>

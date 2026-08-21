@@ -294,6 +294,7 @@ def test_workflow_runs_graph_collects_input_and_confirms_idempotently():
     )
     assert first.id == second.id
     assert len(projects.list_projects("feishu:owner")) == 1
+    assert first.project_source == "open_source"
     assert first.source_repository_url == "https://github.com/OpenAI/example"
     assert first.source_commit_sha == "a" * 40
     assert first.responsibilities == ["我负责 API 设计与 Redis 缓存策略。"]

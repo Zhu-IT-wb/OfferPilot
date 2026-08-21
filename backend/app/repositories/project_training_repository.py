@@ -32,13 +32,17 @@ class ProjectTrainingSubmissionInProgressError(RuntimeError):
 PROJECT_PROFILE_FIELDS = (
     "name",
     "target_role",
+    "project_source",
     "background",
+    "responsibility_categories",
     "responsibilities",
     "tech_stack",
     "architecture",
     "key_decisions",
     "technical_challenges",
     "metrics",
+    "metrics_status",
+    "outcome_categories",
     "outcomes",
     "resume_description",
     "supplemental_text",
@@ -189,6 +193,7 @@ class InMemoryProjectTrainingRepository:
 
     def _create_discovered_project(self, owner_id, values, discovery_evidence):
         values = dict(values)
+        values.setdefault("project_source", "open_source")
         discovery_job_id = str(values.get("source_discovery_job_id") or "")
         existing = self.get_project_by_discovery_job(owner_id, discovery_job_id)
         if existing is not None:
@@ -671,11 +676,13 @@ def _profile_values(values: dict) -> dict:
 
 
 _LIST_FIELDS = {
+    "responsibility_categories",
     "responsibilities",
     "tech_stack",
     "key_decisions",
     "technical_challenges",
     "metrics",
+    "outcome_categories",
     "outcomes",
 }
 

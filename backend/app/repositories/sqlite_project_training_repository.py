@@ -71,6 +71,7 @@ class SQLiteProjectTrainingRepository:
 
     def create_discovered_project(self, owner_id, values, discovery_evidence):
         values = dict(values)
+        values.setdefault("project_source", "open_source")
         discovery_job_id = str(values.get("source_discovery_job_id") or "")
         with self._transaction() as connection:
             existing = self._get_project_by_discovery_job(
@@ -787,6 +788,10 @@ class _SQLiteTransaction:
 
 def _project(value: dict) -> ProjectProfile:
     data = dict(value)
+    data.setdefault("project_source", "")
+    data.setdefault("responsibility_categories", [])
+    data.setdefault("metrics_status", "")
+    data.setdefault("outcome_categories", [])
     data.setdefault("source_repository_url", "")
     data.setdefault("source_commit_sha", "")
     data.setdefault("source_discovery_job_id", "")

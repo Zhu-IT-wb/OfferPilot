@@ -145,6 +145,32 @@ def test_user_can_create_update_and_archive_a_versioned_project(monkeypatch) -> 
     assert archived.json()["project"]["status"] == "archived"
 
 
+def test_project_guidance_metadata_round_trips_and_none_metrics_is_complete(
+    monkeypatch,
+) -> None:
+    client, _ = _client(monkeypatch)
+    payload = _project_payload("OfferPilot")
+    payload.update(
+        {
+            "project_source": "independent",
+            "responsibility_categories": ["agent_workflow", "integration"],
+            "metrics": [],
+            "metrics_status": "none",
+            "outcome_categories": ["working_product", "test_acceptance"],
+        }
+    )
+
+    response = client.post("/api/study/projects", json=payload)
+
+    assert response.status_code == 201
+    project = response.json()["project"]
+    assert project["project_source"] == "independent"
+    assert project["responsibility_categories"] == ["agent_workflow", "integration"]
+    assert project["metrics_status"] == "none"
+    assert project["outcome_categories"] == ["working_product", "test_acceptance"]
+    assert "metrics" not in project["missing_fields"]
+
+
 def test_project_resources_are_hidden_from_other_users(monkeypatch) -> None:
     owner_client, repository = _client(monkeypatch, "ou_owner")
     project_id = owner_client.post(
@@ -676,6 +702,9 @@ def test_project_pages_expose_profile_training_and_voice_flows(monkeypatch) -> N
 
     assert projects_page.status_code == 200
     assert "分析 GitHub 项目" in projects_page.text
+    assert "我的贡献" in projects_page.text
+    assert 'name="project-source"' in projects_page.text
+    assert 'name="metrics-status"' in projects_page.text
     assert "/api/study/project-training/sessions" in client.get(
         "/study/projects/assets/project_profiles.js"
     ).text

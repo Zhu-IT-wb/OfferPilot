@@ -59,13 +59,17 @@ class ProjectProfile:
     owner_id: str
     name: str
     target_role: str = ""
+    project_source: str = ""
     background: str = ""
+    responsibility_categories: List[str] = field(default_factory=list)
     responsibilities: List[str] = field(default_factory=list)
     tech_stack: List[str] = field(default_factory=list)
     architecture: str = ""
     key_decisions: List[str] = field(default_factory=list)
     technical_challenges: List[str] = field(default_factory=list)
     metrics: List[str] = field(default_factory=list)
+    metrics_status: str = ""
+    outcome_categories: List[str] = field(default_factory=list)
     outcomes: List[str] = field(default_factory=list)
     resume_description: str = ""
     supplemental_text: str = ""
@@ -83,13 +87,17 @@ class ProjectProfile:
             "id": self.id,
             "name": self.name,
             "target_role": self.target_role,
+            "project_source": self.project_source,
             "background": self.background,
+            "responsibility_categories": list(self.responsibility_categories),
             "responsibilities": list(self.responsibilities),
             "tech_stack": list(self.tech_stack),
             "architecture": self.architecture,
             "key_decisions": list(self.key_decisions),
             "technical_challenges": list(self.technical_challenges),
             "metrics": list(self.metrics),
+            "metrics_status": self.metrics_status,
+            "outcome_categories": list(self.outcome_categories),
             "outcomes": list(self.outcomes),
             "resume_description": self.resume_description,
             "supplemental_text": self.supplemental_text,
@@ -110,7 +118,7 @@ class ProjectProfile:
             missing.append("responsibilities")
         if not self.technical_challenges:
             missing.append("technical_challenges")
-        if not self.metrics:
+        if not self.metrics and self.metrics_status != "none":
             missing.append("metrics")
         return missing
 
