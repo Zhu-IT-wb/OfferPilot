@@ -167,6 +167,76 @@ class ConversationEvent:
         }
 
 
+@dataclass(frozen=True)
+class ConversationSummary:
+    user_goals: List[str]
+    target_roles: List[str]
+    active_applications: List[Dict[str, Any]]
+    upcoming_interviews: List[Dict[str, Any]]
+    training_progress: List[Dict[str, Any]]
+    confirmed_facts: List[str]
+    decisions: List[str]
+    completed_actions: List[str]
+    open_loops: List[str]
+    tool_evidence: List[Dict[str, Any]]
+    summary_upto_sequence: int = 0
+    compaction_count: int = 0
+    schema_version: int = 1
+
+    @classmethod
+    def empty(cls) -> "ConversationSummary":
+        return cls(
+            user_goals=[],
+            target_roles=[],
+            active_applications=[],
+            upcoming_interviews=[],
+            training_progress=[],
+            confirmed_facts=[],
+            decisions=[],
+            completed_actions=[],
+            open_loops=[],
+            tool_evidence=[],
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "summary_upto_sequence": self.summary_upto_sequence,
+            "compaction_count": self.compaction_count,
+            "user_goals": list(self.user_goals),
+            "target_roles": list(self.target_roles),
+            "active_applications": deepcopy(self.active_applications),
+            "upcoming_interviews": deepcopy(self.upcoming_interviews),
+            "training_progress": deepcopy(self.training_progress),
+            "confirmed_facts": list(self.confirmed_facts),
+            "decisions": list(self.decisions),
+            "completed_actions": list(self.completed_actions),
+            "open_loops": list(self.open_loops),
+            "tool_evidence": deepcopy(self.tool_evidence),
+        }
+
+    def to_prompt_context(self) -> Dict[str, Any]:
+        return self.to_dict()
+
+    @classmethod
+    def from_dict(cls, value: Dict[str, Any]) -> "ConversationSummary":
+        return cls(
+            schema_version=int(value.get("schema_version", 1)),
+            summary_upto_sequence=max(0, int(value.get("summary_upto_sequence", 0))),
+            compaction_count=max(0, int(value.get("compaction_count", 0))),
+            user_goals=_string_list(value.get("user_goals")),
+            target_roles=_string_list(value.get("target_roles")),
+            active_applications=_dict_list(value.get("active_applications")),
+            upcoming_interviews=_dict_list(value.get("upcoming_interviews")),
+            training_progress=_dict_list(value.get("training_progress")),
+            confirmed_facts=_string_list(value.get("confirmed_facts")),
+            decisions=_string_list(value.get("decisions")),
+            completed_actions=_string_list(value.get("completed_actions")),
+            open_loops=_string_list(value.get("open_loops")),
+            tool_evidence=_dict_list(value.get("tool_evidence")),
+        )
+
+
 class ConversationStore(Protocol):
     def get_pending_action(self, conversation_id: str) -> Optional[PendingAgentAction]: ...
 
@@ -194,6 +264,24 @@ class ConversationStore(Protocol):
         limit: int = 40,
     ) -> List[ConversationEvent]: ...
 
+    def get_events_after(
+        self,
+        conversation_id: str,
+        sequence: int,
+    ) -> List[ConversationEvent]: ...
+
+    def get_conversation_summary(
+        self,
+        conversation_id: str,
+    ) -> Optional[ConversationSummary]: ...
+
+    def save_conversation_summary(
+        self,
+        conversation_id: str,
+        summary: ConversationSummary,
+        expected_upto_sequence: int,
+    ) -> bool: ...
+
 
 # 在内存中保存每个会话的待确认动作。
 class InMemoryConversationStore:
@@ -204,6 +292,7 @@ class InMemoryConversationStore:
         self._pending_actions: "OrderedDict[str, PendingAgentAction]" = OrderedDict()
         self._recent_contexts: "OrderedDict[str, RecentAgentContext]" = OrderedDict()
         self._events: "OrderedDict[str, List[ConversationEvent]]" = OrderedDict()
+        self._summaries: "OrderedDict[str, ConversationSummary]" = OrderedDict()
 
     # 获取 pending action。
     def get_pending_action(self, conversation_id: str) -> Optional[PendingAgentAction]:
@@ -276,11 +365,66 @@ class InMemoryConversationStore:
         self._events.move_to_end(conversation_id)
         return [replace(event, payload=deepcopy(event.payload)) for event in history[-limit:]]
 
+    def get_events_after(
+        self,
+        conversation_id: str,
+        sequence: int,
+    ) -> List[ConversationEvent]:
+        history = self._events.get(conversation_id)
+        if history is None:
+            return []
+        self._events.move_to_end(conversation_id)
+        return [
+            replace(event, payload=deepcopy(event.payload))
+            for event in history
+            if event.sequence > sequence
+        ]
+
+    def get_conversation_summary(
+        self,
+        conversation_id: str,
+    ) -> Optional[ConversationSummary]:
+        summary = self._summaries.get(conversation_id)
+        if summary is None:
+            return None
+        self._summaries.move_to_end(conversation_id)
+        return ConversationSummary.from_dict(summary.to_dict())
+
+    def save_conversation_summary(
+        self,
+        conversation_id: str,
+        summary: ConversationSummary,
+        expected_upto_sequence: int,
+    ) -> bool:
+        existing = self._summaries.get(conversation_id)
+        current_sequence = existing.summary_upto_sequence if existing is not None else 0
+        if current_sequence != expected_upto_sequence:
+            return False
+        self._summaries[conversation_id] = ConversationSummary.from_dict(summary.to_dict())
+        self._summaries.move_to_end(conversation_id)
+        while len(self._summaries) > self.max_sessions:
+            self._summaries.popitem(last=False)
+        return True
+
     # 处理 clear 相关逻辑。
     def clear(self) -> None:
         self._pending_actions.clear()
         self._recent_contexts.clear()
         self._events.clear()
+        self._summaries.clear()
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _string_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _dict_list(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [deepcopy(item) for item in value if isinstance(item, dict)]

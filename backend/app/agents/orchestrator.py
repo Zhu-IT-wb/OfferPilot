@@ -10,6 +10,7 @@ from app.agents.application_dialogue import ApplicationDialogueManager
 from app.agents.conversation import (
     ConversationEvent,
     ConversationStore,
+    ConversationSummary,
     PendingAgentAction,
     RecentAgentContext,
 )
@@ -24,6 +25,7 @@ from app.schemas.intent import IntentClassification, IntentName
 from app.schemas.tool import ToolResult
 from app.services.feishu_service import parse_chinese_datetime
 from app.services.conversation_dependencies import get_default_conversation_store
+from app.services.context_compaction_service import ContextCompactionService
 from app.tools.offerpilot_tools import get_default_tool_registry
 from app.tools.registry import ToolRegistry
 
@@ -38,6 +40,7 @@ class AgentGraphState(TypedDict, total=False):
     conversation_id: str
     pending: Optional[PendingAgentAction]
     recent_context: Optional[RecentAgentContext]
+    conversation_summary: Optional[ConversationSummary]
     conversation_history: List[ConversationEvent]
     route: MessageRoute
     classification: IntentClassification
@@ -61,12 +64,17 @@ class AgentOrchestrator:
         conversation_store: Optional[ConversationStore] = None,
         application_dialogue: Optional[ApplicationDialogueManager] = None,
         planner: Optional[AgentPlanner] = None,
+        context_compaction_service: Optional[ContextCompactionService] = None,
     ) -> None:
         self.intent_classifier = intent_classifier or IntentClassifier()
         self.message_router = message_router or MessageRouter()
         self.general_responder = general_responder or GeneralResponder()
         self.tool_registry = tool_registry or get_default_tool_registry()
         self.conversation_store = conversation_store or get_default_conversation_store()
+        self.context_compaction_service = (
+            context_compaction_service
+            or ContextCompactionService(self.conversation_store)
+        )
         self.application_dialogue = application_dialogue or ApplicationDialogueManager()
         llm_planner_enabled = None
         if planner is None and intent_classifier is not None:
@@ -181,20 +189,21 @@ class AgentOrchestrator:
         return graph.compile()
 
     # 从会话存储中加载当前用户上下文。
-    def _graph_load_context(self, state: AgentGraphState) -> Dict[str, Any]:
+    async def _graph_load_context(self, state: AgentGraphState) -> Dict[str, Any]:
         conversation_id = self._conversation_id(
             source=state.get("source", "api"),
             user_id=state.get("user_id", "local_user"),
             conversation_scope=state.get("conversation_scope"),
         )
+        prepared_context = await self.context_compaction_service.prepare_context(
+            conversation_id
+        )
         return {
             "conversation_id": conversation_id,
             "pending": self.conversation_store.get_pending_action(conversation_id),
             "recent_context": self.conversation_store.get_recent_context(conversation_id),
-            "conversation_history": self.conversation_store.get_recent_events(
-                conversation_id,
-                limit=40,
-            ),
+            "conversation_summary": prepared_context.summary,
+            "conversation_history": prepared_context.events,
         }
 
     # 根据上下文判断下一步进入确认、取消、待确认动作还是新消息路由。
@@ -314,6 +323,7 @@ class AgentOrchestrator:
                 source=state.get("source", "api"),
                 pending=state.get("pending"),
                 recent_context=state.get("recent_context"),
+                conversation_summary=state.get("conversation_summary"),
                 conversation_history=state.get("conversation_history", []),
             ),
             tool_specs=self.tool_registry.describe_tools(),
@@ -352,6 +362,7 @@ class AgentOrchestrator:
         response = await self._handle_general_message(
             message=state.get("message", ""),
             route=state["route"],
+            conversation_summary=state.get("conversation_summary"),
             conversation_history=state.get("conversation_history", []),
         )
         self._store_recent_context(
@@ -409,6 +420,7 @@ class AgentOrchestrator:
         self,
         message: str,
         route: MessageRoute,
+        conversation_summary: Optional[ConversationSummary] = None,
         conversation_history: Optional[List[ConversationEvent]] = None,
     ) -> AgentResponse:
         respond_with_context = getattr(self.general_responder, "respond_with_context", None)
@@ -416,6 +428,7 @@ class AgentOrchestrator:
             reply = await respond_with_context(
                 message=message,
                 route=route,
+                conversation_summary=conversation_summary,
                 conversation_history=conversation_history or [],
             )
         else:

@@ -5,7 +5,12 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.agents.application_dialogue import ApplicationDialogueManager
-from app.agents.conversation import ConversationEvent, PendingAgentAction, RecentAgentContext
+from app.agents.conversation import (
+    ConversationEvent,
+    ConversationSummary,
+    PendingAgentAction,
+    RecentAgentContext,
+)
 from app.agents.intent_classifier import IntentClassifier
 from app.core.config import settings
 from app.schemas.agent import AgentActionName, AgentResponse
@@ -25,6 +30,7 @@ class AgentPlannerContext:
     pending: Optional[PendingAgentAction] = None
     recent_context: Optional[RecentAgentContext] = None
     conversation_history: List[ConversationEvent] = field(default_factory=list)
+    conversation_summary: Optional[ConversationSummary] = None
 
 
 # 将旧意图识别结果转换为结构化 Agent 执行计划，作为 LLM Planner 的稳定兜底。
@@ -504,7 +510,7 @@ class AgentPlanner:
 8.1 用户要求面试改期时使用 reschedule_interview；取消已有面试时使用 cancel_interview。两者都属于写操作。
 9. 具体面试时间必须包含日期/相对日期和小时，例如“明天下午三点”。只有“明天下午”不够，必须 ask_clarification，missing_slots 包含 interview_time。
 10. 普通问候、你是谁、你能做什么，使用 answer_help，不要进入写操作。
-11. conversation.history 是当前会话此前的有序事件，包含用户消息、工具调用、工具结果和回复。遇到“继续、那个、结果怎么样、先准备哪个”等追问时，必须结合 history 和 recent_context 理解指代；已有工具结果时不要要求用户重复提供。
+11. conversation.summary 是较早会话的结构化压缩记忆，conversation.history 是摘要游标之后的有序原始事件。遇到“继续、那个、结果怎么样、先准备哪个”等追问时，必须同时结合 summary、history 和 recent_context 理解指代；已有工具结果时不要要求用户重复提供。
 11.1 如果用户追问“先准备哪个/哪个更急/怎么排序”，并且 history 或 recent_context.tool_result 里有近期面试列表，使用 answer_help，直接基于最近工具结果给优先级建议，不要追问 tasks_to_prioritize 之类不存在的字段。
 12. 如果需要追问，action 使用 ask_clarification，steps 为空，missing_slots 只能使用后端已定义的槽位，例如 company、role、round、interview_time、task_title、task_type。不要创造新槽位。
 13. “开启每日刷题/关闭每日刷题/今天刷什么”分别使用对应 LeetCode action。
@@ -617,6 +623,11 @@ AgentPlan JSON 字段：
                 "source": context.source,
                 "pending_action": self._serialize_pending_action(context.pending),
                 "recent_context": self._serialize_recent_context(context.recent_context),
+                "summary": (
+                    context.conversation_summary.to_prompt_context()
+                    if context.conversation_summary is not None
+                    else None
+                ),
                 "history": self._serialize_conversation_history(
                     context.conversation_history,
                 ),

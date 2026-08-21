@@ -151,6 +151,26 @@ class Settings:
         "OFFERPILOT_LLM_PLANNER_FALLBACK_ENABLED",
         True,
     )
+    context_compaction_enabled: bool = _get_bool_env(
+        "OFFERPILOT_CONTEXT_COMPACTION_ENABLED",
+        True,
+    )
+    context_max_input_tokens: int = _get_int_env(
+        "OFFERPILOT_CONTEXT_MAX_INPUT_TOKENS",
+        24_000,
+    )
+    context_compaction_trigger_tokens: int = _get_int_env(
+        "OFFERPILOT_CONTEXT_COMPACTION_TRIGGER_TOKENS",
+        16_000,
+    )
+    context_keep_recent_turns: int = _get_int_env(
+        "OFFERPILOT_CONTEXT_KEEP_RECENT_TURNS",
+        6,
+    )
+    context_summary_max_tokens: int = _get_int_env(
+        "OFFERPILOT_CONTEXT_SUMMARY_MAX_TOKENS",
+        2_000,
+    )
     debug_routes_enabled: bool = _get_bool_env(
         "OFFERPILOT_ENABLE_DEBUG_ROUTES",
         _debug_routes_default(),
