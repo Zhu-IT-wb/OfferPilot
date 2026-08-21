@@ -1,4 +1,6 @@
+import json
 import re
+import uuid
 from typing import Any, Dict, List, Optional
 
 from langgraph.graph import END, START, StateGraph
@@ -6,10 +8,10 @@ from typing_extensions import TypedDict
 
 from app.agents.application_dialogue import ApplicationDialogueManager
 from app.agents.conversation import (
-    InMemoryConversationStore,
+    ConversationEvent,
+    ConversationStore,
     PendingAgentAction,
     RecentAgentContext,
-    get_default_conversation_store,
 )
 from app.agents.general_responder import GeneralResponder
 from app.agents.intent_classifier import IntentClassifier
@@ -21,6 +23,7 @@ from app.schemas.agent_plan import AgentPlan, AgentPlanStep
 from app.schemas.intent import IntentClassification, IntentName
 from app.schemas.tool import ToolResult
 from app.services.feishu_service import parse_chinese_datetime
+from app.services.conversation_dependencies import get_default_conversation_store
 from app.tools.offerpilot_tools import get_default_tool_registry
 from app.tools.registry import ToolRegistry
 
@@ -31,9 +34,11 @@ class AgentGraphState(TypedDict, total=False):
     confirmed: bool
     user_id: str
     source: str
+    conversation_scope: Optional[str]
     conversation_id: str
     pending: Optional[PendingAgentAction]
     recent_context: Optional[RecentAgentContext]
+    conversation_history: List[ConversationEvent]
     route: MessageRoute
     classification: IntentClassification
     agent_plan: AgentPlan
@@ -53,7 +58,7 @@ class AgentOrchestrator:
         message_router: Optional[MessageRouter] = None,
         general_responder: Optional[GeneralResponder] = None,
         tool_registry: Optional[ToolRegistry] = None,
-        conversation_store: Optional[InMemoryConversationStore] = None,
+        conversation_store: Optional[ConversationStore] = None,
         application_dialogue: Optional[ApplicationDialogueManager] = None,
         planner: Optional[AgentPlanner] = None,
     ) -> None:
@@ -79,6 +84,8 @@ class AgentOrchestrator:
         confirmed: bool = False,
         user_id: str = "local_user",
         source: str = "api",
+        conversation_scope: Optional[str] = None,
+        external_event_id: Optional[str] = None,
     ) -> AgentResponse:
         final_state = await self._graph.ainvoke(
             {
@@ -86,11 +93,25 @@ class AgentOrchestrator:
                 "confirmed": confirmed,
                 "user_id": user_id,
                 "source": source,
+                "conversation_scope": conversation_scope,
                 "original_message": message,
             }
         )
         response = final_state.get("response")
         if response is not None:
+            conversation_id = final_state.get("conversation_id") or self._conversation_id(
+                source=source,
+                user_id=user_id,
+                conversation_scope=conversation_scope,
+            )
+            self._record_turn(
+                conversation_id=conversation_id,
+                message=message,
+                response=response,
+                source=source,
+                user_id=user_id,
+                external_event_id=external_event_id,
+            )
             return response
 
         return self._manual_response(
@@ -164,11 +185,16 @@ class AgentOrchestrator:
         conversation_id = self._conversation_id(
             source=state.get("source", "api"),
             user_id=state.get("user_id", "local_user"),
+            conversation_scope=state.get("conversation_scope"),
         )
         return {
             "conversation_id": conversation_id,
             "pending": self.conversation_store.get_pending_action(conversation_id),
             "recent_context": self.conversation_store.get_recent_context(conversation_id),
+            "conversation_history": self.conversation_store.get_recent_events(
+                conversation_id,
+                limit=40,
+            ),
         }
 
     # 根据上下文判断下一步进入确认、取消、待确认动作还是新消息路由。
@@ -288,6 +314,7 @@ class AgentOrchestrator:
                 source=state.get("source", "api"),
                 pending=state.get("pending"),
                 recent_context=state.get("recent_context"),
+                conversation_history=state.get("conversation_history", []),
             ),
             tool_specs=self.tool_registry.describe_tools(),
         )
@@ -325,6 +352,7 @@ class AgentOrchestrator:
         response = await self._handle_general_message(
             message=state.get("message", ""),
             route=state["route"],
+            conversation_history=state.get("conversation_history", []),
         )
         self._store_recent_context(
             conversation_id=state["conversation_id"],
@@ -377,8 +405,21 @@ class AgentOrchestrator:
         return {}
 
     # 处理闲聊、帮助说明和领域问答。
-    async def _handle_general_message(self, message: str, route: MessageRoute) -> AgentResponse:
-        reply = await self.general_responder.respond(message=message, route=route)
+    async def _handle_general_message(
+        self,
+        message: str,
+        route: MessageRoute,
+        conversation_history: Optional[List[ConversationEvent]] = None,
+    ) -> AgentResponse:
+        respond_with_context = getattr(self.general_responder, "respond_with_context", None)
+        if callable(respond_with_context):
+            reply = await respond_with_context(
+                message=message,
+                route=route,
+                conversation_history=conversation_history or [],
+            )
+        else:
+            reply = await self.general_responder.respond(message=message, route=route)
         if route.route == MessageRouteName.UNKNOWN:
             return self._manual_response(
                 intent=IntentName.UNKNOWN,
@@ -624,6 +665,85 @@ class AgentOrchestrator:
         self.conversation_store.clear_pending_action(conversation_id)
 
     # 保存最近一轮回复，支持下一轮基于上文追问。
+    def _record_turn(
+        self,
+        conversation_id: str,
+        message: str,
+        response: AgentResponse,
+        source: str,
+        user_id: str,
+        external_event_id: Optional[str],
+    ) -> None:
+        turn_id = external_event_id or uuid.uuid4().hex
+        user_payload: Dict[str, Any] = {
+            "text": message,
+            "source": source,
+            "user_id": user_id,
+        }
+        if external_event_id:
+            user_payload["external_event_id"] = external_event_id
+
+        events = [
+            ConversationEvent(
+                event_type="user_message",
+                role="user",
+                payload=user_payload,
+                turn_id=turn_id,
+            )
+        ]
+        if response.tool_result is not None:
+            events.extend(
+                [
+                    ConversationEvent(
+                        event_type="tool_call",
+                        role="assistant",
+                        payload={
+                            "tool_name": response.tool_result.tool_name,
+                            "arguments": response.slots.copy(),
+                            "raw_message": message,
+                        },
+                        turn_id=turn_id,
+                    ),
+                    ConversationEvent(
+                        event_type="tool_result",
+                        role="tool",
+                        payload=self._model_json_payload(response.tool_result),
+                        turn_id=turn_id,
+                    ),
+                ]
+            )
+
+        events.append(
+            ConversationEvent(
+                event_type="assistant_message",
+                role="assistant",
+                payload={
+                    "intent": response.intent.value,
+                    "confidence": response.confidence,
+                    "action": response.action.value,
+                    "reply": response.reply,
+                    "need_confirmation": response.need_confirmation,
+                    "slots": response.slots.copy(),
+                    "missing_slots": list(response.missing_slots),
+                },
+                turn_id=turn_id,
+            )
+        )
+        self.conversation_store.append_events(conversation_id, events)
+
+    @staticmethod
+    def _model_json_payload(model: Any) -> Dict[str, Any]:
+        if hasattr(model, "model_dump"):
+            try:
+                return model.model_dump(mode="json")
+            except TypeError:
+                return model.model_dump()
+        if hasattr(model, "json"):
+            return json.loads(model.json())
+        if hasattr(model, "dict"):
+            return model.dict()
+        raise TypeError(f"Unsupported persisted model type: {type(model).__name__}")
+
     def _store_recent_context(
         self,
         conversation_id: str,
@@ -704,9 +824,16 @@ class AgentOrchestrator:
 
     # 根据入口和用户 ID 生成会话 ID。
     @staticmethod
-    def _conversation_id(source: str, user_id: str) -> str:
+    def _conversation_id(
+        source: str,
+        user_id: str,
+        conversation_scope: Optional[str] = None,
+    ) -> str:
         normalized_source = source.strip() or "api"
         normalized_user_id = user_id.strip() or "local_user"
+        normalized_scope = (conversation_scope or "").strip()
+        if normalized_scope:
+            return f"{normalized_source}:{normalized_scope}:{normalized_user_id}"
         return f"{normalized_source}:{normalized_user_id}"
 
     # 根据入口和用户 ID 生成业务数据归属 ID。

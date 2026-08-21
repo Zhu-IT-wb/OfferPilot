@@ -95,6 +95,8 @@ async def handle_feishu_event(payload: Dict[str, Any]):
             confirmed=False,
             user_id=user_id or "unknown_feishu_user",
             source="feishu",
+            conversation_scope=_extract_conversation_scope(payload),
+            external_event_id=event_id,
         )
     except LLMRequestError as exc:
         raise HTTPException(
@@ -592,6 +594,32 @@ def _extract_user_id(payload: Dict[str, Any]) -> Optional[str]:
             return value
 
     return None
+
+
+def _extract_conversation_scope(payload: Dict[str, Any]) -> Optional[str]:
+    event = payload.get("event")
+    if not isinstance(event, dict):
+        return None
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return None
+
+    chat_id = message.get("chat_id")
+    if not isinstance(chat_id, str) or not chat_id:
+        return None
+
+    parts = []
+    header = payload.get("header")
+    if isinstance(header, dict):
+        tenant_key = header.get("tenant_key")
+        if isinstance(tenant_key, str) and tenant_key:
+            parts.append(tenant_key)
+    parts.append(chat_id)
+
+    root_id = message.get("root_id") or message.get("thread_id")
+    if isinstance(root_id, str) and root_id:
+        parts.append(root_id)
+    return ":".join(parts)
 
 
 # 处理 handle_bitable_record_event 相关逻辑。

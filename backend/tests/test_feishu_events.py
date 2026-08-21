@@ -43,11 +43,25 @@ def test_feishu_event_returns_challenge(monkeypatch) -> None:
     assert response.json() == {"challenge": "challenge_token"}
 
 
+def test_feishu_conversation_scope_uses_tenant_chat_and_thread() -> None:
+    payload = {
+        "header": {"tenant_key": "tenant-a"},
+        "event": {
+            "message": {
+                "chat_id": "chat-a",
+                "root_id": "message-root-a",
+            }
+        },
+    }
+
+    assert feishu._extract_conversation_scope(payload) == "tenant-a:chat-a:message-root-a"
+
+
 def test_feishu_event_extracts_text_and_calls_agent(monkeypatch) -> None:
     _disable_feishu_token(monkeypatch)
 
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api", **kwargs):
             assert message == "今天任务是什么？"
             assert confirmed is False
             assert user_id == "ou_test"
@@ -118,7 +132,7 @@ def test_feishu_today_leetcode_reply_is_an_interactive_card(monkeypatch) -> None
     cards = []
 
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api", **kwargs):
             return AgentResponse(
                 intent=IntentName.GET_TODAY_LEETCODE,
                 confidence=1.0,
@@ -162,7 +176,7 @@ def test_feishu_project_training_reply_is_an_interactive_launch_card(monkeypatch
     cards = []
 
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api", **kwargs):
             return AgentResponse(
                 intent=IntentName.START_PROJECT_TRAINING,
                 confidence=1.0,
@@ -321,7 +335,7 @@ def test_feishu_event_ignores_duplicate_event_id(monkeypatch) -> None:
     calls = {"agent": 0, "send": 0}
 
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api", **kwargs):
             calls["agent"] += 1
             return AgentResponse(
                 intent=IntentName.GET_TODAY_TASKS,
@@ -533,7 +547,7 @@ def test_feishu_event_route_stays_enabled_when_debug_routes_disabled(monkeypatch
     _disable_feishu_token(monkeypatch)
 
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api", **kwargs):
             return AgentResponse(
                 intent=IntentName.GET_TODAY_TASKS,
                 confidence=0.9,
@@ -592,7 +606,7 @@ def test_feishu_event_accepts_valid_top_level_token(monkeypatch) -> None:
 
 def test_feishu_event_accepts_valid_header_token(monkeypatch) -> None:
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api", **kwargs):
             assert message == "今天任务是什么？"
             assert user_id == "ou_test"
             assert source == "feishu"
@@ -693,7 +707,7 @@ def test_feishu_event_reports_unsent_reply_when_credentials_missing(monkeypatch)
     _disable_feishu_token(monkeypatch)
 
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api", **kwargs):
             return AgentResponse(
                 intent=IntentName.GET_TODAY_TASKS,
                 confidence=0.9,
@@ -733,7 +747,7 @@ def test_feishu_event_reports_reply_send_error(monkeypatch) -> None:
     _disable_feishu_token(monkeypatch)
 
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api", **kwargs):
             return AgentResponse(
                 intent=IntentName.GET_TODAY_TASKS,
                 confidence=0.9,

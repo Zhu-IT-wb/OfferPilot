@@ -1096,7 +1096,7 @@ def test_orchestrator_enables_leetcode_plan_and_records_explicit_feedback(monkey
 
 def test_debug_agent_route_returns_orchestrated_response(monkeypatch) -> None:
     class FakeAgentOrchestrator:
-        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api"):
+        async def handle_message(self, message, confirmed=False, user_id="local_user", source="api", **kwargs):
             assert message == "今天任务是什么？"
             assert confirmed is False
             assert user_id == "local_user"

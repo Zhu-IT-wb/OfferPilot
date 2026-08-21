@@ -39,6 +39,7 @@ class AgentMessageRequest(BaseModel):
     confirmed: bool = False
     user_id: str = Field(default="local_user", min_length=1, max_length=128)
     source: str = Field(default="api", min_length=1, max_length=64)
+    conversation_scope: Optional[str] = Field(default=None, max_length=512)
 
 
 # 定义接口请求体的数据结构。

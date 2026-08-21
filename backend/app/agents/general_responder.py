@@ -1,5 +1,7 @@
-from typing import Optional
+import json
+from typing import Any, List, Optional
 
+from app.agents.conversation import ConversationEvent
 from app.agents.message_router import MessageRoute, MessageRouteName
 from app.services.llm_service import LLMConfigurationError, LLMRequestError, LLMService
 
@@ -12,6 +14,7 @@ Answer non-mutating questions briefly in Chinese. Do not claim that you have wri
 created calendars, or updated Feishu unless the user explicitly asked for a supported action
 and a tool has run. Keep answers action-oriented and useful for Java backend, AI application,
 Agent development, interview preparation, job applications, and review workflows.
+When conversation_history is present, use it to resolve references and continue the prior topic.
 """.strip()
 
     # 初始化当前组件所需的依赖和配置。
@@ -20,12 +23,24 @@ Agent development, interview preparation, job applications, and review workflows
 
     # 生成非工具类消息的回复。
     async def respond(self, message: str, route: MessageRoute) -> str:
+        return await self.respond_with_context(
+            message=message,
+            route=route,
+            conversation_history=[],
+        )
+
+    async def respond_with_context(
+        self,
+        message: str,
+        route: MessageRoute,
+        conversation_history: List[ConversationEvent],
+    ) -> str:
         if route.route == MessageRouteName.SMALLTALK:
             return self._smalltalk_reply(message)
         if route.route == MessageRouteName.CAPABILITY_HELP:
             return self._capability_reply()
         if route.route == MessageRouteName.DOMAIN_QUESTION:
-            return await self._domain_question_reply(message)
+            return await self._domain_question_reply(message, conversation_history)
         return self._unknown_reply()
 
     # 处理 smalltalk_reply 相关逻辑。
@@ -55,10 +70,26 @@ Agent development, interview preparation, job applications, and review workflows
         )
 
     # 处理 domain_question_reply 相关逻辑。
-    async def _domain_question_reply(self, message: str) -> str:
+    async def _domain_question_reply(
+        self,
+        message: str,
+        conversation_history: Optional[List[ConversationEvent]] = None,
+    ) -> str:
+        prompt = message.strip()
+        if conversation_history:
+            prompt = json.dumps(
+                {
+                    "conversation_history": [
+                        _limit_history_value(event.to_prompt_context())
+                        for event in conversation_history
+                    ],
+                    "user_message": prompt,
+                },
+                ensure_ascii=False,
+            )
         try:
             result = await self.llm_service.generate_text(
-                prompt=message.strip(),
+                prompt=prompt,
                 system_prompt=self.SYSTEM_PROMPT,
                 temperature=0.2,
                 max_tokens=500,
@@ -103,3 +134,18 @@ Agent development, interview preparation, job applications, and review workflows
             "“我投递了某公司某岗位”、 “明天下午三点某公司一面”，"
             "也可以直接问 Java 后端、项目深挖或面试准备问题。"
         )
+
+
+def _limit_history_value(value: Any, depth: int = 0) -> Any:
+    if depth >= 8:
+        return "[nested content omitted]"
+    if isinstance(value, str):
+        return value if len(value) <= 4000 else f"{value[:4000]}...[truncated]"
+    if isinstance(value, list):
+        return [_limit_history_value(item, depth + 1) for item in value[:10]]
+    if isinstance(value, dict):
+        return {
+            str(key): _limit_history_value(item, depth + 1)
+            for key, item in value.items()
+        }
+    return value

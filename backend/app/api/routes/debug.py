@@ -70,6 +70,7 @@ async def debug_agent(request: DebugAgentRequest) -> AgentResponse:
             confirmed=request.confirmed,
             user_id=request.user_id,
             source=request.source,
+            conversation_scope=request.conversation_scope,
         )
     except LLMRequestError as exc:
         raise HTTPException(

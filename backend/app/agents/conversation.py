@@ -1,6 +1,8 @@
 from collections import OrderedDict
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from copy import deepcopy
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Protocol, Sequence
 
 from app.schemas.agent import AgentActionName, AgentResponse
 from app.schemas.intent import IntentName
@@ -30,6 +32,31 @@ class PendingAgentAction:
             missing_slots=list(response.missing_slots),
             need_confirmation=response.need_confirmation,
             original_message=original_message,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "intent": self.intent.value,
+            "confidence": self.confidence,
+            "action": self.action.value,
+            "reply": self.reply,
+            "slots": deepcopy(self.slots),
+            "missing_slots": list(self.missing_slots),
+            "need_confirmation": self.need_confirmation,
+            "original_message": self.original_message,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Dict[str, Any]) -> "PendingAgentAction":
+        return cls(
+            intent=IntentName(value["intent"]),
+            confidence=float(value["confidence"]),
+            action=AgentActionName(value["action"]),
+            reply=str(value.get("reply", "")),
+            slots=deepcopy(value.get("slots") or {}),
+            missing_slots=list(value.get("missing_slots") or []),
+            need_confirmation=bool(value.get("need_confirmation", False)),
+            original_message=str(value.get("original_message", "")),
         )
 
 
@@ -101,19 +128,82 @@ class RecentAgentContext:
             "intent": self.intent.value,
             "action": self.action.value,
             "reply": self.reply,
-            "slots": self.slots,
-            "tool_result": self.tool_result,
-            "application_focus": self.application_focus,
+            "slots": deepcopy(self.slots),
+            "tool_result": deepcopy(self.tool_result),
+            "application_focus": deepcopy(self.application_focus),
         }
+
+    def to_dict(self) -> Dict[str, Any]:
+        return deepcopy(self.to_prompt_context())
+
+    @classmethod
+    def from_dict(cls, value: Dict[str, Any]) -> "RecentAgentContext":
+        return cls(
+            original_message=str(value.get("original_message", "")),
+            intent=IntentName(value["intent"]),
+            action=AgentActionName(value["action"]),
+            reply=str(value.get("reply", "")),
+            slots=deepcopy(value.get("slots") or {}),
+            tool_result=deepcopy(value.get("tool_result")),
+            application_focus=deepcopy(value.get("application_focus") or {}),
+        )
+
+
+@dataclass(frozen=True)
+class ConversationEvent:
+    event_type: str
+    role: str
+    payload: Dict[str, Any]
+    turn_id: str
+    sequence: int = 0
+    created_at: str = ""
+
+    def to_prompt_context(self) -> Dict[str, Any]:
+        return {
+            "sequence": self.sequence,
+            "event_type": self.event_type,
+            "role": self.role,
+            "payload": deepcopy(self.payload),
+        }
+
+
+class ConversationStore(Protocol):
+    def get_pending_action(self, conversation_id: str) -> Optional[PendingAgentAction]: ...
+
+    def set_pending_action(self, conversation_id: str, pending: PendingAgentAction) -> None: ...
+
+    def clear_pending_action(self, conversation_id: str) -> None: ...
+
+    def get_recent_context(self, conversation_id: str) -> Optional[RecentAgentContext]: ...
+
+    def set_recent_context(
+        self,
+        conversation_id: str,
+        recent_context: RecentAgentContext,
+    ) -> None: ...
+
+    def append_events(
+        self,
+        conversation_id: str,
+        events: Sequence[ConversationEvent],
+    ) -> List[ConversationEvent]: ...
+
+    def get_recent_events(
+        self,
+        conversation_id: str,
+        limit: int = 40,
+    ) -> List[ConversationEvent]: ...
 
 
 # 在内存中保存每个会话的待确认动作。
 class InMemoryConversationStore:
     # 初始化当前组件所需的依赖和配置。
-    def __init__(self, max_sessions: int = 1000) -> None:
+    def __init__(self, max_sessions: int = 1000, max_events_per_session: int = 200) -> None:
         self.max_sessions = max_sessions
+        self.max_events_per_session = max_events_per_session
         self._pending_actions: "OrderedDict[str, PendingAgentAction]" = OrderedDict()
         self._recent_contexts: "OrderedDict[str, RecentAgentContext]" = OrderedDict()
+        self._events: "OrderedDict[str, List[ConversationEvent]]" = OrderedDict()
 
     # 获取 pending action。
     def get_pending_action(self, conversation_id: str) -> Optional[PendingAgentAction]:
@@ -147,15 +237,50 @@ class InMemoryConversationStore:
         while len(self._recent_contexts) > self.max_sessions:
             self._recent_contexts.popitem(last=False)
 
+    def append_events(
+        self,
+        conversation_id: str,
+        events: Sequence[ConversationEvent],
+    ) -> List[ConversationEvent]:
+        history = self._events.setdefault(conversation_id, [])
+        next_sequence = history[-1].sequence + 1 if history else 1
+        persisted = []
+        for event in events:
+            stored = replace(
+                event,
+                sequence=next_sequence,
+                created_at=event.created_at or _utc_now(),
+                payload=deepcopy(event.payload),
+            )
+            history.append(stored)
+            persisted.append(stored)
+            next_sequence += 1
+
+        if len(history) > self.max_events_per_session:
+            del history[: len(history) - self.max_events_per_session]
+        self._events.move_to_end(conversation_id)
+        while len(self._events) > self.max_sessions:
+            self._events.popitem(last=False)
+        return persisted
+
+    def get_recent_events(
+        self,
+        conversation_id: str,
+        limit: int = 40,
+    ) -> List[ConversationEvent]:
+        if limit <= 0:
+            return []
+        history = self._events.get(conversation_id)
+        if history is None:
+            return []
+        self._events.move_to_end(conversation_id)
+        return [replace(event, payload=deepcopy(event.payload)) for event in history[-limit:]]
+
     # 处理 clear 相关逻辑。
     def clear(self) -> None:
         self._pending_actions.clear()
         self._recent_contexts.clear()
+        self._events.clear()
 
-
-_default_conversation_store = InMemoryConversationStore()
-
-
-# 获取 default conversation store。
-def get_default_conversation_store() -> InMemoryConversationStore:
-    return _default_conversation_store
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
