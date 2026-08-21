@@ -1,9 +1,10 @@
-from typing import Callable, Dict, List, Optional
+import inspect
+from typing import Awaitable, Callable, Dict, List, Optional, Union
 
 from app.schemas.tool import ToolResult, ToolSpec
 
 
-ToolHandler = Callable[[dict], ToolResult]
+ToolHandler = Callable[[dict], Union[ToolResult, Awaitable[ToolResult]]]
 
 
 # 表示当前模块抛出的业务异常。
@@ -57,4 +58,21 @@ class ToolRegistry:
         if handler is None:
             raise ToolNotFoundError(f"Tool is not registered: {tool_name}")
 
-        return handler(arguments)
+        result = handler(arguments)
+        if inspect.isawaitable(result):
+            close = getattr(result, "close", None)
+            if callable(close):
+                close()
+            raise RuntimeError(
+                f"Tool {tool_name} is asynchronous; use run_async instead."
+            )
+        return result
+
+    async def run_async(self, tool_name: str, arguments: dict) -> ToolResult:
+        handler = self._handlers.get(tool_name)
+        if handler is None:
+            raise ToolNotFoundError(f"Tool is not registered: {tool_name}")
+        result = handler(arguments)
+        if inspect.isawaitable(result):
+            return await result
+        return result

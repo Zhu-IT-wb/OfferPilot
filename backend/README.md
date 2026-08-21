@@ -281,4 +281,40 @@ OFFERPILOT_KNOWLEDGE_SOURCE_PATH=../data/knowledge
 OFFERPILOT_KNOWLEDGE_MARKDOWN_SYNC_ENABLED=true
 ```
 
+## MCP + Hybrid RAG
+
+OfferPilot runs a local `Career Knowledge` MCP server over stdio. The main Agent
+keeps one persistent MCP client and exposes two read-only planning tools:
+
+- `search_career_knowledge`: interview knowledge plus actor-scoped project evidence;
+- `search_project_evidence`: only the current actor's project and source-code evidence.
+
+SQLite remains the source of truth. Qdrant Local stores a rebuildable index under
+`backend/data/qdrant`, using `BAAI/bge-small-zh-v1.5` dense embeddings and Qdrant
+BM25 sparse embeddings. Dense and sparse candidates are fused with RRF. Every hit
+retains a stable `evidence_id`, source path, code line range, project version and
+content hash. Access filters are applied to both retrieval branches before fusion.
+
+```env
+OFFERPILOT_RAG_ENABLED=true
+OFFERPILOT_RAG_QDRANT_PATH=./data/qdrant
+OFFERPILOT_RAG_COLLECTION_NAME=career_knowledge
+OFFERPILOT_RAG_DENSE_MODEL=BAAI/bge-small-zh-v1.5
+OFFERPILOT_RAG_SPARSE_MODEL=Qdrant/bm25
+OFFERPILOT_RAG_FASTEMBED_CACHE_PATH=./data/fastembed-cache
+OFFERPILOT_RAG_TOP_K=5
+```
+
+The first query downloads the local embedding models. Run an end-to-end MCP smoke
+test with:
+
+```bash
+.venv/bin/python scripts/smoke_mcp_rag.py "Why does InnoDB use a B+ tree?"
+```
+
+Retrieval quality can be measured with the reusable evaluator in
+`app/rag/evaluation.py`; it reports Recall@K, MRR and p95 latency from gold evidence
+IDs. Project evidence is private: the backend injects `owner_id`, and model-produced
+arguments cannot override the authenticated actor.
+
 当前没有引入向量数据库：每日推荐、展示和评分都按稳定题目 ID 读取结构化数据；后续自由追问或跨题语义检索需要时，可在 `KnowledgeCorpus.search()` 的内部实现中增加混合检索，而不改变业务调用接口。模型只识别命中的评分点和回答证据，最终分数、掌握状态与复习日期仍由服务端计算。

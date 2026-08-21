@@ -34,6 +34,7 @@ class ProjectDiscoveryRunner:
         self._queued_ids: Set[str] = set()
         self._active_ids: Set[str] = set()
         self._executions = {}
+        self._stopping = False
 
     def start(self):
         self._ensure_started()
@@ -59,6 +60,7 @@ class ProjectDiscoveryRunner:
     def _ensure_started(self):
         if self._queue is not None:
             return
+        self._stopping = False
         self._queue = asyncio.Queue(maxsize=self._queue_capacity)
         self._workers = {
             asyncio.create_task(self._worker())
@@ -79,6 +81,8 @@ class ProjectDiscoveryRunner:
                 # Python 3.9 has no Task.cancelling(). A cancelled child is a
                 # normal per-job cancellation; shutdown cancels workers only
                 # after all child executions have settled (see stop()).
+                if self._stopping:
+                    raise
                 continue
             except Exception:
                 logger.exception("Project discovery job failed outside workflow: %s", job_id)
@@ -109,6 +113,7 @@ class ProjectDiscoveryRunner:
                 break
 
     async def stop(self):
+        self._stopping = True
         executions = list(self._executions.values())
         for execution in executions:
             execution.cancel()
@@ -127,3 +132,4 @@ class ProjectDiscoveryRunner:
         self._executions.clear()
         self._recovery_task = None
         self._queue = None
+        self._stopping = False

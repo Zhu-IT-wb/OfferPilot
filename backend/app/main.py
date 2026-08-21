@@ -38,6 +38,7 @@ from app.services.project_discovery_dependencies import (
 from app.services.project_training_dependencies import (
     get_default_project_training_repository,
 )
+from app.mcp.client import close_default_mcp_client
 from app.tools.offerpilot_tools import (
     get_default_leetcode_repository,
     get_default_offerpilot_repository,
@@ -151,6 +152,7 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
     # 在应用关闭时停止多维表格定时拉取同步任务。
     @app.on_event("shutdown")
     async def stop_bitable_pull_sync() -> None:
+        await close_default_mcp_client()
         service = getattr(app.state, "bitable_pull_sync_service", None)
         if service is not None:
             await service.stop()

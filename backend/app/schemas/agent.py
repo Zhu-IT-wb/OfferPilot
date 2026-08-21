@@ -26,6 +26,8 @@ class AgentActionName(str, Enum):
     START_PROJECT_TRAINING = "start_project_training"
     RESUME_PROJECT_TRAINING = "resume_project_training"
     GET_PROJECT_TRAINING_SUMMARY = "get_project_training_summary"
+    SEARCH_CAREER_KNOWLEDGE = "search_career_knowledge"
+    SEARCH_PROJECT_EVIDENCE = "search_project_evidence"
     RECORD_ANSWER = "record_answer"
     ANSWER_HELP = "answer_help"
     SUMMARIZE_WEEK = "summarize_week"

@@ -6,7 +6,7 @@ OfferPilot 面向计算机专业学生的秋招与实习准备场景。用户可
 
 项目的重点不是再做一个聊天机器人，而是让模型通过受控工具真正执行任务：理解消息、生成计划、请求写入确认、更新业务状态，并把结果同步到飞书多维表格和日历。
 
-**当前状态：** 单用户求职闭环可运行；后端测试套件 `422 passed`；GitHub 项目分析已在 3 个不同规模的真实开源仓库上完成验收。
+**当前状态：** 单用户求职闭环可运行；后端共收集 447 条测试，当前 Windows 环境 `441 passed`，另有 6 条 POSIX-only 用例需在 Linux 运行；GitHub 项目分析已在 3 个不同规模的真实开源仓库上完成验收。
 
 ## 三条核心流程
 
@@ -205,10 +205,11 @@ curl -X POST http://127.0.0.1:8000/api/agent/message \
 .venv/bin/python -m pytest
 ```
 
-截至 2026-08-18，完整后端测试结果为：
+截至 2026-08-21，后端共收集 447 条测试。当前 Windows 环境结果为：
 
 ```text
-422 passed
+441 passed
+6 POSIX-only tests require head, /bin/sh, and symlink privileges
 ```
 
 ## 主要入口

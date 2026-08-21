@@ -42,6 +42,7 @@ from app.models.project_training import (
     ProjectTrainingSessionStatus,
 )
 from app.tools import leetcode_tools
+from app.tools.mcp_rag_tools import register_mcp_rag_tools
 from app.tools.registry import ToolRegistry
 
 
@@ -93,6 +94,7 @@ def build_offerpilot_tool_registry(
     leetcode_repository: Optional[LeetCodeRepository] = None,
     project_training_repository: Optional[ProjectTrainingRepository] = None,
     dashboard_public_base_url: Optional[str] = None,
+    rag_tool_adapter: Any = None,
 ) -> ToolRegistry:
     selected_repository = repository or build_default_offerpilot_repository()
     selected_calendar_service = (
@@ -115,6 +117,7 @@ def build_offerpilot_tool_registry(
         else settings.dashboard_public_base_url
     )
     registry = ToolRegistry()
+    register_mcp_rag_tools(registry, adapter=rag_tool_adapter)
 
     registry.register(
         AgentActionName.LIST_TODAY_TASKS.value,

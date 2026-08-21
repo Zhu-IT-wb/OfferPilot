@@ -98,6 +98,14 @@ def _default_knowledge_source_path() -> str:
     return str(Path(__file__).resolve().parents[3] / "data" / "knowledge")
 
 
+def _default_qdrant_path() -> str:
+    return str(Path(__file__).resolve().parents[2] / "data" / "qdrant")
+
+
+def _default_fastembed_cache_path() -> str:
+    return str(Path(__file__).resolve().parents[2] / "data" / "fastembed-cache")
+
+
 _load_env_file(_default_env_file())
 
 
@@ -185,6 +193,28 @@ class Settings:
         "OFFERPILOT_KNOWLEDGE_MARKDOWN_SYNC_ENABLED",
         True,
     )
+    rag_enabled: bool = _get_bool_env("OFFERPILOT_RAG_ENABLED", True)
+    rag_qdrant_path: str = os.getenv(
+        "OFFERPILOT_RAG_QDRANT_PATH",
+        _default_qdrant_path(),
+    )
+    rag_collection_name: str = os.getenv(
+        "OFFERPILOT_RAG_COLLECTION_NAME",
+        "career_knowledge",
+    )
+    rag_dense_model: str = os.getenv(
+        "OFFERPILOT_RAG_DENSE_MODEL",
+        "BAAI/bge-small-zh-v1.5",
+    )
+    rag_sparse_model: str = os.getenv(
+        "OFFERPILOT_RAG_SPARSE_MODEL",
+        "Qdrant/bm25",
+    )
+    rag_fastembed_cache_path: str = os.getenv(
+        "OFFERPILOT_RAG_FASTEMBED_CACHE_PATH",
+        _default_fastembed_cache_path(),
+    )
+    rag_top_k: int = _get_int_env("OFFERPILOT_RAG_TOP_K", 5)
     project_discovery_enabled: bool = _get_bool_env(
         "OFFERPILOT_PROJECT_DISCOVERY_ENABLED", True
     )

@@ -230,8 +230,8 @@ class AgentOrchestrator:
         }
 
     # 执行用户对待确认动作的确认。
-    def _graph_confirm_pending(self, state: AgentGraphState) -> Dict[str, Any]:
-        response = self._handle_confirmation(
+    async def _graph_confirm_pending(self, state: AgentGraphState) -> Dict[str, Any]:
+        response = await self._handle_confirmation(
             pending=state.get("pending"),
             conversation_id=state["conversation_id"],
         )
@@ -245,7 +245,7 @@ class AgentOrchestrator:
         }
 
     # 尝试把当前消息接到上一轮待确认动作上。
-    def _graph_handle_pending(self, state: AgentGraphState) -> Dict[str, Any]:
+    async def _graph_handle_pending(self, state: AgentGraphState) -> Dict[str, Any]:
         pending = state.get("pending")
         if pending is None:
             return {"pending_handled": False}
@@ -272,7 +272,7 @@ class AgentOrchestrator:
             message=message,
         )
         if application_plan is not None:
-            response = self._maybe_execute_tool(
+            response = await self._maybe_execute_tool(
                 application_plan.response,
                 message=application_plan.original_message,
                 confirmed=False,
@@ -295,7 +295,7 @@ class AgentOrchestrator:
                 )
                 planned_response = self._plan_response(classification)
                 original_message = f"{pending.original_message}\n{message}"
-                response = self._maybe_execute_tool(
+                response = await self._maybe_execute_tool(
                     planned_response,
                     message=original_message,
                     confirmed=False,
@@ -393,8 +393,8 @@ class AgentOrchestrator:
         }
 
     # 在计划允许时执行工具。
-    def _graph_execute_tool(self, state: AgentGraphState) -> Dict[str, Any]:
-        response = self._maybe_execute_tool(
+    async def _graph_execute_tool(self, state: AgentGraphState) -> Dict[str, Any]:
+        response = await self._maybe_execute_tool(
             state["planned_response"],
             message=state.get("message", ""),
             confirmed=state.get("confirmed", False),
@@ -508,7 +508,7 @@ class AgentOrchestrator:
         )
 
     # 在用户确认后执行对应工具。
-    def _maybe_execute_tool(
+    async def _maybe_execute_tool(
         self,
         response: AgentResponse,
         message: str,
@@ -523,11 +523,11 @@ class AgentOrchestrator:
 
         arguments = response.slots.copy()
         arguments["raw_message"] = message
-        tool_result = self.tool_registry.run(tool_name, arguments)
+        tool_result = await self.tool_registry.run_async(tool_name, arguments)
         return self._with_tool_result(response, tool_result)
 
     # 处理用户对待确认动作的确认消息。
-    def _handle_confirmation(
+    async def _handle_confirmation(
         self,
         pending: Optional[PendingAgentAction],
         conversation_id: str,
@@ -565,7 +565,7 @@ class AgentOrchestrator:
             slots=pending.slots,
             need_confirmation=pending.need_confirmation,
         )
-        executed_response = self._maybe_execute_tool(
+        executed_response = await self._maybe_execute_tool(
             response,
             message=pending.original_message,
             confirmed=True,
@@ -603,7 +603,7 @@ class AgentOrchestrator:
         return f"还没有写入。{action_label}还在待确认状态；回复“确认”或“对的”后，我才会真正写入数据库并同步飞书多维表格。"
 
     # 尝试用用户补充消息填充待确认动作缺失槽位。
-    def _try_fill_pending_slots(
+    async def _try_fill_pending_slots(
         self,
         pending: PendingAgentAction,
         message: str,
@@ -622,7 +622,11 @@ class AgentOrchestrator:
         )
         planned_response = self._plan_response(classification)
         original_message = f"{pending.original_message}\n{message}"
-        response = self._maybe_execute_tool(planned_response, message=original_message, confirmed=False)
+        response = await self._maybe_execute_tool(
+            planned_response,
+            message=original_message,
+            confirmed=False,
+        )
         self._sync_pending_action(
             conversation_id=conversation_id,
             response=response,
@@ -1032,9 +1036,9 @@ class AgentOrchestrator:
         normalized_source = source.strip().lower()
         normalized_user_id = user_id.strip()
         slots = classification.slots.copy()
-        slots.setdefault(
-            "owner_id",
-            AgentOrchestrator._owner_id(source=source, user_id=user_id),
+        slots["owner_id"] = AgentOrchestrator._owner_id(
+            source=source,
+            user_id=user_id,
         )
         if normalized_source == "feishu" and normalized_user_id and normalized_user_id != "unknown_feishu_user":
             slots.setdefault("attendee_user_id", normalized_user_id)

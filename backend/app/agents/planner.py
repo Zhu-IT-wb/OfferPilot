@@ -492,11 +492,19 @@ class AgentPlanner:
 - start_project_training
 - resume_project_training
 - get_project_training_summary
+- search_career_knowledge
+- search_project_evidence
 - record_answer
 - answer_help
 - summarize_week
 - ask_clarification
 - no_op
+
+Knowledge retrieval rules:
+- For technical interview questions that require factual knowledge, use search_career_knowledge instead of answer_help.
+- For questions about the user's project implementation, architecture, decisions, difficulties, metrics, or resume claims, use search_project_evidence.
+- Put the complete user question in slots.query. Both retrieval tools are read-only and never require confirmation.
+- Preserve evidence IDs returned by retrieval tools; do not invent project facts.
 
 规划规则：
 1. 只能选择可用工具列表里的工具；没有合适工具时用 answer_help、ask_clarification 或 no_op。
