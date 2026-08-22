@@ -1,4 +1,6 @@
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -49,10 +51,88 @@ logger = logging.getLogger(__name__)
 
 # 创建飞书多维表格应用。
 def create_app(app_settings: Settings = settings) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        bitable_pull_sync_service = None
+        leetcode_push_service = None
+        knowledge_push_service = None
+        discovery_services = app.state.project_discovery_services
+        try:
+            try:
+                sync_default_knowledge_repository(app_settings)
+            except KnowledgeCorpusSyncError as exc:
+                logger.warning(
+                    "Knowledge Markdown startup sync was rejected; retaining the "
+                    "last-known-good corpus: %s",
+                    exc,
+                )
+
+            repository = get_default_offerpilot_repository()
+            event_subscription = ensure_bitable_event_subscription(
+                repository=repository,
+                force=True,
+            )
+            if event_subscription.subscribed:
+                logger.info(
+                    "Feishu bitable event subscription ready: status=%s "
+                    "app_token_present=%s",
+                    event_subscription.status,
+                    bool(event_subscription.app_token),
+                )
+            else:
+                logger.warning(
+                    "Feishu bitable event subscription unavailable: status=%s "
+                    "app_token_present=%s error=%s",
+                    event_subscription.status,
+                    bool(event_subscription.app_token),
+                    event_subscription.error,
+                )
+
+            bitable_pull_sync_service = BitablePullSyncService(repository=repository)
+            app.state.bitable_pull_sync_service = bitable_pull_sync_service
+            bitable_pull_sync_service.start()
+
+            leetcode_push_service = LeetCodePushService(
+                repository=get_default_leetcode_repository(),
+                dashboard_url=(
+                    f"{app_settings.dashboard_public_base_url.rstrip('/')}/leetcode/dashboard"
+                    if app_settings.dashboard_public_base_url
+                    else None
+                ),
+            )
+            app.state.leetcode_push_service = leetcode_push_service
+            leetcode_push_service.start()
+
+            knowledge_push_service = KnowledgePushService(
+                repository=get_default_knowledge_repository(),
+                dashboard_url=(
+                    f"{app_settings.dashboard_public_base_url.rstrip('/')}/study/knowledge"
+                    if app_settings.dashboard_public_base_url
+                    else None
+                ),
+            )
+            app.state.knowledge_push_service = knowledge_push_service
+            knowledge_push_service.start()
+
+            if app_settings.project_discovery_enabled:
+                discovery_services.runner.start()
+
+            yield
+        finally:
+            await close_default_mcp_client()
+            if bitable_pull_sync_service is not None:
+                await bitable_pull_sync_service.stop()
+            if leetcode_push_service is not None:
+                await leetcode_push_service.stop()
+            if knowledge_push_service is not None:
+                await knowledge_push_service.stop()
+            await discovery_services.runner.stop()
+
     app = FastAPI(
         title=app_settings.app_name,
         version=app_settings.app_version,
         description="OfferPilot backend service for job search preparation workflows.",
+        lifespan=lifespan,
     )
     app.state.settings = app_settings
     app.state.project_discovery_services = build_project_discovery_services(
@@ -91,80 +171,6 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         prefix=app_settings.api_prefix,
         tags=["project-discovery"],
     )
-
-    # 在应用启动时启动多维表格定时拉取同步任务。
-    @app.on_event("startup")
-    async def start_bitable_pull_sync() -> None:
-        try:
-            sync_default_knowledge_repository(app_settings)
-        except KnowledgeCorpusSyncError as exc:
-            logger.warning(
-                "Knowledge Markdown startup sync was rejected; retaining the "
-                "last-known-good corpus: %s",
-                exc,
-            )
-        repository = get_default_offerpilot_repository()
-        event_subscription = ensure_bitable_event_subscription(repository=repository, force=True)
-        if event_subscription.subscribed:
-            logger.info(
-                "Feishu bitable event subscription ready: status=%s app_token_present=%s",
-                event_subscription.status,
-                bool(event_subscription.app_token),
-            )
-        else:
-            logger.warning(
-                "Feishu bitable event subscription unavailable: status=%s app_token_present=%s error=%s",
-                event_subscription.status,
-                bool(event_subscription.app_token),
-                event_subscription.error,
-            )
-        service = BitablePullSyncService(
-            repository=repository,
-        )
-        app.state.bitable_pull_sync_service = service
-        service.start()
-
-        leetcode_push_service = LeetCodePushService(
-            repository=get_default_leetcode_repository(),
-            dashboard_url=(
-                f"{app_settings.dashboard_public_base_url.rstrip('/')}/leetcode/dashboard"
-                if app_settings.dashboard_public_base_url
-                else None
-            ),
-        )
-        app.state.leetcode_push_service = leetcode_push_service
-        leetcode_push_service.start()
-
-        knowledge_push_service = KnowledgePushService(
-            repository=get_default_knowledge_repository(),
-            dashboard_url=(
-                f"{app_settings.dashboard_public_base_url.rstrip('/')}/study/knowledge"
-                if app_settings.dashboard_public_base_url
-                else None
-            ),
-        )
-        app.state.knowledge_push_service = knowledge_push_service
-        knowledge_push_service.start()
-
-        if app_settings.project_discovery_enabled:
-            app.state.project_discovery_services.runner.start()
-
-    # 在应用关闭时停止多维表格定时拉取同步任务。
-    @app.on_event("shutdown")
-    async def stop_bitable_pull_sync() -> None:
-        await close_default_mcp_client()
-        service = getattr(app.state, "bitable_pull_sync_service", None)
-        if service is not None:
-            await service.stop()
-        leetcode_push_service = getattr(app.state, "leetcode_push_service", None)
-        if leetcode_push_service is not None:
-            await leetcode_push_service.stop()
-        knowledge_push_service = getattr(app.state, "knowledge_push_service", None)
-        if knowledge_push_service is not None:
-            await knowledge_push_service.stop()
-        discovery_services = getattr(app.state, "project_discovery_services", None)
-        if discovery_services is not None:
-            await discovery_services.runner.stop()
 
     return app
 
