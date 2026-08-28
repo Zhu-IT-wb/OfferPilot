@@ -17,6 +17,7 @@ from app.models.interview_knowledge import (
     KnowledgeRubricPoint,
 )
 from app.models.project_training import ProjectEvidence, ProjectProfile
+from app.rag.answering import GroundedAnswer, GroundedAnswerComposer
 from app.rag.evaluation import RetrievalEvaluationCase, evaluate_retrieval
 from app.rag.models import IndexReport, RAGDocument, RetrievalHit
 from app.rag.qdrant_store import QdrantHybridStore
@@ -239,7 +240,7 @@ def test_mcp_adapter_injects_owner_and_returns_traceable_hits():
             }
 
     class NoSynthesis:
-        async def compose(self, query, hits):
+        async def compose(self, query, hits, answer_kind="knowledge"):
             return None
 
     client = FakeClient()
@@ -256,7 +257,117 @@ def test_mcp_adapter_injects_owner_and_returns_traceable_hits():
     assert client.arguments["owner_id"] == "feishu:ou_a"
     assert result.success is True
     assert result.data["evidence_ids"] == ["project:e1"]
-    assert "[project:e1]" in result.message
+    assert result.data["citations"][0]["evidence_id"] == "project:e1"
+    assert "project:e1" not in result.message
+
+
+def test_grounded_answer_composer_uses_interview_style_and_compact_citations():
+    class FakeLLMService:
+        api_key = "configured"
+
+        def __init__(self):
+            self.call = None
+
+        async def generate_text(self, **kwargs):
+            self.call = kwargs
+            return LLMResult(
+                provider="fake",
+                model="fake",
+                content=json.dumps(
+                    {
+                        "answer": (
+                            "缓存穿透就是反复查询不存在的数据，导致请求持续访问数据库。\n\n"
+                            "常见方案包括参数校验、缓存空值和布隆过滤器。"
+                        ),
+                        "citations": [1],
+                    },
+                    ensure_ascii=False,
+                ),
+                raw_response={},
+            )
+
+    llm = FakeLLMService()
+    composer = GroundedAnswerComposer(llm_service=llm)
+    answer = asyncio.run(
+        composer.compose(
+            query="什么是缓存穿透？",
+            hits=[
+                {
+                    "evidence_id": "knowledge:knowledge_redis_cache_001",
+                    "title": "Redis 缓存穿透",
+                    "text": "缓存穿透是查询数据库中也不存在的数据。",
+                }
+            ],
+            answer_kind="knowledge",
+        )
+    )
+
+    assert answer == GroundedAnswer(
+        text=(
+            "缓存穿透就是反复查询不存在的数据，导致请求持续访问数据库。\n\n"
+            "常见方案包括参数校验、缓存空值和布隆过滤器。"
+        ),
+        citation_indexes=[1],
+    )
+    assert "knowledge:knowledge_redis_cache_001" not in llm.call["prompt"]
+    assert "interview knowledge question" in llm.call["system_prompt"]
+    assert llm.call["temperature"] == 0.2
+    assert llm.call["response_format"] == {"type": "json_object"}
+
+
+def test_mcp_adapter_renders_friendly_answer_and_keeps_traceability_in_data():
+    class FakeClient:
+        async def call_tool(self, name, arguments=None):
+            assert name == "search_knowledge"
+            return {
+                "hits": [
+                    {
+                        "evidence_id": "knowledge:knowledge_redis_cache_001",
+                        "title": "Redis：缓存穿透",
+                        "text": "缓存穿透是查询不存在的数据。",
+                        "source_path": "knowledge/redis.md",
+                    }
+                ]
+            }
+
+    class FriendlySynthesis:
+        async def compose(self, query, hits, answer_kind="knowledge"):
+            assert answer_kind == "knowledge"
+            return GroundedAnswer(
+                text="缓存穿透就是反复查询不存在的数据。",
+                citation_indexes=[1],
+            )
+
+    adapter = CareerKnowledgeToolAdapter(
+        client=FakeClient(),
+        answer_composer=FriendlySynthesis(),
+    )
+    result = asyncio.run(
+        adapter.search_knowledge(
+            {
+                "query": "什么是缓存穿透？",
+                "owner_id": "feishu:ou_a",
+            }
+        )
+    )
+
+    assert "参考依据：" in result.message
+    assert "[1] Redis：缓存穿透" in result.message
+    assert "knowledge:knowledge_redis_cache_001" not in result.message
+    assert result.data["evidence_ids"] == [
+        "knowledge:knowledge_redis_cache_001"
+    ]
+    assert result.data["citations"] == [
+        {
+            "index": 1,
+            "evidence_id": "knowledge:knowledge_redis_cache_001",
+            "title": "Redis：缓存穿透",
+            "source_path": "knowledge/redis.md",
+            "source_url": None,
+            "start_line": None,
+            "end_line": None,
+        }
+    ]
 
 
 def test_agent_planner_executes_async_grounded_retrieval_tool():

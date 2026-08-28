@@ -2,7 +2,7 @@ from typing import Any, Dict, Optional, Protocol
 
 from app.core.config import settings
 from app.mcp.client import get_default_mcp_client
-from app.rag.answering import GroundedAnswerComposer
+from app.rag.answering import GroundedAnswer, GroundedAnswerComposer
 from app.schemas.agent import AgentActionName
 from app.schemas.tool import ToolResult
 from app.tools.registry import ToolRegistry
@@ -71,8 +71,21 @@ class CareerKnowledgeToolAdapter:
                 request[key] = value
         result = await self.client.call_tool(mcp_tool, request)
         hits = [item for item in result.get("hits", []) if isinstance(item, dict)]
-        answer = await self.answer_composer.compose(query=query, hits=hits)
-        message = answer or _format_evidence_results(query, hits)
+        answer_kind = (
+            "project"
+            if action == AgentActionName.SEARCH_PROJECT_EVIDENCE
+            else "knowledge"
+        )
+        answer = await self.answer_composer.compose(
+            query=query,
+            hits=hits,
+            answer_kind=answer_kind,
+        )
+        message = (
+            _render_grounded_answer(answer, hits)
+            if answer
+            else _format_evidence_results(query, hits)
+        )
         return ToolResult(
             tool_name=action.value,
             success=True,
@@ -81,6 +94,7 @@ class CareerKnowledgeToolAdapter:
                 "query": query,
                 "hits": hits,
                 "evidence_ids": [item.get("evidence_id") for item in hits],
+                "citations": _citation_metadata(hits),
                 "grounded": True,
                 "synthesized": answer is not None,
             },
@@ -122,7 +136,6 @@ def _format_evidence_results(query: str, hits: list[Dict[str, Any]]) -> str:
         return f"没有找到与“{query}”直接相关的可靠证据。你可以补充项目名称或更具体的技术关键词。"
     lines = ["检索到以下可追溯证据："]
     for index, hit in enumerate(hits, start=1):
-        evidence_id = str(hit.get("evidence_id") or "unknown")
         title = str(hit.get("title") or "未命名证据")
         excerpt = str(hit.get("text") or "").replace("\n", " ").strip()
         if len(excerpt) > 280:
@@ -133,9 +146,48 @@ def _format_evidence_results(query: str, hits: list[Dict[str, Any]]) -> str:
             line_text = f":{hit['start_line']}"
             if hit.get("end_line") is not None:
                 line_text += f"-{hit['end_line']}"
-        lines.append(f"{index}. [{evidence_id}] {title}")
+        lines.append(f"{index}. {title}")
         if excerpt:
             lines.append(f"   {excerpt}")
         if source:
             lines.append(f"   来源：{source}{line_text}")
     return "\n".join(lines)
+
+
+def _render_grounded_answer(
+    answer: GroundedAnswer,
+    hits: list[Dict[str, Any]],
+) -> str:
+    cited_indexes = set(answer.citation_indexes)
+    if not cited_indexes:
+        return answer.text
+    sources = ["参考依据："]
+    for index in sorted(cited_indexes):
+        hit = hits[index - 1]
+        title = str(hit.get("title") or "未命名证据")
+        source = str(hit.get("source_path") or hit.get("source_url") or "")
+        location = ""
+        if source:
+            location = f"（{source}"
+            if hit.get("start_line") is not None:
+                location += f":{hit['start_line']}"
+                if hit.get("end_line") is not None:
+                    location += f"-{hit['end_line']}"
+            location += "）"
+        sources.append(f"[{index}] {title}{location}")
+    return f"{answer.text}\n\n" + "\n".join(sources)
+
+
+def _citation_metadata(hits: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    return [
+        {
+            "index": index,
+            "evidence_id": hit.get("evidence_id"),
+            "title": hit.get("title"),
+            "source_path": hit.get("source_path"),
+            "source_url": hit.get("source_url"),
+            "start_line": hit.get("start_line"),
+            "end_line": hit.get("end_line"),
+        }
+        for index, hit in enumerate(hits, start=1)
+    ]
