@@ -6,11 +6,9 @@ OfferPilot 面向计算机专业学生的秋招与实习准备场景。用户可
 
 项目的重点不是再做一个聊天机器人，而是让模型在统一的 ReAct 循环中通过受控工具真正执行任务：观察结果、调整步骤、请求必要审批、更新业务状态，并把结果同步到飞书多维表格和日历。
 
-**当前状态：** 单用户求职闭环可运行；主 Agent 已切换为带 checkpoint 和 interrupt 的 LangGraph ReAct Runtime；GitHub 项目分析已在 3 个不同规模的真实开源仓库上完成验收。测试结果以当前环境的 `pytest` 输出为准。
-
 **技术栈：** Python · FastAPI · LangGraph · MCP / FastMCP · Qdrant · SQLite · OpenAI-compatible API · 飞书开放平台
 
-[功能演示](#功能演示) · [系统架构](#系统架构) · [真实仓库验收](#真实仓库验收) · [本地启动](#quick-start)
+[功能演示](#功能演示) · [系统架构](#系统架构) · [本地启动](#quick-start)
 
 ## 功能演示
 
@@ -126,38 +124,9 @@ GitHub 仓库 URL
 
 ## 系统架构
 
-```mermaid
-flowchart LR
-    U[用户] --> FB[飞书机器人]
-    U --> WEB[学习与项目训练网页]
+![OfferPilot 系统架构：飞书与 Web 入口、主 Agent 的 ReAct 循环、学习服务、独立源码分析及分离的状态存储](show/architecture.png)
 
-    FB --> API[FastAPI Routes]
-    WEB --> API
-
-    API --> AGENT[LangGraph ReAct Runtime]
-    AGENT --> LLM[OpenAI / DeepSeek Chat Completions]
-    LLM --> AGENT
-    AGENT --> POLICY[Validation / Effect Policy]
-    POLICY -->|execute| TOOLS[Unified Tool Registry]
-    TOOLS -->|observation| AGENT
-    POLICY -->|interrupt| CP[(Checkpoint SQLite)]
-    CP -->|resume| AGENT
-
-    TOOLS --> APP[投递与任务服务]
-    TOOLS --> STUDY[刷题与知识服务]
-    TOOLS --> MCP[MCP Raw Evidence]
-    TOOLS --> ANALYSIS[项目分析 Runtime]
-    TOOLS --> FEISHU[飞书 Bitable / Calendar]
-
-    APP --> REPO[Repository Boundary]
-    STUDY --> REPO
-    ANALYSIS --> REPO
-    REPO --> MEM[In-memory]
-    REPO --> DB[(Business SQLite / Ledger)]
-
-    MCP --> RAG[Qdrant Hybrid RAG]
-    ANALYSIS --> WS[只读 Repository Workspace]
-```
+飞书对话进入主 Agent 的 ReAct 循环；学习作答和 GitHub 仓库导入由 Web 调用对应服务。MCP 只返回检索证据，由主 Agent 组织答案。Checkpoint 保存图状态并支持暂停与恢复，业务 SQLite 则保存业务数据、会话事件和操作回执。
 
 项目分析运行时由四类通用工具构成：
 
@@ -165,18 +134,6 @@ flowchart LR
 - `read_file`：按行列范围精确读取 UTF-8 文本；
 - `search_code`：执行固定字符串代码搜索；
 - `run_repository_command`：以参数数组执行白名单内的只读命令，不经过 Shell。
-
-## 真实仓库验收
-
-以下结果来自同一套项目分析 Agent 与默认收敛策略，不包含为特定仓库定制的工具：
-
-| 仓库 | 安全文件数 | 模型轮次 | 工具调用 | 结果 |
-| --- | ---: | ---: | ---: | --- |
-| ItsDangerous | 50 | 9 | 22 | 完成 |
-| Full Stack FastAPI Template | 245 | 15 | 56 | 完成 |
-| Django REST Framework | 451 | 24 | 58 | 完成 |
-
-三次运行均正常提交结构化终态，没有触发紧急截断，也没有出现 JSON 或终态协议错误。验收关注 Agent 能否在不同目录规模下完成探索、形成项目画像并主动结束；生成内容仍需用户确认后才会进入正式项目档案。
 
 ## 安全与可控性
 
@@ -210,7 +167,7 @@ flowchart LR
 │   ├── tests/                  # 后端测试套件
 │   ├── pyproject.toml
 │   └── README.md
-├── show/                       # README 中的演示 GIF 与页面截图
+├── show/                       # README 中的演示素材与系统架构图
 └── docs/                       # 产品方案、ADR、录制指南与阶段性开发记录
 ```
 
