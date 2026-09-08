@@ -36,18 +36,35 @@ class SQLiteInterviewKnowledgeRepository:
         db_path: str,
         questions: Optional[List[KnowledgeQuestion]] = None,
         initialize_questions: bool = True,
+        read_only: bool = False,
     ) -> None:
         self.db_path = Path(db_path)
+        self._read_only = read_only
+        if read_only:
+            self._connect().close()
+            return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
         if initialize_questions:
-            self.upsert_questions(
-                load_knowledge_catalog().questions if questions is None else questions
+            self._upsert_questions(
+                load_knowledge_catalog().questions if questions is None else questions,
+                only_if_empty=True,
             )
 
     def upsert_questions(self, questions: List[KnowledgeQuestion]) -> None:
+        self._upsert_questions(questions)
+
+    def _upsert_questions(
+        self, questions: List[KnowledgeQuestion], *, only_if_empty: bool = False
+    ) -> None:
         now = datetime.now().isoformat()
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            # Keep the emptiness check and first seed in one transaction.
+            if only_if_empty and connection.execute(
+                "SELECT 1 FROM knowledge_questions LIMIT 1"
+            ).fetchone():
+                return
             connection.execute("UPDATE knowledge_questions SET enabled = 0")
             connection.executemany(
                 """
@@ -671,7 +688,12 @@ class SQLiteInterviewKnowledgeRepository:
             return connection.execute(query, params).fetchall()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
+        if self._read_only:
+            connection = sqlite3.connect(
+                f"{self.db_path.resolve().as_uri()}?mode=ro", uri=True
+            )
+        else:
+            connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
         return connection
 

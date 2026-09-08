@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -10,6 +11,17 @@ from app.models.application import (
 )
 from app.models.interview_review import InterviewReview, InterviewReviewStatus
 from app.models.interview_schedule import InterviewSchedule, InterviewScheduleStatus
+from app.models.study import (
+    StudyPlan,
+    StudyPlanStatus,
+    StudyPreferences,
+    StudyPriority,
+    StudySession,
+    StudySessionStatus,
+    StudySessionSyncStatus,
+    StudyWindow,
+    UnscheduledStudyItem,
+)
 from app.models.task import Task, TaskPriority, TaskStatus, TaskType
 from app.repositories.offerpilot_repository import _default_tasks
 
@@ -44,6 +56,18 @@ class SQLiteOfferPilotRepository:
             (key, value),
         )
 
+    def list_runtime_settings(self, prefix: str = "") -> dict[str, str]:
+        rows = self._fetch_all(
+            """
+            SELECT key, value
+            FROM runtime_settings
+            WHERE substr(key, 1, ?) = ?
+            ORDER BY key
+            """,
+            (len(prefix), prefix),
+        )
+        return {str(row["key"]): str(row["value"]) for row in rows}
+
     # 查询并格式化今天的秋招任务。
     def list_today_tasks(self, owner_id: str = "local_user") -> List[Task]:
         owner_id = self._normalize_owner_id(owner_id)
@@ -70,6 +94,7 @@ class SQLiteOfferPilotRepository:
         self,
         company: str,
         role: str,
+        base_location: Optional[str] = None,
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         jd_keywords: Optional[List[str]] = None,
@@ -80,6 +105,7 @@ class SQLiteOfferPilotRepository:
             id=self._next_id("applications", "app"),
             company=company,
             role=role,
+            base_location=base_location.strip() if base_location else None,
             owner_id=owner_id,
             status=(
                 application_status_from_round(round_name)
@@ -93,15 +119,16 @@ class SQLiteOfferPilotRepository:
         self._execute(
             """
             INSERT INTO applications (
-                id, owner_id, company, role, status, interview_time, round, jd_keywords
+                id, owner_id, company, role, base_location, status, interview_time, round, jd_keywords
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 application.id,
                 application.owner_id,
                 application.company,
                 application.role,
+                application.base_location,
                 application.status.value,
                 application.interview_time,
                 application.round,
@@ -117,10 +144,9 @@ class SQLiteOfferPilotRepository:
         owner_id: str = "local_user",
     ) -> List[Application]:
         owner_id = self._normalize_owner_id(owner_id)
-        self._claim_legacy_rows_for_owner("applications", owner_id)
         rows = self._fetch_all(
             """
-            SELECT id, owner_id, company, role, status, interview_time, round, jd_keywords
+            SELECT id, owner_id, company, role, base_location, status, interview_time, round, jd_keywords
             FROM applications
             WHERE owner_id = ?
             ORDER BY id
@@ -146,6 +172,7 @@ class SQLiteOfferPilotRepository:
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         role: Optional[str] = None,
+        base_location: Optional[str] = None,
         owner_id: str = "local_user",
     ) -> Optional[Application]:
         owner_id = self._normalize_owner_id(owner_id)
@@ -161,15 +188,18 @@ class SQLiteOfferPilotRepository:
             application.round = round_name
         if role is not None:
             application.role = role
+        if base_location is not None:
+            application.base_location = base_location.strip() or None
 
         self._execute(
             """
             UPDATE applications
-            SET role = ?, status = ?, interview_time = ?, round = ?
+            SET role = ?, base_location = ?, status = ?, interview_time = ?, round = ?
             WHERE id = ? AND owner_id = ?
             """,
             (
                 application.role,
+                application.base_location,
                 application.status.value,
                 application.interview_time,
                 application.round,
@@ -185,6 +215,7 @@ class SQLiteOfferPilotRepository:
         application_id: str,
         company: Optional[str] = None,
         role: Optional[str] = None,
+        base_location: Optional[str] = None,
         status: Optional[ApplicationStatus] = None,
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
@@ -201,6 +232,8 @@ class SQLiteOfferPilotRepository:
             application.company = company
         if role is not None:
             application.role = role
+        if base_location is not None:
+            application.base_location = base_location.strip() or None
         if status is not None:
             application.status = status
         if interview_time is not None:
@@ -216,12 +249,13 @@ class SQLiteOfferPilotRepository:
         self._execute(
             """
             UPDATE applications
-            SET company = ?, role = ?, status = ?, interview_time = ?, round = ?, jd_keywords = ?
+            SET company = ?, role = ?, base_location = ?, status = ?, interview_time = ?, round = ?, jd_keywords = ?
             WHERE id = ? AND owner_id = ?
             """,
             (
                 application.company,
                 application.role,
+                application.base_location,
                 application.status.value,
                 application.interview_time,
                 application.round,
@@ -231,6 +265,68 @@ class SQLiteOfferPilotRepository:
             ),
         )
         return application
+
+    # 将误归属的投递记录迁移到明确的用户空间。
+    def reassign_application_owner(
+        self,
+        application_id: str,
+        from_owner_id: str,
+        to_owner_id: str,
+    ) -> bool:
+        from_owner_id = self._normalize_owner_id(from_owner_id)
+        to_owner_id = self._normalize_owner_id(to_owner_id)
+        application = self._find_application_by_id(
+            application_id,
+            owner_id=from_owner_id,
+        )
+        if application is None:
+            return False
+        self._execute(
+            "UPDATE applications SET owner_id = ? WHERE id = ? AND owner_id = ?",
+            (to_owner_id, application_id, from_owner_id),
+        )
+        self._execute(
+            """
+            UPDATE interview_schedules
+            SET owner_id = ?
+            WHERE application_id = ? AND owner_id = ?
+            """,
+            (to_owner_id, application_id, from_owner_id),
+        )
+        return True
+
+    # 按全局唯一 application id 查询当前归属。
+    def find_application_owner_id(self, application_id: str) -> Optional[str]:
+        owner_id = self._fetch_value(
+            "SELECT owner_id FROM applications WHERE id = ?",
+            (application_id,),
+        )
+        return str(owner_id) if owner_id else None
+
+    # 通过旧版 Bitable 正向映射精确查找投递记录及其归属。
+    def find_application_by_bitable_record_id(
+        self,
+        table_id: str,
+        record_id: str,
+    ) -> Optional[tuple[str, str]]:
+        setting_prefix = f"feishu.offerpilot_bitable_record_id.{table_id}."
+        rows = self._fetch_all(
+            """
+            SELECT key
+            FROM runtime_settings
+            WHERE key LIKE ? AND value = ?
+            ORDER BY key
+            LIMIT 1
+            """,
+            (f"{setting_prefix}%", record_id),
+        )
+        if not rows:
+            return None
+        application_id = str(rows[0]["key"])[len(setting_prefix) :]
+        owner_id = self.find_application_owner_id(application_id)
+        if not owner_id:
+            return None
+        return application_id, owner_id
 
     # 创建 interview schedule。
     def create_interview_schedule(
@@ -246,6 +342,13 @@ class SQLiteOfferPilotRepository:
         owner_id: str = "local_user",
     ) -> InterviewSchedule:
         owner_id = self._normalize_owner_id(owner_id)
+        if (
+            application_id is not None
+            and self._find_application_by_id(application_id, owner_id=owner_id) is None
+        ):
+            raise ValueError(
+                "Interview schedule application does not belong to the current owner."
+            )
         schedule = InterviewSchedule(
             id=self._next_id("interview_schedules", "schedule"),
             owner_id=owner_id,
@@ -290,7 +393,6 @@ class SQLiteOfferPilotRepository:
         owner_id: str = "local_user",
     ) -> List[InterviewSchedule]:
         owner_id = self._normalize_owner_id(owner_id)
-        self._claim_legacy_rows_for_owner("interview_schedules", owner_id)
         rows = self._fetch_all(
             """
             SELECT id, owner_id, application_id, company, role, round, start_time, start_at,
@@ -479,6 +581,316 @@ class SQLiteOfferPilotRepository:
         )
         return review
 
+    def get_study_preferences(
+        self,
+        owner_id: str = "local_user",
+    ) -> Optional[StudyPreferences]:
+        owner_id = self._normalize_owner_id(owner_id)
+        rows = self._fetch_all(
+            """
+            SELECT owner_id, timezone, weekday_windows, weekend_windows,
+                   daily_max_minutes, session_minutes, updated_at
+            FROM study_preferences
+            WHERE owner_id = ?
+            """,
+            (owner_id,),
+        )
+        return self._study_preferences_from_row(rows[0]) if rows else None
+
+    def save_study_preferences(
+        self,
+        preferences: StudyPreferences,
+    ) -> StudyPreferences:
+        preferences.owner_id = self._normalize_owner_id(preferences.owner_id)
+        self._execute(
+            """
+            INSERT INTO study_preferences (
+                owner_id, timezone, weekday_windows, weekend_windows,
+                daily_max_minutes, session_minutes, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(owner_id) DO UPDATE SET
+                timezone = excluded.timezone,
+                weekday_windows = excluded.weekday_windows,
+                weekend_windows = excluded.weekend_windows,
+                daily_max_minutes = excluded.daily_max_minutes,
+                session_minutes = excluded.session_minutes,
+                updated_at = excluded.updated_at
+            """,
+            (
+                preferences.owner_id,
+                preferences.timezone,
+                json.dumps(
+                    [window.to_dict() for window in preferences.weekday_windows],
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    [window.to_dict() for window in preferences.weekend_windows],
+                    ensure_ascii=False,
+                ),
+                preferences.daily_max_minutes,
+                preferences.session_minutes,
+                preferences.updated_at.isoformat(),
+            ),
+        )
+        return preferences
+
+    def create_study_plan(self, plan: StudyPlan) -> StudyPlan:
+        plan.owner_id = self._normalize_owner_id(plan.owner_id)
+        try:
+            self._execute(
+                """
+                INSERT INTO study_plans (
+                    id, owner_id, goal, range_start, range_end,
+                    source_interview_ids, unscheduled_items, status, version,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    plan.id,
+                    plan.owner_id,
+                    plan.goal,
+                    plan.range_start.isoformat(),
+                    plan.range_end.isoformat(),
+                    json.dumps(plan.source_interview_ids, ensure_ascii=False),
+                    json.dumps(
+                        [item.to_dict() for item in plan.unscheduled_items],
+                        ensure_ascii=False,
+                    ),
+                    plan.status.value,
+                    plan.version,
+                    plan.created_at.isoformat(),
+                    plan.updated_at.isoformat(),
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"Study plan already exists: {plan.id}") from exc
+        return plan
+
+    def get_study_plan(
+        self,
+        plan_id: str,
+        owner_id: str = "local_user",
+    ) -> Optional[StudyPlan]:
+        owner_id = self._normalize_owner_id(owner_id)
+        rows = self._fetch_all(
+            """
+            SELECT id, owner_id, goal, range_start, range_end,
+                   source_interview_ids, unscheduled_items, status, version,
+                   created_at, updated_at
+            FROM study_plans
+            WHERE id = ? AND owner_id = ?
+            """,
+            (plan_id, owner_id),
+        )
+        return self._study_plan_from_row(rows[0]) if rows else None
+
+    def list_study_plans(
+        self,
+        owner_id: str = "local_user",
+        status: Optional[StudyPlanStatus] = None,
+    ) -> List[StudyPlan]:
+        owner_id = self._normalize_owner_id(owner_id)
+        query = """
+            SELECT id, owner_id, goal, range_start, range_end,
+                   source_interview_ids, unscheduled_items, status, version,
+                   created_at, updated_at
+            FROM study_plans
+            WHERE owner_id = ?
+        """
+        parameters: tuple[Any, ...] = (owner_id,)
+        if status is not None:
+            query += " AND status = ?"
+            parameters += (status.value,)
+        query += " ORDER BY created_at DESC, id DESC"
+        return [self._study_plan_from_row(row) for row in self._fetch_all(query, parameters)]
+
+    def update_study_plan(self, plan: StudyPlan) -> Optional[StudyPlan]:
+        plan.owner_id = self._normalize_owner_id(plan.owner_id)
+        if self.get_study_plan(plan.id, owner_id=plan.owner_id) is None:
+            return None
+        self._execute(
+            """
+            UPDATE study_plans
+            SET goal = ?, range_start = ?, range_end = ?, source_interview_ids = ?,
+                unscheduled_items = ?, status = ?, version = ?, created_at = ?,
+                updated_at = ?
+            WHERE id = ? AND owner_id = ?
+            """,
+            (
+                plan.goal,
+                plan.range_start.isoformat(),
+                plan.range_end.isoformat(),
+                json.dumps(plan.source_interview_ids, ensure_ascii=False),
+                json.dumps(
+                    [item.to_dict() for item in plan.unscheduled_items],
+                    ensure_ascii=False,
+                ),
+                plan.status.value,
+                plan.version,
+                plan.created_at.isoformat(),
+                plan.updated_at.isoformat(),
+                plan.id,
+                plan.owner_id,
+            ),
+        )
+        return plan
+
+    def delete_study_plan(
+        self,
+        plan_id: str,
+        owner_id: str = "local_user",
+    ) -> bool:
+        owner_id = self._normalize_owner_id(owner_id)
+        if self.get_study_plan(plan_id, owner_id=owner_id) is None:
+            return False
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM study_sessions WHERE plan_id = ? AND owner_id = ?",
+                (plan_id, owner_id),
+            )
+            connection.execute(
+                "DELETE FROM study_plans WHERE id = ? AND owner_id = ?",
+                (plan_id, owner_id),
+            )
+            connection.commit()
+        return True
+
+    def create_study_session(self, session: StudySession) -> StudySession:
+        session.owner_id = self._normalize_owner_id(session.owner_id)
+        if self.get_study_plan(session.plan_id, owner_id=session.owner_id) is None:
+            raise ValueError(f"Study plan does not exist: {session.plan_id}")
+        try:
+            self._execute(
+                """
+                INSERT INTO study_sessions (
+                    id, owner_id, plan_id, topic, start_at, end_at, priority,
+                    source_refs, rationale, status, sync_status, calendar_event_id,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session.id,
+                    session.owner_id,
+                    session.plan_id,
+                    session.topic,
+                    session.start_at.isoformat(),
+                    session.end_at.isoformat(),
+                    int(session.priority),
+                    json.dumps(session.source_refs, ensure_ascii=False),
+                    session.rationale,
+                    session.status.value,
+                    session.sync_status.value,
+                    session.calendar_event_id,
+                    session.created_at.isoformat(),
+                    session.updated_at.isoformat(),
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"Study session already exists: {session.id}") from exc
+        return session
+
+    def get_study_session(
+        self,
+        session_id: str,
+        owner_id: str = "local_user",
+    ) -> Optional[StudySession]:
+        owner_id = self._normalize_owner_id(owner_id)
+        rows = self._fetch_all(
+            """
+            SELECT id, owner_id, plan_id, topic, start_at, end_at, priority,
+                   source_refs, rationale, status, sync_status, calendar_event_id,
+                   created_at, updated_at
+            FROM study_sessions
+            WHERE id = ? AND owner_id = ?
+            """,
+            (session_id, owner_id),
+        )
+        return self._study_session_from_row(rows[0]) if rows else None
+
+    def list_study_sessions(
+        self,
+        owner_id: str = "local_user",
+        plan_id: Optional[str] = None,
+        range_start: Optional[datetime] = None,
+        range_end: Optional[datetime] = None,
+        status: Optional[StudySessionStatus] = None,
+    ) -> List[StudySession]:
+        owner_id = self._normalize_owner_id(owner_id)
+        query = """
+            SELECT id, owner_id, plan_id, topic, start_at, end_at, priority,
+                   source_refs, rationale, status, sync_status, calendar_event_id,
+                   created_at, updated_at
+            FROM study_sessions
+            WHERE owner_id = ?
+        """
+        parameters: tuple[Any, ...] = (owner_id,)
+        if plan_id is not None:
+            query += " AND plan_id = ?"
+            parameters += (plan_id,)
+        if range_start is not None:
+            query += " AND end_at > ?"
+            parameters += (range_start.isoformat(),)
+        if range_end is not None:
+            query += " AND start_at < ?"
+            parameters += (range_end.isoformat(),)
+        if status is not None:
+            query += " AND status = ?"
+            parameters += (status.value,)
+        query += " ORDER BY start_at, id"
+        return [self._study_session_from_row(row) for row in self._fetch_all(query, parameters)]
+
+    def update_study_session(self, session: StudySession) -> Optional[StudySession]:
+        session.owner_id = self._normalize_owner_id(session.owner_id)
+        if self.get_study_session(session.id, owner_id=session.owner_id) is None:
+            return None
+        if self.get_study_plan(session.plan_id, owner_id=session.owner_id) is None:
+            raise ValueError(
+                "Study session plan does not belong to the current owner."
+            )
+        self._execute(
+            """
+            UPDATE study_sessions
+            SET plan_id = ?, topic = ?, start_at = ?, end_at = ?, priority = ?,
+                source_refs = ?, rationale = ?, status = ?, sync_status = ?,
+                calendar_event_id = ?, created_at = ?, updated_at = ?
+            WHERE id = ? AND owner_id = ?
+            """,
+            (
+                session.plan_id,
+                session.topic,
+                session.start_at.isoformat(),
+                session.end_at.isoformat(),
+                int(session.priority),
+                json.dumps(session.source_refs, ensure_ascii=False),
+                session.rationale,
+                session.status.value,
+                session.sync_status.value,
+                session.calendar_event_id,
+                session.created_at.isoformat(),
+                session.updated_at.isoformat(),
+                session.id,
+                session.owner_id,
+            ),
+        )
+        return session
+
+    def delete_study_session(
+        self,
+        session_id: str,
+        owner_id: str = "local_user",
+    ) -> bool:
+        owner_id = self._normalize_owner_id(owner_id)
+        if self.get_study_session(session_id, owner_id=owner_id) is None:
+            return False
+        self._execute(
+            "DELETE FROM study_sessions WHERE id = ? AND owner_id = ?",
+            (session_id, owner_id),
+        )
+        return True
+
     # 处理 initialize 相关逻辑。
     def _initialize(self) -> None:
         with self._connect() as connection:
@@ -501,6 +913,7 @@ class SQLiteOfferPilotRepository:
                     owner_id TEXT NOT NULL DEFAULT 'local_user',
                     company TEXT NOT NULL,
                     role TEXT NOT NULL,
+                    base_location TEXT,
                     status TEXT NOT NULL,
                     interview_time TEXT,
                     round TEXT,
@@ -541,6 +954,57 @@ class SQLiteOfferPilotRepository:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS study_preferences (
+                    owner_id TEXT PRIMARY KEY,
+                    timezone TEXT NOT NULL,
+                    weekday_windows TEXT NOT NULL DEFAULT '[]',
+                    weekend_windows TEXT NOT NULL DEFAULT '[]',
+                    daily_max_minutes INTEGER NOT NULL,
+                    session_minutes INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS study_plans (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    goal TEXT NOT NULL,
+                    range_start TEXT NOT NULL,
+                    range_end TEXT NOT NULL,
+                    source_interview_ids TEXT NOT NULL DEFAULT '[]',
+                    unscheduled_items TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS study_sessions (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    start_at TEXT NOT NULL,
+                    end_at TEXT NOT NULL,
+                    priority INTEGER NOT NULL,
+                    source_refs TEXT NOT NULL DEFAULT '[]',
+                    rationale TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    sync_status TEXT NOT NULL,
+                    calendar_event_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(plan_id) REFERENCES study_plans(id)
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS runtime_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -551,9 +1015,15 @@ class SQLiteOfferPilotRepository:
 
         self._ensure_column("tasks", "owner_id", "TEXT NOT NULL DEFAULT 'local_user'")
         self._ensure_column("applications", "owner_id", "TEXT NOT NULL DEFAULT 'local_user'")
+        self._ensure_column("applications", "base_location", "TEXT")
         self._ensure_column("interview_reviews", "owner_id", "TEXT NOT NULL DEFAULT 'local_user'")
         self._ensure_column("interview_schedules", "owner_id", "TEXT NOT NULL DEFAULT 'local_user'")
         self._ensure_column("interview_schedules", "start_at", "TEXT")
+        self._ensure_column(
+            "study_plans",
+            "unscheduled_items",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )
         self._migrate_confirmed_planned_applications()
         self._remove_legacy_leetcode_sample_task()
         self._ensure_indexes()
@@ -612,6 +1082,18 @@ class SQLiteOfferPilotRepository:
             "CREATE INDEX IF NOT EXISTS idx_interview_schedules_owner_id ON interview_schedules(owner_id)",
             (),
         )
+        self._execute(
+            "CREATE INDEX IF NOT EXISTS idx_study_plans_owner_id ON study_plans(owner_id)",
+            (),
+        )
+        self._execute(
+            "CREATE INDEX IF NOT EXISTS idx_study_sessions_owner_plan ON study_sessions(owner_id, plan_id)",
+            (),
+        )
+        self._execute(
+            "CREATE INDEX IF NOT EXISTS idx_study_sessions_owner_start ON study_sessions(owner_id, start_at)",
+            (),
+        )
 
     # 处理 seed_default_tasks 相关逻辑。
     def _seed_default_tasks(self) -> None:
@@ -641,31 +1123,6 @@ class SQLiteOfferPilotRepository:
                     task.priority.value,
                 ),
             )
-
-    # 把升级前默认归属 local_user 的旧记录迁到第一个真实访问用户名下。
-    def _claim_legacy_rows_for_owner(self, table: str, owner_id: str) -> None:
-        owner_id = self._normalize_owner_id(owner_id)
-        if owner_id == "local_user":
-            return
-
-        owner_count = self._fetch_value(
-            f"SELECT COUNT(*) FROM {table} WHERE owner_id = ?",
-            (owner_id,),
-        )
-        if owner_count:
-            return
-
-        legacy_count = self._fetch_value(
-            f"SELECT COUNT(*) FROM {table} WHERE owner_id = ?",
-            ("local_user",),
-        )
-        if not legacy_count:
-            return
-
-        self._execute(
-            f"UPDATE {table} SET owner_id = ? WHERE owner_id = ?",
-            (owner_id, "local_user"),
-        )
 
     # 更新 task status。
     def _update_task_status(
@@ -732,7 +1189,7 @@ class SQLiteOfferPilotRepository:
         owner_id = self._normalize_owner_id(owner_id)
         rows = self._fetch_all(
             """
-            SELECT id, owner_id, company, role, status, interview_time, round, jd_keywords
+            SELECT id, owner_id, company, role, base_location, status, interview_time, round, jd_keywords
             FROM applications
             WHERE id = ? AND owner_id = ?
             """,
@@ -789,6 +1246,7 @@ class SQLiteOfferPilotRepository:
             id=row["id"],
             company=row["company"],
             role=row["role"],
+            base_location=row["base_location"],
             owner_id=row["owner_id"],
             status=ApplicationStatus(row["status"]),
             interview_time=row["interview_time"],
@@ -825,6 +1283,79 @@ class SQLiteOfferPilotRepository:
             status=InterviewScheduleStatus(row["status"]),
             calendar_event_id=row["calendar_event_id"],
             raw_message=row["raw_message"],
+        )
+
+    @staticmethod
+    def _study_preferences_from_row(row: sqlite3.Row) -> StudyPreferences:
+        return StudyPreferences(
+            owner_id=row["owner_id"],
+            timezone=row["timezone"],
+            weekday_windows=[
+                StudyWindow(
+                    start_time=window["start_time"],
+                    end_time=window["end_time"],
+                )
+                for window in json.loads(row["weekday_windows"] or "[]")
+            ],
+            weekend_windows=[
+                StudyWindow(
+                    start_time=window["start_time"],
+                    end_time=window["end_time"],
+                )
+                for window in json.loads(row["weekend_windows"] or "[]")
+            ],
+            daily_max_minutes=row["daily_max_minutes"],
+            session_minutes=row["session_minutes"],
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _study_plan_from_row(row: sqlite3.Row) -> StudyPlan:
+        return StudyPlan(
+            id=row["id"],
+            owner_id=row["owner_id"],
+            goal=row["goal"],
+            range_start=date.fromisoformat(row["range_start"]),
+            range_end=date.fromisoformat(row["range_end"]),
+            source_interview_ids=json.loads(row["source_interview_ids"] or "[]"),
+            unscheduled_items=[
+                UnscheduledStudyItem(
+                    topic=item["topic"],
+                    requested_minutes=int(item["requested_minutes"]),
+                    remaining_minutes=int(item["remaining_minutes"]),
+                    priority=StudyPriority(int(item["priority"])),
+                    deadline=(
+                        datetime.fromisoformat(item["deadline"])
+                        if item.get("deadline")
+                        else None
+                    ),
+                    reason=item["reason"],
+                )
+                for item in json.loads(row["unscheduled_items"] or "[]")
+            ],
+            status=StudyPlanStatus(row["status"]),
+            version=row["version"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _study_session_from_row(row: sqlite3.Row) -> StudySession:
+        return StudySession(
+            id=row["id"],
+            owner_id=row["owner_id"],
+            plan_id=row["plan_id"],
+            topic=row["topic"],
+            start_at=datetime.fromisoformat(row["start_at"]),
+            end_at=datetime.fromisoformat(row["end_at"]),
+            priority=StudyPriority(row["priority"]),
+            source_refs=json.loads(row["source_refs"] or "[]"),
+            rationale=row["rationale"],
+            status=StudySessionStatus(row["status"]),
+            sync_status=StudySessionSyncStatus(row["sync_status"]),
+            calendar_event_id=row["calendar_event_id"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
         )
 
     # 处理 normalize 相关逻辑。

@@ -1,3 +1,5 @@
+import pytest
+
 from app.models.application import ApplicationStatus
 from app.models.interview_schedule import InterviewScheduleStatus
 from app.models.task import TaskStatus
@@ -28,6 +30,7 @@ def test_repository_creates_application_with_round_status() -> None:
     application = repository.create_application(
         company="深信服",
         role="开发实习",
+        base_location="深圳",
         interview_time="明天下午三点",
         round_name="一面",
         jd_keywords=["Java", "Redis"],
@@ -36,6 +39,7 @@ def test_repository_creates_application_with_round_status() -> None:
     assert application.id == "app_1"
     assert application.status == ApplicationStatus.INTERVIEW_1
     assert application.to_dict()["jd_keywords"] == ["Java", "Redis"]
+    assert application.to_dict()["base_location"] == "深圳"
     assert repository.applications == [application]
 
 
@@ -77,6 +81,23 @@ def test_repository_updates_application_status() -> None:
     assert repository.applications[0].round == "一面"
 
 
+def test_repository_updates_application_base_location() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(
+        company="字节",
+        role="Agent 开发",
+        base_location="杭州",
+    )
+
+    updated = repository.update_application_by_id(
+        application_id=application.id,
+        base_location=" 上海 ",
+    )
+
+    assert updated is not None
+    assert updated.base_location == "上海"
+
+
 def test_repository_creates_interview_schedule() -> None:
     repository = InMemoryOfferPilotRepository()
     application = repository.create_application(company="深信服", role="AI 应用开发")
@@ -97,6 +118,24 @@ def test_repository_creates_interview_schedule() -> None:
     assert schedule.start_at == "2026-06-30T08:00:00+08:00"
     assert schedule.reminder_minutes == 30
     assert repository.list_interview_schedules(company="深信服") == [schedule]
+
+
+def test_repository_rejects_cross_owner_application_schedule() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(
+        company="深信服",
+        role="AI 应用开发",
+        owner_id="feishu:ou_a",
+    )
+
+    with pytest.raises(ValueError, match="current owner"):
+        repository.create_interview_schedule(
+            application_id=application.id,
+            company="深信服",
+            role="AI 应用开发",
+            round_name="一面",
+            owner_id="feishu:ou_b",
+        )
 
 
 def test_repository_updates_interview_schedule_calendar_event() -> None:

@@ -1,10 +1,11 @@
 import hashlib
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from typing import Any, Callable, Dict, List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.models.application import (
     Application,
     ApplicationStatus,
@@ -22,9 +23,19 @@ from app.repositories.offerpilot_repository import (
 from app.repositories.sqlite_offerpilot_repository import SQLiteOfferPilotRepository
 from app.repositories.sqlite_leetcode_repository import SQLiteLeetCodeRepository
 from app.repositories.project_training_repository import ProjectTrainingRepository
-from app.schemas.agent import AgentActionName
 from app.schemas.tool import ToolResult
 from app.services.bitable_event_subscription_service import ensure_bitable_event_subscription
+from app.services.bitable_sync_service import (
+    get_bitable_table_owner,
+    remember_bitable_record_mapping,
+    remember_bitable_table_owner,
+)
+from app.services.bitable_tenancy import (
+    BitableResourceConflictError,
+    get_owner_bitable_resource,
+    save_owner_bitable_resource,
+    set_owner_bitable_schema_version,
+)
 from app.services.feishu_service import (
     FeishuBitableService,
     FeishuCalendarService,
@@ -42,48 +53,80 @@ from app.models.project_training import (
     ProjectTrainingSessionStatus,
 )
 from app.tools import leetcode_tools
-from app.tools.mcp_rag_tools import register_mcp_rag_tools
 from app.tools.registry import ToolRegistry
+from app.tools.tool_names import AgentActionName
 
 
 _OFFERPILOT_CALENDAR_ID_SETTING = "feishu.offerpilot_calendar_id"
 _OFFERPILOT_BITABLE_APP_TOKEN_SETTING = "feishu.offerpilot_bitable_app_token"
 _OFFERPILOT_BITABLE_TABLE_ID_SETTING = "feishu.offerpilot_bitable_table_id"
-_OFFERPILOT_BITABLE_SCHEMA_VERSION_SETTING = "feishu.offerpilot_bitable_schema_version"
 _OFFERPILOT_BITABLE_RECORD_ID_PREFIX = "feishu.offerpilot_bitable_record_id."
 _OFFERPILOT_BITABLE_COLLABORATOR_PREFIX = "feishu.offerpilot_bitable_collaborator."
 _OFFERPILOT_SYNC_IDEMPOTENCY_PREFIX = "sync.idempotency."
 _OFFERPILOT_REQUEST_IDEMPOTENCY_PREFIX = "request.idempotency."
-_CURRENT_BITABLE_SCHEMA_VERSION = "v3"
+_CURRENT_BITABLE_SCHEMA_VERSION = "v4"
 _SYNC_MAX_ATTEMPTS = 3
 _DEFAULT_EXTERNAL_SERVICE = object()
+_DEFAULT_OWNER_ID = "local_user"
 
 
 # 根据配置创建默认的 OfferPilot 数据仓库。
-def build_default_offerpilot_repository() -> OfferPilotRepository:
-    if settings.storage_backend.strip().lower() == "sqlite":
-        return SQLiteOfferPilotRepository(settings.sqlite_path)
+def build_default_offerpilot_repository(
+    app_settings: Settings = settings,
+) -> OfferPilotRepository:
+    if app_settings.storage_backend.strip().lower() == "sqlite":
+        return SQLiteOfferPilotRepository(app_settings.sqlite_path)
     return InMemoryOfferPilotRepository()
 
 
-def build_default_leetcode_repository() -> LeetCodeRepository:
-    if settings.storage_backend.strip().lower() == "sqlite":
-        return SQLiteLeetCodeRepository(settings.sqlite_path)
+def build_default_leetcode_repository(
+    app_settings: Settings = settings,
+) -> LeetCodeRepository:
+    if app_settings.storage_backend.strip().lower() == "sqlite":
+        return SQLiteLeetCodeRepository(app_settings.sqlite_path)
     return InMemoryLeetCodeRepository(problems=load_hot100_snapshot().problems)
 
 
 # 根据配置创建飞书日历服务实例。
-def build_default_feishu_calendar_service() -> Optional[FeishuCalendarService]:
-    if not settings.feishu_calendar_sync_enabled:
+def build_default_feishu_calendar_service(
+    app_settings: Settings = settings,
+) -> Optional[FeishuCalendarService]:
+    if not app_settings.feishu_calendar_sync_enabled:
         return None
-    return FeishuCalendarService()
+    return FeishuCalendarService(
+        app_id=app_settings.feishu_app_id,
+        app_secret=app_settings.feishu_app_secret,
+        base_url=app_settings.feishu_api_base_url,
+        timeout_seconds=app_settings.feishu_timeout_seconds,
+        calendar_id=app_settings.feishu_calendar_id,
+        timezone=app_settings.feishu_calendar_timezone,
+        event_duration_minutes=app_settings.feishu_interview_event_duration_minutes,
+        sync_enabled=app_settings.feishu_calendar_sync_enabled,
+        auto_create_enabled=app_settings.feishu_calendar_auto_create_enabled,
+        managed_calendar_summary=app_settings.feishu_offerpilot_calendar_summary,
+        managed_calendar_description=app_settings.feishu_offerpilot_calendar_description,
+        managed_calendar_permissions=app_settings.feishu_offerpilot_calendar_permissions,
+    )
 
 
 # 根据配置创建飞书多维表格服务实例。
-def build_default_feishu_bitable_service() -> Optional[FeishuBitableService]:
-    if not settings.feishu_bitable_sync_enabled:
+def build_default_feishu_bitable_service(
+    app_settings: Settings = settings,
+) -> Optional[FeishuBitableService]:
+    if not app_settings.feishu_bitable_sync_enabled:
         return None
-    return FeishuBitableService()
+    return FeishuBitableService(
+        app_id=app_settings.feishu_app_id,
+        app_secret=app_settings.feishu_app_secret,
+        base_url=app_settings.feishu_api_base_url,
+        timeout_seconds=app_settings.feishu_timeout_seconds,
+        app_token=app_settings.feishu_bitable_app_token,
+        table_id=app_settings.feishu_bitable_table_id,
+        sync_enabled=app_settings.feishu_bitable_sync_enabled,
+        auto_create_enabled=app_settings.feishu_bitable_auto_create_enabled,
+        bitable_name=app_settings.feishu_offerpilot_bitable_name,
+        table_name=app_settings.feishu_offerpilot_bitable_table_name,
+    )
 
 
 # 注册 OfferPilot 当前可执行的业务工具。
@@ -94,37 +137,44 @@ def build_offerpilot_tool_registry(
     leetcode_repository: Optional[LeetCodeRepository] = None,
     project_training_repository: Optional[ProjectTrainingRepository] = None,
     dashboard_public_base_url: Optional[str] = None,
-    rag_tool_adapter: Any = None,
+    app_settings: Settings = settings,
 ) -> ToolRegistry:
-    selected_repository = repository or build_default_offerpilot_repository()
+    selected_repository = repository or build_default_offerpilot_repository(app_settings)
     selected_calendar_service = (
-        build_default_feishu_calendar_service()
+        build_default_feishu_calendar_service(app_settings)
         if calendar_service is _DEFAULT_EXTERNAL_SERVICE
         else calendar_service
     )
     selected_bitable_service = (
-        build_default_feishu_bitable_service()
+        build_default_feishu_bitable_service(app_settings)
         if bitable_service is _DEFAULT_EXTERNAL_SERVICE
         else bitable_service
     )
-    selected_leetcode_repository = leetcode_repository or build_default_leetcode_repository()
+    selected_leetcode_repository = leetcode_repository or build_default_leetcode_repository(
+        app_settings
+    )
     selected_project_training_repository = (
         project_training_repository or get_default_project_training_repository()
     )
     selected_dashboard_base_url = (
         dashboard_public_base_url
         if dashboard_public_base_url is not None
-        else settings.dashboard_public_base_url
+        else app_settings.dashboard_public_base_url
     )
+    application_effect = (
+        "external_write"
+        if selected_calendar_service is not None or selected_bitable_service is not None
+        else "local_write"
+    )
+    application_approval = "always" if application_effect == "external_write" else "if_implicit"
     registry = ToolRegistry()
-    register_mcp_rag_tools(registry, adapter=rag_tool_adapter)
-
     registry.register(
         AgentActionName.LIST_TODAY_TASKS.value,
         lambda arguments: list_today_tasks(
             selected_repository,
             arguments,
             leetcode_repository=selected_leetcode_repository,
+            timezone_name=app_settings.feishu_calendar_timezone,
         ),
         description="查看今天的 LeetCode、八股、项目深挖和投递相关任务。",
         mutating=False,
@@ -139,10 +189,13 @@ def build_offerpilot_tool_registry(
             calendar_service=selected_calendar_service,
             bitable_service=selected_bitable_service,
         ),
-        description="新增一条投递记录；如果包含面试时间和轮次，也会记录面试安排并按需同步日历和多维表格。",
+        description="新增一条投递记录；可记录工作地点，如果包含面试时间和轮次，也会记录面试安排并按需同步日历和多维表格。",
         mutating=True,
+        effect=application_effect,
+        approval=application_approval,
         required_slots=["company", "role"],
         optional_slots=[
+            "base_location",
             "round",
             "interview_time",
             "calendar_reminder",
@@ -162,6 +215,22 @@ def build_offerpilot_tool_registry(
         examples=["我有哪些面试", "查询投递进度", "深信服现在什么状态"],
     )
     registry.register(
+        AgentActionName.GET_APPLICATION_BITABLE_LINK.value,
+        lambda arguments: get_application_bitable_link(
+            selected_repository,
+            arguments,
+            app_settings=app_settings,
+        ),
+        description="获取当前用户有权访问的飞书投递多维表格链接。",
+        mutating=False,
+        optional_slots=[
+            "owner_id",
+            "attendee_user_id",
+            "bitable_collaborator_user_id",
+        ],
+        examples=["把投递多维表格链接发给我", "打开我的投递表"],
+    )
+    registry.register(
         AgentActionName.UPDATE_APPLICATION.value,
         lambda arguments: update_application(
             selected_repository,
@@ -169,11 +238,14 @@ def build_offerpilot_tool_registry(
             calendar_service=selected_calendar_service,
             bitable_service=selected_bitable_service,
         ),
-        description="更新投递进度，例如安排一面/二面、通过某轮、被拒、拿到 offer；面试安排会按需同步日历和多维表格。",
+        description="更新投递进度或工作地点，例如安排一面/二面、通过某轮、被拒、拿到 offer；面试安排会按需同步日历和多维表格。",
         mutating=True,
+        effect=application_effect,
+        approval=application_approval,
         required_slots=["company"],
         optional_slots=[
             "role",
+            "base_location",
             "round",
             "interview_time",
             "update_type",
@@ -198,6 +270,8 @@ def build_offerpilot_tool_registry(
         ),
         description="按 application_id 或 schedule_id 定位已有面试安排并修改时间；匹配不唯一时返回候选项。",
         mutating=True,
+        effect=application_effect,
+        approval=application_approval,
         required_slots=["interview_time"],
         optional_slots=["application_id", "schedule_id", "company", "role", "round", "start_at", "idempotency_key"],
         examples=["把美团一面改到后天下午四点", "将 schedule_1 改到下周一上午十点"],
@@ -212,6 +286,8 @@ def build_offerpilot_tool_registry(
         ),
         description="按 application_id 或 schedule_id 定位已有面试安排并取消；匹配不唯一时返回候选项。",
         mutating=True,
+        effect="destructive",
+        approval="always",
         optional_slots=["application_id", "schedule_id", "company", "role", "round", "idempotency_key"],
         examples=["取消美团一面", "取消 schedule_1"],
     )
@@ -291,22 +367,47 @@ def list_today_tasks(
     repository: OfferPilotRepository,
     arguments: Optional[Dict[str, Any]] = None,
     leetcode_repository: Optional[LeetCodeRepository] = None,
+    timezone_name: Optional[str] = None,
 ) -> ToolResult:
     owner_id = _owner_id_from_arguments(arguments or {})
     tasks = repository.list_today_tasks(owner_id=owner_id)
     task_data = [task.to_dict() for task in tasks]
     recommendations = (
-        leetcode_tools.get_today_recommendations(leetcode_repository, owner_id)
+        leetcode_tools.list_today_recommendations(leetcode_repository, owner_id)
         if leetcode_repository is not None
         else []
     )
     recommendation_data = leetcode_tools.recommendations_to_dict(recommendations)
-    if not task_data and not recommendation_data:
+    preferences = repository.get_study_preferences(owner_id=owner_id)
+    selected_timezone_name = (
+        preferences.timezone
+        if preferences is not None
+        else (timezone_name or settings.feishu_calendar_timezone)
+    )
+    try:
+        owner_timezone = ZoneInfo(selected_timezone_name)
+    except ZoneInfoNotFoundError:
+        owner_timezone = ZoneInfo("Asia/Shanghai")
+    now_value = datetime.now(owner_timezone)
+    today_start = datetime.combine(now_value.date(), time.min, owner_timezone)
+    tomorrow_start = today_start + timedelta(days=1)
+    study_sessions = repository.list_study_sessions(
+        owner_id=owner_id,
+        range_start=today_start,
+        range_end=tomorrow_start,
+    )
+    active_study_sessions = [
+        session
+        for session in study_sessions
+        if session.status.value not in {"skipped", "cancelled"}
+    ]
+    study_session_data = [session.to_dict() for session in active_study_sessions]
+    if not task_data and not recommendation_data and not study_session_data:
         return ToolResult(
             tool_name=AgentActionName.LIST_TODAY_TASKS.value,
             success=True,
             message="今天暂时没有待办任务。",
-            data={"tasks": [], "leetcode_recommendations": []},
+            data={"tasks": [], "leetcode_recommendations": [], "study_sessions": []},
         )
 
     sections = []
@@ -318,6 +419,15 @@ def list_today_tasks(
             for index, task in enumerate(tasks, start=1)
         ]
         sections.append("其他秋招任务：\n" + "\n".join(lines))
+    if active_study_sessions:
+        lines = [
+            (
+                f"{index}. {session.start_at.astimezone(owner_timezone).strftime('%H:%M')} "
+                f"{session.topic}（{session.duration_minutes} 分钟）"
+            )
+            for index, session in enumerate(active_study_sessions, start=1)
+        ]
+        sections.append("今日复习安排：\n" + "\n".join(lines))
     return ToolResult(
         tool_name=AgentActionName.LIST_TODAY_TASKS.value,
         success=True,
@@ -325,6 +435,7 @@ def list_today_tasks(
         data={
             "tasks": task_data,
             "leetcode_recommendations": recommendation_data,
+            "study_sessions": study_session_data,
         },
     )
 
@@ -347,9 +458,32 @@ def create_application(
 
     round_name = _resolve_application_round(arguments)
     owner_id = _owner_id_from_arguments(arguments)
+    request_idempotency_key = arguments.get("idempotency_key")
+    idempotency_conflict = _claim_request_idempotency_key(
+        repository=repository,
+        namespace=f"create_application:{owner_id}",
+        idempotency_key=request_idempotency_key,
+        payload={
+            "company": arguments["company"],
+            "role": arguments["role"],
+            "base_location": arguments.get("base_location"),
+            "interview_time": arguments.get("interview_time"),
+            "round": round_name,
+            "start_at": arguments.get("start_at"),
+            "jd_keywords": arguments.get("jd_keywords", []),
+        },
+    )
+    if idempotency_conflict:
+        return ToolResult(
+            tool_name=AgentActionName.CREATE_APPLICATION.value,
+            success=False,
+            message=idempotency_conflict,
+            data={"idempotency_conflict": True},
+        )
     application = repository.create_application(
         company=arguments["company"],
         role=arguments["role"],
+        base_location=arguments.get("base_location"),
         interview_time=arguments.get("interview_time"),
         round_name=round_name,
         jd_keywords=arguments.get("jd_keywords", []),
@@ -370,6 +504,10 @@ def create_application(
             owner_id=owner_id,
         )
 
+    operation_key = (
+        f"create:{owner_id}:{application.id}:"
+        f"{request_idempotency_key or 'derived'}"
+    )
     calendar_sync = _sync_interview_schedule_to_calendar(
         repository=repository,
         schedule=schedule,
@@ -377,6 +515,7 @@ def create_application(
         owner_id=owner_id,
         attendee_user_id=arguments.get("attendee_user_id"),
         attendee_user_id_type=arguments.get("attendee_user_id_type", "open_id"),
+        idempotency_key=f"{operation_key}:calendar",
     )
     bitable_sync = _sync_application_to_bitable(
         repository=repository,
@@ -387,7 +526,9 @@ def create_application(
         collaborator_user_id=arguments.get("bitable_collaborator_user_id") or arguments.get("attendee_user_id"),
         collaborator_user_id_type=arguments.get("bitable_collaborator_user_id_type")
         or arguments.get("attendee_user_id_type", "open_id"),
+        idempotency_key=f"{operation_key}:bitable",
     )
+    operation_status = _external_write_status(calendar_sync, bitable_sync)
     application_data = application.to_dict()
     return ToolResult(
         tool_name=AgentActionName.CREATE_APPLICATION.value,
@@ -403,6 +544,9 @@ def create_application(
             "interview_schedule": schedule.to_dict() if schedule else None,
             "calendar_sync": calendar_sync,
             "bitable_sync": bitable_sync,
+            "operation_status": operation_status,
+            "retryable": operation_status == "partial_success",
+            "idempotency_key": operation_key,
         },
     )
 
@@ -417,11 +561,39 @@ def query_application(repository: OfferPilotRepository, arguments: Dict[str, Any
 
     if query_type == "upcoming_interviews":
         schedules = repository.list_interview_schedules(company=company, owner_id=owner_id)
-        applications = [
-            application
-            for application in applications
-            if application.interview_time or application.status in INTERVIEW_APPLICATION_STATUSES
-        ]
+        range_start = _parse_aware_datetime(arguments.get("range_start"))
+        range_end = _parse_aware_datetime(arguments.get("range_end"))
+        if range_start is not None and range_end is not None:
+            schedules = [
+                schedule
+                for schedule in schedules
+                if (
+                    (start_at := _parse_aware_datetime(schedule.start_at)) is not None
+                    and range_start <= start_at < range_end
+                )
+            ]
+            scheduled_application_ids = {
+                schedule.application_id
+                for schedule in schedules
+                if schedule.application_id
+            }
+            applications = [
+                application
+                for application in applications
+                if application.id in scheduled_application_ids
+                or (
+                    (interview_at := _parse_aware_datetime(application.interview_time))
+                    is not None
+                    and range_start <= interview_at < range_end
+                )
+            ]
+        else:
+            applications = [
+                application
+                for application in applications
+                if application.interview_time
+                or application.status in INTERVIEW_APPLICATION_STATUSES
+            ]
         message = _format_upcoming_interviews(applications, schedules)
     elif company:
         message = _format_company_status(company, applications)
@@ -435,10 +607,93 @@ def query_application(repository: OfferPilotRepository, arguments: Dict[str, Any
         data={
             "query_type": query_type,
             "company": company,
+            "range_start": arguments.get("range_start"),
+            "range_end": arguments.get("range_end"),
             "applications": [application.to_dict() for application in applications],
             "interview_schedules": [schedule.to_dict() for schedule in schedules],
         },
     )
+
+
+def get_application_bitable_link(
+    repository: OfferPilotRepository,
+    arguments: Optional[Dict[str, Any]] = None,
+    *,
+    app_settings: Settings = settings,
+) -> ToolResult:
+    """Return the managed application table only for an actor with recorded access."""
+
+    tool_name = AgentActionName.GET_APPLICATION_BITABLE_LINK.value
+    if not app_settings.feishu_bitable_sync_enabled:
+        return _bitable_link_error(
+            tool_name,
+            "bitable_sync_disabled",
+            "飞书多维表格同步尚未启用，暂时无法提供投递表链接。",
+        )
+
+    trusted_arguments = arguments or {}
+    owner_id = _owner_id_from_arguments(trusted_arguments)
+    resource = get_owner_bitable_resource(
+        repository,
+        owner_id,
+        legacy_app_token=app_settings.feishu_bitable_app_token,
+        legacy_table_id=app_settings.feishu_bitable_table_id,
+    )
+    if resource is None:
+        legacy_resource_exists = bool(
+            (
+                repository.get_runtime_setting(_OFFERPILOT_BITABLE_APP_TOKEN_SETTING)
+                or app_settings.feishu_bitable_app_token
+            )
+            and (
+                repository.get_runtime_setting(_OFFERPILOT_BITABLE_TABLE_ID_SETTING)
+                or app_settings.feishu_bitable_table_id
+            )
+        )
+        if owner_id != _DEFAULT_OWNER_ID and legacy_resource_exists:
+            return _bitable_link_error(
+                tool_name,
+                "bitable_access_unverified",
+                "已找到旧版投递多维表格，但尚未确认你有访问权限，也没有登记为你的独立表格。请先新增或同步一条投递记录。",
+            )
+        return _bitable_link_error(
+            tool_name,
+            "bitable_not_ready",
+            "投递多维表格尚未创建。完成一次投递同步后，我就可以把链接发给你。",
+        )
+
+    web_url = _build_bitable_web_url(
+        resource.app_token,
+        resource.table_id,
+        app_settings=app_settings,
+    )
+    return ToolResult(
+        tool_name=tool_name,
+        success=True,
+        message=f"这是你的投递多维表格：{web_url}",
+        data={"web_url": web_url},
+    )
+
+
+def _bitable_link_error(tool_name: str, code: str, message: str) -> ToolResult:
+    return ToolResult(
+        tool_name=tool_name,
+        success=False,
+        message=message,
+        data={"error": {"code": code, "message": message}},
+    )
+
+
+def _parse_aware_datetime(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
 
 
 # 更新投递进度，并按需同步日历和多维表格。
@@ -462,13 +717,14 @@ def update_application(
     interview_time = arguments.get("interview_time")
     round_name = arguments.get("round")
     role = arguments.get("role")
+    base_location = arguments.get("base_location")
     owner_id = _owner_id_from_arguments(arguments)
 
-    if status is None and interview_time is None and round_name is None and role is None:
+    if status is None and interview_time is None and round_name is None and role is None and base_location is None:
         return ToolResult(
             tool_name=AgentActionName.UPDATE_APPLICATION.value,
             success=False,
-            message="更新投递进度失败，我还没有识别到要更新的状态、轮次或时间。",
+            message="更新投递进度失败，我还没有识别到要更新的状态、轮次、时间或工作地点。",
             data={},
         )
 
@@ -498,6 +754,7 @@ def update_application(
                 interview_time=interview_time,
                 round_name=round_name,
                 role=role,
+                base_location=base_location,
                 owner_id=owner_id,
             )
             if updated_application is None:
@@ -557,6 +814,7 @@ def update_application(
             "round": round_name,
             "start_at": normalized_start_at,
             "role": role,
+            "base_location": base_location,
         },
     )
     if idempotency_conflict:
@@ -573,6 +831,7 @@ def update_application(
         interview_time=interview_time,
         round_name=round_name,
         role=role,
+        base_location=base_location,
         owner_id=owner_id,
     )
     if application is None:
@@ -1125,9 +1384,17 @@ def _interview_schedule_sort_key(schedule: InterviewSchedule) -> tuple[float, st
 # 将指定任务标记为已完成。
 def complete_task(repository: OfferPilotRepository, arguments: Dict[str, Any]) -> ToolResult:
     owner_id = _owner_id_from_arguments(arguments)
+    candidates = _find_task_candidates(repository, arguments, owner_id)
+    selection_result = _task_selection_result(
+        AgentActionName.COMPLETE_TASK.value,
+        candidates,
+        arguments,
+    )
+    if selection_result is not None:
+        return selection_result
     task = repository.complete_task(
-        task_title=arguments.get("task_title"),
-        task_type=arguments.get("task_type"),
+        task_title=candidates[0].title,
+        task_type=candidates[0].task_type.value,
         owner_id=owner_id,
     )
     if task is None:
@@ -1149,9 +1416,17 @@ def complete_task(repository: OfferPilotRepository, arguments: Dict[str, Any]) -
 # 将指定任务延期处理。
 def postpone_task(repository: OfferPilotRepository, arguments: Dict[str, Any]) -> ToolResult:
     owner_id = _owner_id_from_arguments(arguments)
+    candidates = _find_task_candidates(repository, arguments, owner_id)
+    selection_result = _task_selection_result(
+        AgentActionName.POSTPONE_TASK.value,
+        candidates,
+        arguments,
+    )
+    if selection_result is not None:
+        return selection_result
     task = repository.postpone_task(
-        task_title=arguments.get("task_title"),
-        task_type=arguments.get("task_type"),
+        task_title=candidates[0].title,
+        task_type=candidates[0].task_type.value,
         owner_id=owner_id,
     )
     if task is None:
@@ -1167,6 +1442,80 @@ def postpone_task(repository: OfferPilotRepository, arguments: Dict[str, Any]) -
         success=True,
         message=f"已延期任务：{task.title}。",
         data={"task": task.to_dict()},
+    )
+
+
+def _find_task_candidates(
+    repository: OfferPilotRepository,
+    arguments: Dict[str, Any],
+    owner_id: str,
+) -> List[Any]:
+    tasks = repository.list_today_tasks(owner_id=owner_id)
+    raw_title = str(arguments.get("task_title") or "").strip()
+    if raw_title:
+        normalized_title = _normalize_match_value(raw_title)
+        exact = [
+            task
+            for task in tasks
+            if _normalize_match_value(task.title) == normalized_title
+        ]
+        if exact:
+            return exact
+        title_matches = [
+            task
+            for task in tasks
+            if normalized_title in _normalize_match_value(task.title)
+        ]
+        if title_matches:
+            return title_matches
+
+    task_type = str(arguments.get("task_type") or "").strip()
+    if task_type:
+        return [task for task in tasks if task.task_type.value == task_type]
+    return tasks if not raw_title else []
+
+
+def _task_selection_result(
+    tool_name: str,
+    candidates: List[Any],
+    arguments: Dict[str, Any],
+) -> Optional[ToolResult]:
+    if not candidates:
+        return ToolResult(
+            tool_name=tool_name,
+            success=False,
+            message="没有找到可以处理的匹配任务。",
+            data={"candidates": []},
+        )
+    if len(candidates) == 1:
+        return None
+    candidate_data = [
+        {
+            "task_id": task.id,
+            "task_title": task.title,
+            "task_type": task.task_type.value,
+            "status": task.status.value,
+            "priority": task.priority.value,
+        }
+        for task in candidates
+    ]
+    action = "完成" if tool_name == AgentActionName.COMPLETE_TASK.value else "延期"
+    lines = [
+        f"{index}. {item['task_title']}（{item['task_type']}）"
+        for index, item in enumerate(candidate_data, start=1)
+    ]
+    return ToolResult(
+        tool_name=tool_name,
+        success=False,
+        message=f"找到多条可{action}任务，请回复 task_title 选择后再执行：\n"
+        + "\n".join(lines),
+        data={
+            "requires_selection": True,
+            "selection_slot": "task_title",
+            "candidates": candidate_data,
+            "requested_task_title": arguments.get("task_title"),
+            "requested_task_type": arguments.get("task_type"),
+        },
     )
 
 
@@ -1201,6 +1550,8 @@ def _format_application_created_message(
         f"岗位：{application.role}",
         f"状态：{application_status_label(application.status)}",
     ]
+    if application.base_location:
+        lines.append(f"工作地点：{application.base_location}")
     if application.round:
         lines.append(f"轮次：{application.round}")
     if application.interview_time:
@@ -1225,6 +1576,8 @@ def _format_application_list(applications: list[Application]) -> str:
     lines = ["当前投递记录："]
     for index, application in enumerate(applications, start=1):
         detail = f"{index}. {application.company} - {application.role}（{application_status_label(application.status)}）"
+        if application.base_location:
+            detail += f"，工作地点：{application.base_location}"
         if application.round:
             detail += f"，{application.round}"
         if application.interview_time:
@@ -1245,6 +1598,8 @@ def _format_company_status(company: str, applications: list[Application]) -> str
             f"岗位：{application.role}",
             f"状态：{application_status_label(application.status)}",
         ]
+        if application.base_location:
+            lines.append(f"工作地点：{application.base_location}")
         if application.round:
             lines.append(f"当前轮次：{application.round}")
         if application.interview_time:
@@ -1261,12 +1616,16 @@ def _format_upcoming_interviews(
 ) -> str:
     if schedules:
         lines = ["近期笔试/面试安排："]
+        applications_by_id = {application.id: application for application in applications}
         for index, schedule in enumerate(schedules, start=1):
             role = schedule.role or "岗位待补充"
             time_text = schedule.start_time or "时间待补充"
-            lines.append(
-                f"{index}. {schedule.company} - {role}，{schedule.round}，{time_text}，提前 {schedule.reminder_minutes} 分钟提醒"
-            )
+            detail = f"{index}. {schedule.company} - {role}，{schedule.round}，{time_text}"
+            application = applications_by_id.get(schedule.application_id or "")
+            if application and application.base_location:
+                detail += f"，工作地点：{application.base_location}"
+            detail += f"，提前 {schedule.reminder_minutes} 分钟提醒"
+            lines.append(detail)
         return "\n".join(lines)
 
     if not applications:
@@ -1276,7 +1635,10 @@ def _format_upcoming_interviews(
     for index, application in enumerate(applications, start=1):
         round_name = application.round or application_status_label(application.status)
         time_text = application.interview_time or "时间待补充"
-        lines.append(f"{index}. {application.company} - {application.role}，{round_name}，{time_text}")
+        detail = f"{index}. {application.company} - {application.role}，{round_name}，{time_text}"
+        if application.base_location:
+            detail += f"，工作地点：{application.base_location}"
+        lines.append(detail)
     return "\n".join(lines)
 
 
@@ -1392,7 +1754,11 @@ def _sync_interview_schedule_to_calendar(
             return {**cached, "attempts": 0, "idempotent_replay": True}
 
     try:
-        calendar_context = _ensure_calendar_for_sync(repository, calendar_service)
+        calendar_context = _ensure_calendar_for_sync(
+            repository,
+            calendar_service,
+            owner_id=owner_id,
+        )
         result = calendar_service.create_interview_event(
             company=schedule.company,
             role=schedule.role,
@@ -1458,7 +1824,11 @@ def _sync_rescheduled_interview_to_calendar(
         return {"synced": False, "status": "disabled", "attempts": 0}
 
     def operation() -> Dict[str, Any]:
-        calendar_context = _ensure_calendar_for_sync(repository, calendar_service)
+        calendar_context = _ensure_calendar_for_sync(
+            repository,
+            calendar_service,
+            owner_id=owner_id,
+        )
         calendar_id = calendar_context.get("calendar_id")
         if schedule.calendar_event_id:
             result = calendar_service.update_interview_event(
@@ -1530,7 +1900,11 @@ def _sync_cancelled_interview_to_calendar(
     event_id = schedule.calendar_event_id
 
     def operation() -> Dict[str, Any]:
-        calendar_context = _ensure_calendar_for_sync(repository, calendar_service)
+        calendar_context = _ensure_calendar_for_sync(
+            repository,
+            calendar_service,
+            owner_id=owner_id,
+        )
         calendar_service.delete_interview_event(
             calendar_id=calendar_context.get("calendar_id"),
             event_id=event_id,
@@ -1571,11 +1945,13 @@ def _format_application_updated_message(
     bitable_sync: Optional[Dict[str, Any]] = None,
 ) -> str:
     lines = [
-        "已更新投递进度：",
+        "已更新投递记录：",
         f"公司：{application.company}",
         f"岗位：{application.role}",
         f"状态：{application_status_label(application.status)}",
     ]
+    if application.base_location:
+        lines.append(f"工作地点：{application.base_location}")
     if application.round:
         lines.append(f"轮次：{application.round}")
     if application.interview_time:
@@ -1667,7 +2043,11 @@ def _sync_application_to_bitable(
     idempotency_key: Optional[str] = None,
     clear_interview_fields: bool = False,
 ) -> Dict[str, Any]:
-    if bitable_service is None or not bitable_service.is_bitable_sync_enabled():
+    if bitable_service is None or not _is_bitable_sync_available_for_owner(
+        repository,
+        bitable_service,
+        application.owner_id,
+    ):
         return {"synced": False, "status": "disabled", "attempts": 0}
 
     if idempotency_key:
@@ -1707,6 +2087,20 @@ def _sync_application_to_bitable(
     return last_result
 
 
+def _is_bitable_sync_available_for_owner(
+    repository: OfferPilotRepository,
+    bitable_service: FeishuBitableService,
+    owner_id: str,
+) -> bool:
+    if bitable_service.is_bitable_sync_enabled():
+        return True
+    resource = get_owner_bitable_resource(repository, owner_id)
+    if resource is None or not bool(getattr(bitable_service, "sync_enabled", False)):
+        return False
+    is_configured = getattr(bitable_service, "is_configured", None)
+    return not callable(is_configured) or bool(is_configured())
+
+
 # 执行一次 application 多维表格同步。
 def _sync_application_to_bitable_once(
     repository: OfferPilotRepository,
@@ -1723,12 +2117,22 @@ def _sync_application_to_bitable_once(
 
     retry_safe = False
     try:
-        bitable_context = _ensure_bitable_for_sync(repository, bitable_service)
+        bitable_context = _ensure_bitable_for_sync(
+            repository,
+            bitable_service,
+            owner_id=application.owner_id,
+        )
         fields = _build_application_bitable_fields(
             application=application,
             schedule=schedule,
             calendar_sync=calendar_sync,
             clear_interview_fields=clear_interview_fields,
+        )
+        remember_bitable_table_owner(
+            repository=repository,
+            app_token=bitable_context["app_token"],
+            table_id=bitable_context["table_id"],
+            owner_id=application.owner_id,
         )
         record_setting_key = _bitable_record_setting_key(
             table_id=bitable_context["table_id"],
@@ -1756,11 +2160,19 @@ def _sync_application_to_bitable_once(
             if not result.record_id:
                 raise FeishuRequestError("Feishu bitable record response does not contain record_id.")
             record_id = result.record_id
-            repository.set_runtime_setting(record_setting_key, record_id)
             operation = "created"
+        remember_bitable_record_mapping(
+            repository=repository,
+            app_token=bitable_context["app_token"],
+            table_id=bitable_context["table_id"],
+            record_id=record_id,
+            application_id=application.id,
+            owner_id=application.owner_id,
+        )
         event_subscription = ensure_bitable_event_subscription(
             repository=repository,
             bitable_service=bitable_service,
+            app_token=bitable_context["app_token"],
         )
         collaborator_sync = _sync_bitable_collaborator(
             repository=repository,
@@ -1796,43 +2208,89 @@ def _sync_application_to_bitable_once(
 def _ensure_bitable_for_sync(
     repository: OfferPilotRepository,
     bitable_service: FeishuBitableService,
+    owner_id: str = _DEFAULT_OWNER_ID,
 ) -> Dict[str, Any]:
+    normalized_owner = (owner_id or "").strip() or _DEFAULT_OWNER_ID
+    existing_resource = get_owner_bitable_resource(
+        repository,
+        normalized_owner,
+        legacy_app_token=getattr(bitable_service, "app_token", None),
+        legacy_table_id=getattr(bitable_service, "table_id", None),
+    )
+    if existing_resource is not None:
+        try:
+            save_owner_bitable_resource(
+                repository,
+                owner_id=normalized_owner,
+                app_token=existing_resource.app_token,
+                table_id=existing_resource.table_id,
+                schema_version=existing_resource.schema_version,
+            )
+        except BitableResourceConflictError as exc:
+            raise FeishuConfigurationError(str(exc)) from exc
+        _migrate_bitable_schema_if_needed(
+            repository=repository,
+            bitable_service=bitable_service,
+            app_token=existing_resource.app_token,
+            table_id=existing_resource.table_id,
+            owner_id=normalized_owner,
+        )
+        return {
+            "app_token": existing_resource.app_token,
+            "table_id": existing_resource.table_id,
+            "bitable_managed": not existing_resource.legacy,
+            "bitable_auto_created": False,
+        }
+
     should_manage = (
         bitable_service.should_manage_offerpilot_bitable()
         if hasattr(bitable_service, "should_manage_offerpilot_bitable")
         else False
     )
+    can_create_isolated = should_manage or bool(
+        getattr(bitable_service, "auto_create_enabled", False)
+    )
     if not should_manage:
         app_token = getattr(bitable_service, "app_token", None)
         table_id = getattr(bitable_service, "table_id", None)
-        _migrate_bitable_schema_if_needed(
-            repository=repository,
-            bitable_service=bitable_service,
-            app_token=app_token,
-            table_id=table_id,
-        )
-        return {
-            "app_token": app_token,
-            "table_id": table_id,
-            "bitable_managed": False,
-            "bitable_auto_created": False,
-        }
+        if normalized_owner == _DEFAULT_OWNER_ID and app_token and table_id:
+            try:
+                resource = save_owner_bitable_resource(
+                    repository,
+                    owner_id=normalized_owner,
+                    app_token=app_token,
+                    table_id=table_id,
+                )
+            except BitableResourceConflictError as exc:
+                raise FeishuConfigurationError(str(exc)) from exc
+            _migrate_bitable_schema_if_needed(
+                repository=repository,
+                bitable_service=bitable_service,
+                app_token=resource.app_token,
+                table_id=resource.table_id,
+                owner_id=normalized_owner,
+            )
+            return {
+                "app_token": resource.app_token,
+                "table_id": resource.table_id,
+                "bitable_managed": False,
+                "bitable_auto_created": False,
+            }
+        if not can_create_isolated:
+            raise FeishuConfigurationError(
+                "当前用户尚未配置独立的投递多维表格，且自动创建未启用。"
+            )
 
-    stored_app_token = repository.get_runtime_setting(_OFFERPILOT_BITABLE_APP_TOKEN_SETTING)
-    stored_table_id = repository.get_runtime_setting(_OFFERPILOT_BITABLE_TABLE_ID_SETTING)
-    stored_schema_version = repository.get_runtime_setting(_OFFERPILOT_BITABLE_SCHEMA_VERSION_SETTING)
-
-    app_token = stored_app_token
+    app_token = None
     auto_created = False
     if not app_token:
         app_result = bitable_service.create_app()
         if not app_result.app_token:
             raise FeishuRequestError("Feishu bitable app response does not contain app_token.")
         app_token = app_result.app_token
-        repository.set_runtime_setting(_OFFERPILOT_BITABLE_APP_TOKEN_SETTING, app_token)
         auto_created = True
 
-    table_id = stored_table_id
+    table_id = None
     if not table_id:
         table_name = getattr(bitable_service, "table_name", None) or settings.feishu_offerpilot_bitable_table_name
         table_result = bitable_service.create_application_table(
@@ -1842,19 +2300,18 @@ def _ensure_bitable_for_sync(
         if not table_result.table_id:
             raise FeishuRequestError("Feishu bitable table response does not contain table_id.")
         table_id = table_result.table_id
-        repository.set_runtime_setting(_OFFERPILOT_BITABLE_TABLE_ID_SETTING, table_id)
-        repository.set_runtime_setting(
-            _OFFERPILOT_BITABLE_SCHEMA_VERSION_SETTING,
-            _CURRENT_BITABLE_SCHEMA_VERSION,
-        )
         auto_created = True
-    elif stored_schema_version != _CURRENT_BITABLE_SCHEMA_VERSION:
-        _migrate_bitable_schema_if_needed(
-            repository=repository,
-            bitable_service=bitable_service,
+
+    try:
+        save_owner_bitable_resource(
+            repository,
+            owner_id=normalized_owner,
             app_token=app_token,
             table_id=table_id,
+            schema_version=_CURRENT_BITABLE_SCHEMA_VERSION,
         )
+    except BitableResourceConflictError as exc:
+        raise FeishuConfigurationError(str(exc)) from exc
 
     return {
         "app_token": app_token,
@@ -1870,20 +2327,26 @@ def _migrate_bitable_schema_if_needed(
     bitable_service: FeishuBitableService,
     app_token: Optional[str],
     table_id: Optional[str],
+    owner_id: str = _DEFAULT_OWNER_ID,
 ) -> None:
     if not app_token or not table_id:
         return
-    stored_schema_version = repository.get_runtime_setting(
-        _OFFERPILOT_BITABLE_SCHEMA_VERSION_SETTING
+    resource = get_owner_bitable_resource(
+        repository,
+        owner_id,
+        legacy_app_token=app_token,
+        legacy_table_id=table_id,
     )
+    stored_schema_version = resource.schema_version if resource else None
     if stored_schema_version == _CURRENT_BITABLE_SCHEMA_VERSION:
         return
     migrate_schema = getattr(bitable_service, "migrate_application_table_schema", None)
     if not callable(migrate_schema):
         return
     migrate_schema(app_token=app_token, table_id=table_id)
-    repository.set_runtime_setting(
-        _OFFERPILOT_BITABLE_SCHEMA_VERSION_SETTING,
+    set_owner_bitable_schema_version(
+        repository,
+        owner_id,
         _CURRENT_BITABLE_SCHEMA_VERSION,
     )
 
@@ -1906,6 +2369,7 @@ def _build_application_bitable_fields(
         "OfferPilot记录ID": application.id,
         "公司": application.company,
         "岗位": application.role,
+        "工作地点": application.base_location or "",
         "投递状态": application_status_label(application.status),
         "优先级": _infer_application_priority(application),
         "来源": "飞书助手",
@@ -2143,8 +2607,13 @@ def _bitable_record_setting_key(table_id: str, application_id: str) -> str:
 
 
 # 构造 bitable web url。
-def _build_bitable_web_url(app_token: str, table_id: str) -> str:
-    base_url = settings.feishu_bitable_web_base_url.rstrip("/")
+def _build_bitable_web_url(
+    app_token: str,
+    table_id: str,
+    *,
+    app_settings: Settings = settings,
+) -> str:
+    base_url = app_settings.feishu_bitable_web_base_url.rstrip("/")
     if not app_token:
         return ""
     if table_id:
@@ -2291,20 +2760,28 @@ def _build_application_next_action(
 def _ensure_calendar_for_sync(
     repository: OfferPilotRepository,
     calendar_service: FeishuCalendarService,
+    owner_id: str = _DEFAULT_OWNER_ID,
 ) -> Dict[str, Any]:
+    normalized_owner_id = (owner_id or "").strip() or _DEFAULT_OWNER_ID
     should_manage = (
         calendar_service.should_manage_offerpilot_calendar()
         if hasattr(calendar_service, "should_manage_offerpilot_calendar")
         else False
     )
     if not should_manage:
+        if normalized_owner_id != _DEFAULT_OWNER_ID:
+            raise FeishuConfigurationError(
+                "A shared configured calendar cannot be used for multiple owners. "
+                "Enable managed calendar creation or user calendar OAuth."
+            )
         return {
             "calendar_id": getattr(calendar_service, "calendar_id", None),
             "calendar_managed": False,
             "calendar_auto_created": False,
         }
 
-    stored_calendar_id = repository.get_runtime_setting(_OFFERPILOT_CALENDAR_ID_SETTING)
+    setting_key = _calendar_id_setting_key(normalized_owner_id)
+    stored_calendar_id = repository.get_runtime_setting(setting_key)
     if stored_calendar_id:
         return {
             "calendar_id": stored_calendar_id,
@@ -2317,7 +2794,7 @@ def _ensure_calendar_for_sync(
         raise FeishuRequestError("Feishu calendar response does not contain calendar_id.")
 
     repository.set_runtime_setting(
-        _OFFERPILOT_CALENDAR_ID_SETTING,
+        setting_key,
         calendar_result.calendar_id,
     )
     return {
@@ -2325,6 +2802,14 @@ def _ensure_calendar_for_sync(
         "calendar_managed": True,
         "calendar_auto_created": True,
     }
+
+
+def _calendar_id_setting_key(owner_id: str) -> str:
+    normalized_owner_id = (owner_id or "").strip() or _DEFAULT_OWNER_ID
+    if normalized_owner_id == _DEFAULT_OWNER_ID:
+        return _OFFERPILOT_CALENDAR_ID_SETTING
+    owner_digest = hashlib.sha256(normalized_owner_id.encode("utf-8")).hexdigest()
+    return f"{_OFFERPILOT_CALENDAR_ID_SETTING}.owner.{owner_digest}"
 
 
 # 同步 calendar attendee。

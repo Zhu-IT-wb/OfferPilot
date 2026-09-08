@@ -1,9 +1,9 @@
 import json
-from typing import Any, Dict, List, Protocol
-
+from typing import Any, Dict, List, Optional, Protocol, Type
 
 import httpx
 
+from app.core.config import normalize_llm_provider, settings
 from app.models.tool_calling import (
     ModelOptions,
     ModelTurn,
@@ -16,6 +16,7 @@ from app.services.llm_service import (
     LLMConfigurationError,
 )
 
+
 class ToolCallingModel(Protocol):
     async def complete(
         self,
@@ -25,16 +26,21 @@ class ToolCallingModel(Protocol):
     ) -> ModelTurn:
         ...
 
-class DeepSeekToolCallingModel(LLMService):
+
+class ChatCompletionsToolCallingModel(LLMService):
+    """Tool-calling adapter for providers using Chat Completions messages."""
+
     async def complete(
-          self,
-          messages: List[Dict[str, Any]],
-          tools: List[Dict[str, Any]],
-          options: ModelOptions,
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        options: ModelOptions,
     ) -> ModelTurn:
-        # 先检验apiKey有没有配置
         if not self.api_key:
-            raise LLMConfigurationError("LLM API key is not configured.")
+            raise LLMConfigurationError(
+                "LLM API key is not configured. Set OFFERPILOT_LLM_API_KEY, "
+                "OPENAI_API_KEY, or DEEPSEEK_API_KEY."
+            )
         try:
             response = await self._request_completion(messages, tools, options)
         except httpx.HTTPStatusError as exc:
@@ -54,24 +60,20 @@ class DeepSeekToolCallingModel(LLMService):
         tools: List[Dict[str, Any]],
         options: ModelOptions,
     ) -> Dict[str, Any]:
-     selected_model = options.model or self.default_model
-     payload = {
-            "model": selected_model,
-            "messages": messages,
-            "tools": tools,
-            "temperature": options.temperature,
-            "max_tokens": options.max_tokens,
-            "stream": False,
-        }
-     if options.thinking is not None:
-        payload["thinking"] = options.thinking
-     if options.response_format is not None:
-        payload["response_format"] = (
-            options.response_format
+        selected_model = options.model or self.default_model
+        payload = self._build_chat_completions_payload(
+            messages=messages,
+            selected_model=selected_model,
+            temperature=options.temperature,
+            max_tokens=options.max_tokens,
+            response_format=options.response_format,
+            thinking=options.thinking,
         )
-     if options.tool_choice is not None:
-        payload["tool_choice"] = options.tool_choice
-     return await self._post_chat_completions(payload)
+        if tools:
+            payload["tools"] = tools
+        if options.tool_choice is not None:
+            payload["tool_choice"] = options.tool_choice
+        return await self._post_chat_completions(payload)
 
     def _parse_response(
         self,
@@ -79,15 +81,15 @@ class DeepSeekToolCallingModel(LLMService):
         selected_model: str,
     ) -> ModelTurn:
         choice = self._first_choice(response_data)
-        assistant_message =  choice.get("message")
-        if not isinstance(assistant_message,dict):
+        assistant_message = choice.get("message")
+        if not isinstance(assistant_message, dict):
             raise LLMRequestError(
-                "LLM response does not contain a vaild message"
+                "LLM response does not contain a valid message."
             )
         content = assistant_message.get("content")
         if content is None:
             content = ""
-        if not isinstance(content,str):
+        if not isinstance(content, str):
             raise LLMRequestError(
                 "LLM message content is not a string"
             )
@@ -238,3 +240,70 @@ class DeepSeekToolCallingModel(LLMService):
                 raw_usage.get("total_tokens") or 0
             ),
         )
+
+
+class DeepSeekToolCallingModel(ChatCompletionsToolCallingModel):
+    """DeepSeek Chat Completions adapter kept for backwards compatibility."""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        provider: Optional[str] = None,
+        default_model: Optional[str] = None,
+        timeout_seconds: Optional[float] = None,
+    ) -> None:
+        super().__init__(
+            api_key=api_key,
+            base_url=base_url or "https://api.deepseek.com",
+            provider=provider or "deepseek",
+            default_model=default_model or "deepseek-v4-flash",
+            timeout_seconds=timeout_seconds,
+        )
+
+
+class OpenAIToolCallingModel(ChatCompletionsToolCallingModel):
+    """OpenAI Chat Completions adapter."""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        provider: Optional[str] = None,
+        default_model: Optional[str] = None,
+        timeout_seconds: Optional[float] = None,
+    ) -> None:
+        super().__init__(
+            api_key=api_key,
+            base_url=base_url or "https://api.openai.com/v1",
+            provider=provider or "openai",
+            default_model=default_model or "gpt-4.1-mini",
+            timeout_seconds=timeout_seconds,
+        )
+
+
+def build_tool_calling_model(
+    *,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    provider: Optional[str] = None,
+    default_model: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
+) -> ChatCompletionsToolCallingModel:
+    """Create the adapter matching the configured Chat Completions provider."""
+
+    normalized_provider = normalize_llm_provider(provider or settings.llm_provider)
+    model_type: Type[ChatCompletionsToolCallingModel]
+    if normalized_provider == "openai":
+        model_type = OpenAIToolCallingModel
+    elif normalized_provider == "deepseek":
+        model_type = DeepSeekToolCallingModel
+    else:
+        model_type = ChatCompletionsToolCallingModel
+    return model_type(
+        api_key=api_key,
+        base_url=base_url,
+        provider=normalized_provider,
+        default_model=default_model,
+        timeout_seconds=timeout_seconds,
+    )

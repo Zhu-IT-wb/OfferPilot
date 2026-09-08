@@ -62,6 +62,7 @@ class Application:
     id: str
     company: str
     role: str
+    base_location: Optional[str] = None
     owner_id: str = "local_user"
     status: ApplicationStatus = ApplicationStatus.PLANNED
     interview_time: Optional[str] = None
@@ -75,6 +76,7 @@ class Application:
             "owner_id": self.owner_id,
             "company": self.company,
             "role": self.role,
+            "base_location": self.base_location,
             "status": self.status.value,
             "interview_time": self.interview_time,
             "round": self.round,

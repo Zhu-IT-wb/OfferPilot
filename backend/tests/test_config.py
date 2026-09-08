@@ -45,3 +45,33 @@ def test_get_bool_env_parses_common_values(monkeypatch) -> None:
 
     monkeypatch.delenv("OFFERPILOT_TEST_BOOL", raising=False)
     assert config._get_bool_env("OFFERPILOT_TEST_BOOL", default=True) is True
+
+
+def test_openai_llm_defaults_follow_selected_provider(monkeypatch) -> None:
+    monkeypatch.setenv("OFFERPILOT_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+    monkeypatch.delenv("OFFERPILOT_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OFFERPILOT_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("OFFERPILOT_LLM_MODEL", raising=False)
+
+    settings = config.Settings()
+
+    assert settings.llm_provider == "openai"
+    assert settings.llm_api_key == "openai-key"
+    assert settings.llm_base_url == "https://api.openai.com/v1"
+    assert settings.llm_model == "gpt-4.1-mini"
+
+
+def test_generic_llm_key_overrides_provider_specific_key(monkeypatch) -> None:
+    monkeypatch.setenv("OFFERPILOT_LLM_PROVIDER", "chatgpt")
+    monkeypatch.setenv("OFFERPILOT_LLM_API_KEY", "generic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.delenv("OFFERPILOT_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("OFFERPILOT_LLM_MODEL", raising=False)
+
+    settings = config.Settings()
+
+    assert settings.llm_provider == "openai"
+    assert settings.llm_api_key == "generic-key"
+    assert settings.llm_base_url == "https://api.openai.com/v1"

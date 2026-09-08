@@ -69,11 +69,15 @@ def test_registry_dispatches_tool_call_to_handler() -> None:
     content = json.loads(message["content"])
 
     assert content == {
+        "status": "success",
         "success": True,
+        "message": "",
         "data": {
             "path": "README.md",
             "content": "README content",
         },
+        "retryable": False,
+        "artifact_refs": [],
     }
 
 
@@ -95,6 +99,8 @@ def test_registry_returns_error_for_unknown_tool() -> None:
     assert message["role"] == "tool"
     assert message["tool_call_id"] == "call_missing"
     assert content["success"] is False
+    assert content["status"] == "rejected"
+    assert content["error_code"] == "tool_not_found"
     assert content["data"]["error"]["code"] == (
         "tool_not_found"
     )

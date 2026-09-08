@@ -1,3 +1,6 @@
+import asyncio
+import sqlite3
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -18,6 +21,16 @@ def test_health_check_returns_ok() -> None:
 
 def test_application_lifespan_starts_and_stops_services(monkeypatch) -> None:
     events = []
+
+    @asynccontextmanager
+    async def open_checkpoint(_settings):
+        events.append("checkpoint.open")
+        yield object()
+        events.append("checkpoint.close")
+
+    def build_runtime(_checkpointer, _settings):
+        events.append("runtime.build")
+        return object()
 
     def service_type(name):
         class FakeService:
@@ -82,13 +95,21 @@ def test_application_lifespan_starts_and_stops_services(monkeypatch) -> None:
         service_type("knowledge"),
     )
     monkeypatch.setattr(main_module, "close_default_mcp_client", close_mcp_client)
+    monkeypatch.setattr(main_module, "open_agent_checkpointer", open_checkpoint)
+    monkeypatch.setattr(main_module, "build_agent_runtime", build_runtime)
 
     test_app = main_module.create_app(
-        Settings(debug_routes_enabled=False, project_discovery_enabled=True)
+        Settings(
+            debug_routes_enabled=False,
+            project_discovery_enabled=True,
+            agent_checkpoint_backend="memory",
+        )
     )
     with TestClient(test_app) as client:
         assert client.get("/api/health").status_code == 200
         assert events == [
+            "checkpoint.open",
+            "runtime.build",
             "knowledge.sync",
             "subscription.ensure",
             "bitable.start",
@@ -97,11 +118,39 @@ def test_application_lifespan_starts_and_stops_services(monkeypatch) -> None:
             "discovery.start",
         ]
 
-    assert events[-5:] == [
+    assert events[-6:] == [
         "mcp.close",
         "bitable.stop",
         "leetcode.stop",
         "knowledge.stop",
         "discovery.stop",
+        "checkpoint.close",
     ]
+
+
+def test_sqlite_checkpointer_initializes_and_releases_file(tmp_path) -> None:
+    checkpoint_path = tmp_path / "agent-checkpoints.db"
+    app_settings = Settings(
+        agent_checkpoint_backend="sqlite",
+        agent_checkpoint_path=str(checkpoint_path),
+    )
+
+    async def initialize() -> None:
+        async with main_module.open_agent_checkpointer(app_settings) as checkpointer:
+            assert checkpointer is not None
+
+    asyncio.run(initialize())
+
+    connection = sqlite3.connect(checkpoint_path)
+    try:
+        table_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    finally:
+        connection.close()
+
+    assert "checkpoints" in table_names
 

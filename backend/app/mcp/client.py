@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,12 +8,17 @@ from typing import Any, Dict, Optional
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from pydantic import ValidationError
 
 from app.core.config import Settings, settings
 
 
 class MCPClientError(RuntimeError):
     pass
+
+
+class MCPToolError(MCPClientError):
+    """A rejected tool request or invalid result, not a retryable transport error."""
 
 
 @dataclass
@@ -54,7 +60,7 @@ class PersistentMCPClient:
     ) -> Dict[str, Any]:
         result = await self._request("call_tool", name=name, arguments=arguments or {})
         if not isinstance(result, dict):
-            raise MCPClientError(f"MCP tool {name} returned a non-object result")
+            raise MCPToolError(f"MCP tool {name} returned a non-object result")
         return result
 
     async def close(self) -> None:
@@ -133,7 +139,7 @@ class PersistentMCPClient:
                                     arguments=current.arguments or {},
                                 )
                                 if response.isError:
-                                    raise MCPClientError(
+                                    raise MCPToolError(
                                         _tool_error_message(current.name, response.content)
                                     )
                                 value = _structured_result(response)
@@ -144,7 +150,14 @@ class PersistentMCPClient:
                             current.future.set_result(value)
                         except Exception as exc:
                             if not current.future.done():
-                                current.future.set_exception(exc)
+                                if isinstance(exc, MCPClientError):
+                                    wrapped = exc
+                                elif isinstance(exc, (ValidationError, RuntimeError)):
+                                    # The SDK validates output schemas before returning a result.
+                                    wrapped = MCPToolError(str(exc))
+                                else:
+                                    wrapped = MCPClientError(str(exc))
+                                current.future.set_exception(wrapped)
                         finally:
                             current = None
         except Exception as exc:
@@ -161,6 +174,7 @@ class PersistentMCPClient:
     def _server_environment(self) -> Dict[str, str]:
         return {
             "PYTHONUTF8": "1",
+            "OFFERPILOT_ENV_FILE": os.devnull,
             "OFFERPILOT_STORAGE_BACKEND": self.settings.storage_backend,
             "OFFERPILOT_SQLITE_PATH": self.settings.sqlite_path,
             "OFFERPILOT_KNOWLEDGE_SOURCE_PATH": self.settings.knowledge_source_path,
@@ -184,6 +198,8 @@ class PersistentMCPClient:
 
 def _structured_result(response: Any) -> Dict[str, Any]:
     if response.structuredContent is not None:
+        if not isinstance(response.structuredContent, dict):
+            raise MCPToolError("MCP tool returned non-object structured content")
         return dict(response.structuredContent)
     for item in response.content:
         text = getattr(item, "text", None)
@@ -194,7 +210,7 @@ def _structured_result(response: Any) -> Dict[str, Any]:
                 continue
             if isinstance(value, dict):
                 return value
-    return {"content": [getattr(item, "text", "") for item in response.content]}
+    raise MCPToolError("MCP tool did not return a JSON object")
 
 
 def _tool_error_message(name: str, content: list[Any]) -> str:

@@ -63,17 +63,22 @@ def get_default_knowledge_repository() -> InterviewKnowledgeRepository:
 def sync_default_knowledge_repository(
     app_settings: Settings = settings,
 ) -> None:
+    sync_knowledge_repository(_default_knowledge_repository, app_settings)
+
+
+def sync_knowledge_repository(
+    repository: InterviewKnowledgeRepository,
+    app_settings: Settings = settings,
+) -> None:
     source_root = Path(app_settings.knowledge_source_path)
     if not app_settings.knowledge_markdown_sync_enabled or not source_root.is_dir():
         return
     report = KnowledgeCorpus(
-        _default_knowledge_repository,
+        repository,
         source_root,
     ).sync_markdown()
     if report.imported_questions == 0:
-        _default_knowledge_repository.upsert_questions(
-            load_knowledge_catalog().questions
-        )
+        repository.upsert_questions(load_knowledge_catalog().questions)
     logger.info(
         "Knowledge Markdown startup sync completed: files=%s questions=%s new=%s "
         "updated=%s unchanged=%s removed=%s skipped=%s",

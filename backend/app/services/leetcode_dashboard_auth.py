@@ -3,9 +3,15 @@ import hashlib
 import hmac
 import json
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import httpx
+
+from app.services.feishu_user_credentials import (
+    FeishuTokenBundle,
+    FeishuUserCredential,
+)
 
 
 class DashboardTokenError(ValueError):
@@ -14,6 +20,10 @@ class DashboardTokenError(ValueError):
 
 class FeishuDashboardAuthError(RuntimeError):
     pass
+
+
+FEISHU_OAUTH_STATE_PURPOSE = "feishu_oauth_state"
+STUDY_CALENDAR_OWNER_TOKEN_PURPOSE = "study_calendar_oauth_owner"
 
 
 class DashboardTokenSigner:
@@ -85,6 +95,15 @@ class FeishuDashboardAuthService:
         self.transport = transport
 
     async def exchange_code(self, code: str, redirect_uri: str) -> str:
+        credential = await self.exchange_code_bundle(code, redirect_uri)
+        return credential.open_id
+
+    async def exchange_code_bundle(
+        self,
+        code: str,
+        redirect_uri: str,
+        now: Optional[datetime] = None,
+    ) -> FeishuUserCredential:
         async with httpx.AsyncClient(
             timeout=self.timeout_seconds,
             transport=self.transport,
@@ -100,14 +119,10 @@ class FeishuDashboardAuthService:
                 },
             )
             user_token_payload = _feishu_json(user_token_response)
-            user_access_token = user_token_payload.get("access_token")
-            if not isinstance(user_access_token, str) or not user_access_token:
-                raise FeishuDashboardAuthError(
-                    "Feishu user_access_token response is incomplete."
-                )
+            token_bundle = _token_bundle(user_token_payload, now=now)
             user_info_response = await client.get(
                 f"{self.api_base_url}/authen/v1/user_info",
-                headers={"Authorization": f"Bearer {user_access_token}"},
+                headers={"Authorization": f"Bearer {token_bundle.access_token}"},
             )
             user_info_payload = _feishu_json(user_info_response)
             user_info = user_info_payload.get("data")
@@ -116,7 +131,94 @@ class FeishuDashboardAuthService:
                 raise FeishuDashboardAuthError(
                     "Feishu user information does not contain open_id."
                 )
-            return open_id
+            return FeishuUserCredential.from_token_bundle(
+                owner_id=f"feishu:{open_id}",
+                open_id=open_id,
+                bundle=token_bundle,
+                updated_at=_utc_now(now),
+            )
+
+    async def refresh_access_token(
+        self,
+        refresh_token: str,
+        now: Optional[datetime] = None,
+    ) -> FeishuTokenBundle:
+        if not refresh_token:
+            raise FeishuDashboardAuthError("Feishu refresh_token is missing.")
+        async with httpx.AsyncClient(
+            timeout=self.timeout_seconds,
+            transport=self.transport,
+        ) as client:
+            response = await client.post(
+                f"{self.api_base_url}/authen/v2/oauth/token",
+                json={
+                    "grant_type": "refresh_token",
+                    "client_id": self.app_id,
+                    "client_secret": self.app_secret,
+                    "refresh_token": refresh_token,
+                },
+            )
+        return _token_bundle(
+            _feishu_json(response),
+            now=now,
+            fallback_refresh_token=refresh_token,
+        )
+
+
+def _token_bundle(
+    payload: Dict[str, Any],
+    now: Optional[datetime] = None,
+    fallback_refresh_token: Optional[str] = None,
+) -> FeishuTokenBundle:
+    token_payload = payload.get("data")
+    if not isinstance(token_payload, dict) or not token_payload.get("access_token"):
+        token_payload = payload
+    access_token = token_payload.get("access_token")
+    if not isinstance(access_token, str) or not access_token:
+        raise FeishuDashboardAuthError(
+            "Feishu user_access_token response is incomplete."
+        )
+    refresh_token = token_payload.get("refresh_token") or fallback_refresh_token
+    if refresh_token is not None and not isinstance(refresh_token, str):
+        raise FeishuDashboardAuthError("Feishu refresh_token response is invalid.")
+    current = _utc_now(now)
+    access_ttl = _positive_seconds(token_payload.get("expires_in"), 3600)
+    refresh_ttl = _positive_seconds(
+        token_payload.get("refresh_token_expires_in")
+        or token_payload.get("refresh_expires_in"),
+        30 * 24 * 60 * 60,
+    )
+    raw_scope = token_payload.get("scope") or ""
+    scope = (
+        " ".join(str(item) for item in raw_scope)
+        if isinstance(raw_scope, list)
+        else str(raw_scope)
+    )
+    return FeishuTokenBundle(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        access_expires_at=current + timedelta(seconds=access_ttl),
+        refresh_expires_at=(
+            current + timedelta(seconds=refresh_ttl) if refresh_token else None
+        ),
+        scope=scope,
+        token_type=str(token_payload.get("token_type") or "Bearer"),
+    )
+
+
+def _positive_seconds(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _utc_now(value: Optional[datetime] = None) -> datetime:
+    current = value or datetime.now(timezone.utc)
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise ValueError("OAuth token clock must be timezone-aware.")
+    return current.astimezone(timezone.utc)
 
 
 def _feishu_json(response: httpx.Response) -> Dict[str, Any]:

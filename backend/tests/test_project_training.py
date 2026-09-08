@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.api.routes import project_training_dashboard
 from app.core.config import Settings
 from app.main import create_app
+from app.models.tool_calling import ModelToolCall
 from app.repositories.project_training_repository import (
     InMemoryProjectTrainingRepository,
     ProjectTrainingSubmissionInProgressError,
@@ -23,12 +24,10 @@ from app.services.leetcode_dashboard_auth import DashboardTokenSigner
 from app.services.llm_service import LLMResult
 from app.services.project_training import ProjectTrainingWorkflow
 from app.services.speech_transcription import SpeechTranscriptionResult
-from app.agents.orchestrator import AgentOrchestrator
 from app.agents.interview_agent import _validated_decision
 from app.repositories.offerpilot_repository import InMemoryOfferPilotRepository
-from app.schemas.agent import AgentActionName
-from app.schemas.intent import IntentClassification, IntentName
 from app.tools.offerpilot_tools import build_offerpilot_tool_registry
+from app.tools.runtime_tools import build_runtime_tool_registry
 
 
 class FakeProjectInterviewLLM:
@@ -639,56 +638,57 @@ def test_project_voice_transcription_uses_safe_turn_context(monkeypatch) -> None
     assert "P95 延迟从" not in captured["context"]
 
 
-def test_main_agent_graph_creates_and_resumes_project_training_session() -> None:
+def test_runtime_tool_bridge_creates_and_resumes_project_training_session() -> None:
     project_repository = InMemoryProjectTrainingRepository()
     project = project_repository.create_project(
         "feishu:ou_agent", _project_payload("Agent 求职助手")
     )
 
-    class ProjectTrainingClassifier:
-        async def classify(self, message):
-            assert message == "开始 Agent 求职助手项目训练"
-            return IntentClassification(
-                intent=IntentName.START_PROJECT_TRAINING,
-                confidence=0.94,
-                slots={"project": "Agent 求职助手"},
-            )
-
-    registry = build_offerpilot_tool_registry(
-        InMemoryOfferPilotRepository(),
+    offerpilot_repository = InMemoryOfferPilotRepository()
+    legacy_registry = build_offerpilot_tool_registry(
+        offerpilot_repository,
         calendar_service=None,
         bitable_service=None,
         project_training_repository=project_repository,
         dashboard_public_base_url="https://offerpilot.example.com",
     )
-    orchestrator = AgentOrchestrator(
-        intent_classifier=ProjectTrainingClassifier(),
-        tool_registry=registry,
+    registry = build_runtime_tool_registry(
+        legacy_registry,
+        offerpilot_repository=offerpilot_repository,
     )
 
     first = asyncio.run(
-        orchestrator.handle_message(
-            "开始 Agent 求职助手项目训练",
-            user_id="ou_agent",
-            source="feishu",
+        registry.execute(
+            ModelToolCall(
+                id="start_training_1",
+                name="start_project_training",
+                arguments={
+                    "project": "Agent 求职助手",
+                    "owner_id": "feishu:ou_agent",
+                },
+            )
         )
     )
     second = asyncio.run(
-        orchestrator.handle_message(
-            "开始 Agent 求职助手项目训练",
-            user_id="ou_agent",
-            source="feishu",
+        registry.execute(
+            ModelToolCall(
+                id="start_training_2",
+                name="start_project_training",
+                arguments={
+                    "project": "Agent 求职助手",
+                    "owner_id": "feishu:ou_agent",
+                },
+            )
         )
     )
 
-    assert first.action == AgentActionName.START_PROJECT_TRAINING
-    assert first.tool_result is not None
-    assert first.tool_result.data["project_id"] == project.id
-    assert first.tool_result.data["launch_url"].startswith(
+    assert first.is_error is False
+    assert first.data["project_id"] == project.id
+    assert first.data["launch_url"].startswith(
         "https://offerpilot.example.com/study/projects/training?session_id="
     )
-    assert second.tool_result.data["session_id"] == first.tool_result.data["session_id"]
-    assert second.tool_result.data["resumed"] is True
+    assert second.data["session_id"] == first.data["session_id"]
+    assert second.data["resumed"] is True
 
 
 def test_project_pages_expose_profile_training_and_voice_flows(monkeypatch) -> None:

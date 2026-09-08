@@ -24,7 +24,7 @@ from app.repositories.project_discovery_repository import (
 from app.services.project_discovery_runner import ProjectDiscoveryRunner
 from app.services.project_import import ProjectImportWorkflow
 from app.services.tool_calling_model import (
-    DeepSeekToolCallingModel,
+    build_tool_calling_model,
 )
 
 
@@ -42,7 +42,7 @@ def build_project_discovery_services(app_settings: Settings, project_repository)
         if app_settings.storage_backend.strip().lower() == "sqlite"
         else InMemoryProjectDiscoveryRepository()
     )
-    model = DeepSeekToolCallingModel(
+    model = build_tool_calling_model(
         api_key=app_settings.llm_api_key,
         base_url=app_settings.llm_base_url,
         provider=app_settings.llm_provider,

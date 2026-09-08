@@ -406,6 +406,63 @@ def test_http_creates_lists_and_hides_discovery_jobs_from_other_users():
     assert other.get(f"/api/study/project-discovery/jobs/{job_id}").status_code == 404
 
 
+def test_public_discovery_payload_hides_internal_agent_tools_but_keeps_diagnostics():
+    client, workflow, _ = _http_client()
+    owner_id = "feishu:ou_discovery_owner"
+    job = workflow.start(
+        owner_id,
+        "https://github.com/openai/internal-trace-example",
+        "request-public-trace-1234",
+    )
+    internal_tool_names = [
+        "list_files",
+        "read_file",
+        "search_code",
+        "run_repository_command",
+        "submit_analysis",
+    ]
+    job.status = ProjectDiscoveryStatus.FAILED
+    job.stats = {
+        "file_count": 5,
+        "runtime_trace": [
+            {
+                "event": "model_turn",
+                "tools": [{"name": name} for name in internal_tool_names],
+            }
+        ],
+    }
+    job.error_code = "AgentProtocolError"
+    job.error_message = (
+        "Model stopped without calling the required submit_analysis tool."
+    )
+    job.warnings = [
+        "read_file failed for one candidate; search_code will be retried."
+    ]
+    workflow.repository.save(job)
+
+    stored = workflow.repository.get(owner_id, job.id)
+    assert stored is not None
+    assert stored.stats["runtime_trace"][0]["tools"][0]["name"] == "list_files"
+    assert "submit_analysis" in stored.error_message
+
+    detail = client.get(
+        f"/api/study/project-discovery/jobs/{job.id}"
+    ).json()["job"]
+    listing = client.get(
+        "/api/study/project-discovery/jobs"
+    ).json()["jobs"][0]
+    for public_job in (detail, listing):
+        assert public_job["stats"] == {"file_count": 5}
+        assert public_job["error_code"] == "analysis_failed"
+        assert public_job["error_message"] == "项目分析未能生成有效结果，请重新分析。"
+        assert public_job["warnings"] == [
+            "读取项目文件 failed for one candidate; 检索项目代码 will be retried."
+        ]
+        serialized = json.dumps(public_job, ensure_ascii=False)
+        for tool_name in internal_tool_names:
+            assert tool_name not in serialized
+
+
 def test_discovery_h5_exposes_import_warning_and_progress_page():
     client, _, _ = _http_client()
     projects = client.get("/study/projects")

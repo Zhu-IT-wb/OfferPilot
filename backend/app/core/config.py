@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from pathlib import Path
 from typing import Optional, Tuple
@@ -76,8 +76,7 @@ def _get_int_env(name: str, default: int) -> int:
 
 # 处理 debug_routes_default 相关逻辑。
 def _debug_routes_default() -> bool:
-    environment = os.getenv("OFFERPILOT_ENV", "local").strip().lower()
-    return environment in {"local", "dev", "development", "test"}
+    return False
 
 
 # 处理 default_env_file 相关逻辑。
@@ -94,6 +93,18 @@ def _default_sqlite_path() -> str:
     return str(Path(__file__).resolve().parents[2] / "data" / "offerpilot.db")
 
 
+def _default_agent_checkpoint_path() -> str:
+    return str(
+        Path(__file__).resolve().parents[2] / "data" / "offerpilot_checkpoints.db"
+    )
+
+
+def _default_feishu_user_credentials_path() -> str:
+    return str(
+        Path(__file__).resolve().parents[2] / "data" / "feishu_user_credentials.db"
+    )
+
+
 def _default_knowledge_source_path() -> str:
     return str(Path(__file__).resolve().parents[3] / "data" / "knowledge")
 
@@ -106,6 +117,51 @@ def _default_fastembed_cache_path() -> str:
     return str(Path(__file__).resolve().parents[2] / "data" / "fastembed-cache")
 
 
+OPENAI_LLM_PROVIDERS = frozenset({"openai", "chatgpt"})
+
+
+def normalize_llm_provider(provider: Optional[str]) -> str:
+    """Return the canonical provider name used by request adapters."""
+
+    normalized = (provider or "deepseek").strip().lower()
+    if normalized in OPENAI_LLM_PROVIDERS:
+        return "openai"
+    return normalized or "deepseek"
+
+
+def default_llm_api_key(provider: Optional[str] = None) -> str:
+    """Resolve a generic key first, then the selected provider's key."""
+
+    generic_key = os.getenv("OFFERPILOT_LLM_API_KEY", "").strip()
+    if generic_key:
+        return generic_key
+    if normalize_llm_provider(provider or os.getenv("OFFERPILOT_LLM_PROVIDER")) == "openai":
+        return os.getenv("OPENAI_API_KEY", "").strip()
+    return os.getenv("DEEPSEEK_API_KEY", "").strip()
+
+
+def default_llm_base_url(provider: Optional[str] = None) -> str:
+    configured = os.getenv("OFFERPILOT_LLM_BASE_URL", "").strip()
+    if configured:
+        return configured
+    if normalize_llm_provider(provider or os.getenv("OFFERPILOT_LLM_PROVIDER")) == "openai":
+        return "https://api.openai.com/v1"
+    return "https://api.deepseek.com"
+
+
+def default_llm_model(provider: Optional[str] = None) -> str:
+    configured = os.getenv("OFFERPILOT_LLM_MODEL", "").strip()
+    if configured:
+        return configured
+    if normalize_llm_provider(provider or os.getenv("OFFERPILOT_LLM_PROVIDER")) == "openai":
+        return "gpt-4.1-mini"
+    return "deepseek-v4-flash"
+
+
+def _default_llm_provider() -> str:
+    return normalize_llm_provider(os.getenv("OFFERPILOT_LLM_PROVIDER"))
+
+
 _load_env_file(_default_env_file())
 
 
@@ -116,13 +172,10 @@ class Settings:
     app_version: str = os.getenv("OFFERPILOT_APP_VERSION", "0.1.0")
     api_prefix: str = os.getenv("OFFERPILOT_API_PREFIX", "/api")
     environment: str = os.getenv("OFFERPILOT_ENV", "local")
-    llm_provider: str = os.getenv("OFFERPILOT_LLM_PROVIDER", "deepseek")
-    llm_api_key: str = os.getenv(
-        "OFFERPILOT_LLM_API_KEY",
-        os.getenv("DEEPSEEK_API_KEY", ""),
-    )
-    llm_base_url: str = os.getenv("OFFERPILOT_LLM_BASE_URL", "https://api.deepseek.com")
-    llm_model: str = os.getenv("OFFERPILOT_LLM_MODEL", "deepseek-v4-flash")
+    llm_provider: str = field(default_factory=_default_llm_provider)
+    llm_api_key: str = field(default_factory=default_llm_api_key)
+    llm_base_url: str = field(default_factory=default_llm_base_url)
+    llm_model: str = field(default_factory=default_llm_model)
     llm_timeout_seconds: float = float(os.getenv("OFFERPILOT_LLM_TIMEOUT_SECONDS", "30"))
     project_analysis_llm_timeout_seconds: float = float(
         os.getenv(
@@ -154,11 +207,6 @@ class Settings:
         "OFFERPILOT_PROJECT_ANALYSIS_MAX_QUOTE_CHARS",
         400,
     )
-    llm_planner_enabled: bool = _get_bool_env("OFFERPILOT_LLM_PLANNER_ENABLED", True)
-    llm_planner_fallback_enabled: bool = _get_bool_env(
-        "OFFERPILOT_LLM_PLANNER_FALLBACK_ENABLED",
-        True,
-    )
     context_compaction_enabled: bool = _get_bool_env(
         "OFFERPILOT_CONTEXT_COMPACTION_ENABLED",
         True,
@@ -178,6 +226,42 @@ class Settings:
     context_summary_max_tokens: int = _get_int_env(
         "OFFERPILOT_CONTEXT_SUMMARY_MAX_TOKENS",
         2_000,
+    )
+    agent_max_model_turns: int = _get_int_env(
+        "OFFERPILOT_AGENT_MAX_MODEL_TURNS",
+        12,
+    )
+    agent_max_tool_calls: int = _get_int_env(
+        "OFFERPILOT_AGENT_MAX_TOOL_CALLS",
+        20,
+    )
+    agent_no_progress_limit: int = _get_int_env(
+        "OFFERPILOT_AGENT_NO_PROGRESS_LIMIT",
+        3,
+    )
+    agent_max_verifier_passes: int = _get_int_env(
+        "OFFERPILOT_AGENT_MAX_VERIFIER_PASSES",
+        2,
+    )
+    agent_interaction_ttl_seconds: int = _get_int_env(
+        "OFFERPILOT_AGENT_INTERACTION_TTL_SECONDS",
+        1_800,
+    )
+    agent_api_signing_secret: str = os.getenv(
+        "OFFERPILOT_AGENT_API_SIGNING_SECRET",
+        "",
+    )
+    agent_api_token_ttl_seconds: int = _get_int_env(
+        "OFFERPILOT_AGENT_API_TOKEN_TTL_SECONDS",
+        3_600,
+    )
+    agent_checkpoint_backend: str = os.getenv(
+        "OFFERPILOT_AGENT_CHECKPOINT_BACKEND",
+        "sqlite",
+    )
+    agent_checkpoint_path: str = os.getenv(
+        "OFFERPILOT_AGENT_CHECKPOINT_PATH",
+        _default_agent_checkpoint_path(),
     )
     debug_routes_enabled: bool = _get_bool_env(
         "OFFERPILOT_ENABLE_DEBUG_ROUTES",
@@ -239,6 +323,10 @@ class Settings:
         os.getenv("OFFERPILOT_ASR_TIMEOUT_SECONDS", "60")
     )
     feishu_verification_token: str = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+    feishu_allow_unverified_events: bool = _get_bool_env(
+        "OFFERPILOT_FEISHU_ALLOW_UNVERIFIED_EVENTS",
+        False,
+    )
     feishu_app_id: str = os.getenv("FEISHU_APP_ID", "")
     feishu_app_secret: str = os.getenv("FEISHU_APP_SECRET", "")
     feishu_api_base_url: str = os.getenv(
@@ -254,6 +342,10 @@ class Settings:
         "OFFERPILOT_DASHBOARD_OAUTH_SCOPE",
         "auth:user.id:read",
     )
+    feishu_user_calendar_oauth_scope: str = os.getenv(
+        "OFFERPILOT_FEISHU_USER_CALENDAR_OAUTH_SCOPE",
+        "auth:user.id:read offline_access calendar:calendar:read calendar:calendar",
+    )
     dashboard_public_base_url: str = os.getenv(
         "OFFERPILOT_DASHBOARD_PUBLIC_BASE_URL",
         "",
@@ -265,6 +357,14 @@ class Settings:
     dashboard_session_ttl_seconds: int = _get_int_env(
         "OFFERPILOT_DASHBOARD_SESSION_TTL_SECONDS",
         7 * 24 * 60 * 60,
+    )
+    feishu_user_credentials_path: str = os.getenv(
+        "OFFERPILOT_FEISHU_USER_CREDENTIALS_PATH",
+        _default_feishu_user_credentials_path(),
+    )
+    feishu_user_credentials_secret: str = os.getenv(
+        "OFFERPILOT_FEISHU_USER_CREDENTIALS_SECRET",
+        "",
     )
     feishu_calendar_sync_enabled: bool = _get_bool_env("FEISHU_CALENDAR_SYNC_ENABLED", False)
     feishu_calendar_id: str = os.getenv("FEISHU_CALENDAR_ID", "primary")

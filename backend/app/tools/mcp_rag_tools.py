@@ -2,10 +2,9 @@ from typing import Any, Dict, Optional, Protocol
 
 from app.core.config import settings
 from app.mcp.client import get_default_mcp_client
-from app.rag.answering import GroundedAnswer, GroundedAnswerComposer
-from app.schemas.agent import AgentActionName
 from app.schemas.tool import ToolResult
 from app.tools.registry import ToolRegistry
+from app.tools.tool_names import AgentActionName
 
 
 class MCPToolCaller(Protocol):
@@ -20,10 +19,8 @@ class CareerKnowledgeToolAdapter:
     def __init__(
         self,
         client: Optional[MCPToolCaller] = None,
-        answer_composer: Optional[GroundedAnswerComposer] = None,
     ) -> None:
         self.client = client or get_default_mcp_client()
-        self.answer_composer = answer_composer or GroundedAnswerComposer()
 
     async def search_knowledge(self, arguments: Dict[str, Any]) -> ToolResult:
         return await self._search(
@@ -71,32 +68,17 @@ class CareerKnowledgeToolAdapter:
                 request[key] = value
         result = await self.client.call_tool(mcp_tool, request)
         hits = [item for item in result.get("hits", []) if isinstance(item, dict)]
-        answer_kind = (
-            "project"
-            if action == AgentActionName.SEARCH_PROJECT_EVIDENCE
-            else "knowledge"
-        )
-        answer = await self.answer_composer.compose(
-            query=query,
-            hits=hits,
-            answer_kind=answer_kind,
-        )
-        message = (
-            _render_grounded_answer(answer, hits)
-            if answer
-            else _format_evidence_results(query, hits)
-        )
         return ToolResult(
             tool_name=action.value,
             success=True,
-            message=message,
+            message=_format_evidence_results(query, hits),
             data={
                 "query": query,
                 "hits": hits,
                 "evidence_ids": [item.get("evidence_id") for item in hits],
                 "citations": _citation_metadata(hits),
                 "grounded": True,
-                "synthesized": answer is not None,
+                "synthesized": False,
             },
         )
 
@@ -152,30 +134,6 @@ def _format_evidence_results(query: str, hits: list[Dict[str, Any]]) -> str:
         if source:
             lines.append(f"   来源：{source}{line_text}")
     return "\n".join(lines)
-
-
-def _render_grounded_answer(
-    answer: GroundedAnswer,
-    hits: list[Dict[str, Any]],
-) -> str:
-    cited_indexes = set(answer.citation_indexes)
-    if not cited_indexes:
-        return answer.text
-    sources = ["参考依据："]
-    for index in sorted(cited_indexes):
-        hit = hits[index - 1]
-        title = str(hit.get("title") or "未命名证据")
-        source = str(hit.get("source_path") or hit.get("source_url") or "")
-        location = ""
-        if source:
-            location = f"（{source}"
-            if hit.get("start_line") is not None:
-                location += f":{hit['start_line']}"
-                if hit.get("end_line") is not None:
-                    location += f"-{hit['end_line']}"
-            location += "）"
-        sources.append(f"[{index}] {title}{location}")
-    return f"{answer.text}\n\n" + "\n".join(sources)
 
 
 def _citation_metadata(hits: list[Dict[str, Any]]) -> list[Dict[str, Any]]:

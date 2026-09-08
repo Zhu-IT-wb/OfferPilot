@@ -218,11 +218,15 @@ def test_agent_executes_tool_then_returns_final_answer() -> None:
     )
 
     assert tool_content == {
+        "status": "success",
         "success": True,
+        "message": "",
         "data": {
             "path": "README.md",
             "content": "OfferPilot README",
         },
+        "retryable": False,
+        "artifact_refs": [],
     }
 
 

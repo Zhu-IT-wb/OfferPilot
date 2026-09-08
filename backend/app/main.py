@@ -1,6 +1,8 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -31,6 +33,7 @@ from app.services.leetcode_push_service import LeetCodePushService
 from app.services.knowledge_dependencies import (
     get_default_knowledge_repository,
     sync_default_knowledge_repository,
+    sync_knowledge_repository,
 )
 from app.services.knowledge_corpus import KnowledgeCorpusSyncError
 from app.services.knowledge_push_service import KnowledgePushService
@@ -38,7 +41,7 @@ from app.services.project_discovery_dependencies import (
     build_project_discovery_services,
 )
 from app.services.project_training_dependencies import (
-    get_default_project_training_repository,
+    build_project_training_repository,
 )
 from app.mcp.client import close_default_mcp_client
 from app.tools.offerpilot_tools import (
@@ -49,17 +52,60 @@ from app.tools.offerpilot_tools import (
 logger = logging.getLogger(__name__)
 
 
+@asynccontextmanager
+async def open_agent_checkpointer(
+    app_settings: Settings,
+) -> AsyncIterator[Any]:
+    backend = app_settings.agent_checkpoint_backend.strip().lower()
+    if backend == "memory":
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        yield InMemorySaver()
+        return
+
+    if backend != "sqlite":
+        raise ValueError(
+            "OFFERPILOT_AGENT_CHECKPOINT_BACKEND must be 'sqlite' or 'memory'."
+        )
+
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    checkpoint_path = Path(app_settings.agent_checkpoint_path).expanduser().resolve()
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
+        await checkpointer.setup()
+        yield checkpointer
+
+
+def build_agent_runtime(checkpointer: Any, app_settings: Settings) -> Any:
+    from app.agents.runtime import build_default_agent_runtime
+
+    return build_default_agent_runtime(checkpointer=checkpointer, settings=app_settings)
+
+
 # 创建飞书多维表格应用。
 def create_app(app_settings: Settings = settings) -> FastAPI:
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    async def service_lifespan(app: FastAPI) -> AsyncIterator[None]:
         bitable_pull_sync_service = None
         leetcode_push_service = None
         knowledge_push_service = None
         discovery_services = app.state.project_discovery_services
+        runtime = app.state.agent_runtime
         try:
             try:
-                sync_default_knowledge_repository(app_settings)
+                runtime_knowledge_repository = getattr(
+                    runtime,
+                    "knowledge_repository",
+                    None,
+                )
+                if runtime_knowledge_repository is None:
+                    sync_default_knowledge_repository(app_settings)
+                else:
+                    sync_knowledge_repository(
+                        runtime_knowledge_repository,
+                        app_settings,
+                    )
             except KnowledgeCorpusSyncError as exc:
                 logger.warning(
                     "Knowledge Markdown startup sync was rejected; retaining the "
@@ -67,7 +113,11 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
                     exc,
                 )
 
-            repository = get_default_offerpilot_repository()
+            repository = getattr(
+                runtime,
+                "offerpilot_repository",
+                get_default_offerpilot_repository(),
+            )
             event_subscription = ensure_bitable_event_subscription(
                 repository=repository,
                 force=True,
@@ -93,7 +143,11 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
             bitable_pull_sync_service.start()
 
             leetcode_push_service = LeetCodePushService(
-                repository=get_default_leetcode_repository(),
+                repository=getattr(
+                    runtime,
+                    "leetcode_repository",
+                    get_default_leetcode_repository(),
+                ),
                 dashboard_url=(
                     f"{app_settings.dashboard_public_base_url.rstrip('/')}/leetcode/dashboard"
                     if app_settings.dashboard_public_base_url
@@ -104,7 +158,11 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
             leetcode_push_service.start()
 
             knowledge_push_service = KnowledgePushService(
-                repository=get_default_knowledge_repository(),
+                repository=getattr(
+                    runtime,
+                    "knowledge_repository",
+                    get_default_knowledge_repository(),
+                ),
                 dashboard_url=(
                     f"{app_settings.dashboard_public_base_url.rstrip('/')}/study/knowledge"
                     if app_settings.dashboard_public_base_url
@@ -119,6 +177,9 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
 
             yield
         finally:
+            runtime_close = getattr(runtime, "aclose", None)
+            if callable(runtime_close):
+                await runtime_close()
             await close_default_mcp_client()
             if bitable_pull_sync_service is not None:
                 await bitable_pull_sync_service.stop()
@@ -128,6 +189,16 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
                 await knowledge_push_service.stop()
             await discovery_services.runner.stop()
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        async with open_agent_checkpointer(app_settings) as checkpointer:
+            app.state.agent_runtime = build_agent_runtime(checkpointer, app_settings)
+            try:
+                async with service_lifespan(app):
+                    yield
+            finally:
+                app.state.agent_runtime = None
+
     app = FastAPI(
         title=app_settings.app_name,
         version=app_settings.app_version,
@@ -136,7 +207,7 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
     )
     app.state.settings = app_settings
     app.state.project_discovery_services = build_project_discovery_services(
-        app_settings, get_default_project_training_repository()
+        app_settings, build_project_training_repository(app_settings)
     )
     app.include_router(agent_router, prefix=app_settings.api_prefix, tags=["agent"])
     app.include_router(feishu_router, prefix=app_settings.api_prefix, tags=["feishu"])

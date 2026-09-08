@@ -1,10 +1,12 @@
+import asyncio
 import hashlib
 import json
 import secrets
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -48,6 +50,12 @@ class FeishuCalendarResult:
 class FeishuCalendarAttendeeResult:
     attendee_ids: List[str]
     raw_response: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class FeishuCalendarBusyInterval:
+    start_at: datetime
+    end_at: datetime
 
 
 # 承载外部服务调用后的结构化结果。
@@ -182,6 +190,86 @@ class FeishuMessageService:
         data = response_data.get("data")
         message_id = data.get("message_id") if isinstance(data, dict) else None
         return FeishuMessageResult(message_id=message_id, raw_response=response_data)
+
+    async def reply_text_message(
+        self,
+        message_id: str,
+        text: str,
+        idempotency_key: Optional[str] = None,
+        reply_in_thread: bool = False,
+    ) -> FeishuMessageResult:
+        return await self._reply_message(
+            message_id=message_id,
+            msg_type="text",
+            content={"text": text},
+            idempotency_key=idempotency_key,
+            reply_in_thread=reply_in_thread,
+        )
+
+    async def reply_interactive_message(
+        self,
+        message_id: str,
+        card: Dict[str, Any],
+        idempotency_key: Optional[str] = None,
+        reply_in_thread: bool = False,
+    ) -> FeishuMessageResult:
+        return await self._reply_message(
+            message_id=message_id,
+            msg_type="interactive",
+            content=card,
+            idempotency_key=idempotency_key,
+            reply_in_thread=reply_in_thread,
+        )
+
+    async def update_interactive_message(
+        self,
+        message_id: str,
+        card: Dict[str, Any],
+    ) -> FeishuMessageResult:
+        """Replace a bot-authored interactive message with a new card."""
+        token = await self.get_tenant_access_token()
+        response_data = await self._patch_json(
+            path=f"/im/v1/messages/{quote(message_id, safe='')}",
+            payload={"content": json.dumps(card, ensure_ascii=False)},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self._raise_for_feishu_code(response_data)
+        data = response_data.get("data")
+        updated_message_id = data.get("message_id") if isinstance(data, dict) else None
+        return FeishuMessageResult(
+            message_id=updated_message_id or message_id,
+            raw_response=response_data,
+        )
+
+    async def _reply_message(
+        self,
+        message_id: str,
+        msg_type: str,
+        content: Dict[str, Any],
+        idempotency_key: Optional[str],
+        reply_in_thread: bool,
+    ) -> FeishuMessageResult:
+        token = await self.get_tenant_access_token()
+        payload: Dict[str, Any] = {
+            "msg_type": msg_type,
+            "content": json.dumps(content, ensure_ascii=False),
+        }
+        if idempotency_key:
+            payload["uuid"] = idempotency_key
+        if reply_in_thread:
+            payload["reply_in_thread"] = True
+        response_data = await self._post_json(
+            path=f"/im/v1/messages/{quote(message_id, safe='')}/reply",
+            payload=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self._raise_for_feishu_code(response_data)
+        data = response_data.get("data")
+        reply_message_id = data.get("message_id") if isinstance(data, dict) else None
+        return FeishuMessageResult(
+            message_id=reply_message_id,
+            raw_response=response_data,
+        )
 
     # 异步获取飞书 tenant_access_token。
     async def get_tenant_access_token(self) -> str:
@@ -321,6 +409,41 @@ class FeishuMessageService:
         if not isinstance(response_data, dict):
             raise FeishuRequestError("Feishu OpenAPI response must be a JSON object.")
 
+        return response_data
+
+    async def _patch_json(
+        self,
+        path: str,
+        payload: Dict[str, Any],
+        headers: Optional[Dict[str, str]] = None,
+        params: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        url = f"{self.base_url}{path}"
+        request_headers = {"Content-Type": "application/json"}
+        if headers:
+            request_headers.update(headers)
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.patch(
+                    url,
+                    json=payload,
+                    headers=request_headers,
+                    params=params,
+                )
+                response.raise_for_status()
+                response_data = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise FeishuRequestError(
+                f"Feishu OpenAPI returned HTTP {exc.response.status_code}: {exc.response.text}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise FeishuRequestError(f"Feishu OpenAPI request failed: {exc}") from exc
+        except ValueError as exc:
+            raise FeishuRequestError("Feishu OpenAPI response is not valid JSON.") from exc
+
+        if not isinstance(response_data, dict):
+            raise FeishuRequestError("Feishu OpenAPI response must be a JSON object.")
         return response_data
 
     # 发送 POST 请求处理 json sync。
@@ -572,6 +695,143 @@ class FeishuCalendarService(FeishuMessageService):
             self.calendar_id or self.auto_create_enabled
         )
 
+    async def list_user_freebusy(
+        self,
+        user_access_token: str,
+        user_open_id: str,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> List[FeishuCalendarBusyInterval]:
+        _validate_user_calendar_request(user_access_token, start_at, end_at)
+        if not user_open_id:
+            raise FeishuConfigurationError("Feishu user open_id is missing.")
+        response_data = await self._post_json(
+            path="/calendar/v4/freebusy/list",
+            payload={
+                "time_min": start_at.isoformat(),
+                "time_max": end_at.isoformat(),
+                "user_id": user_open_id,
+                "include_external_calendar": True,
+            },
+            headers={"Authorization": f"Bearer {user_access_token}"},
+            params={"user_id_type": "open_id"},
+        )
+        self._raise_for_feishu_code(response_data)
+        return _extract_freebusy_intervals(response_data)
+
+    async def create_user_study_event(
+        self,
+        user_access_token: str,
+        topic: str,
+        start_at: datetime,
+        end_at: datetime,
+        description: str,
+        operation_key: str,
+        calendar_id: str = "primary",
+        reminder_minutes: int = 10,
+    ) -> FeishuCalendarEventResult:
+        _validate_user_calendar_request(user_access_token, start_at, end_at)
+        if not topic.strip():
+            raise FeishuRequestError("Study event topic is missing.")
+        if not calendar_id:
+            raise FeishuConfigurationError("Feishu calendar id is missing.")
+        if not operation_key:
+            raise FeishuConfigurationError("Study event operation key is missing.")
+        event_timezone = _datetime_timezone_name(start_at, self.timezone)
+        response_data = await self._post_json(
+            path=f"/calendar/v4/calendars/{quote(calendar_id, safe='')}/events",
+            payload={
+                "summary": f"OfferPilot 复习：{topic.strip()}",
+                "description": description,
+                "start_time": {
+                    "timestamp": str(int(start_at.timestamp())),
+                    "timezone": event_timezone,
+                },
+                "end_time": {
+                    "timestamp": str(int(end_at.timestamp())),
+                    "timezone": event_timezone,
+                },
+                "reminders": [{"minutes": max(0, int(reminder_minutes))}],
+            },
+            headers={"Authorization": f"Bearer {user_access_token}"},
+            params={"idempotency_key": operation_key},
+        )
+        self._raise_for_feishu_code(response_data)
+        event_id = _extract_calendar_event_id(response_data)
+        if not event_id:
+            raise FeishuRequestError(
+                "Feishu calendar response does not contain an event_id."
+            )
+        return FeishuCalendarEventResult(
+            event_id=event_id,
+            raw_response=response_data,
+        )
+
+    async def update_user_study_event(
+        self,
+        user_access_token: str,
+        event_id: str,
+        topic: str,
+        start_at: datetime,
+        end_at: datetime,
+        description: str,
+        calendar_id: str = "primary",
+        reminder_minutes: int = 10,
+    ) -> FeishuCalendarEventResult:
+        _validate_user_calendar_request(user_access_token, start_at, end_at)
+        if not event_id or not calendar_id:
+            raise FeishuConfigurationError("Feishu calendar event identity is missing.")
+        if not topic.strip():
+            raise FeishuRequestError("Study event topic is missing.")
+        event_timezone = _datetime_timezone_name(start_at, self.timezone)
+        response_data = await asyncio.to_thread(
+            self._patch_json_sync,
+            path=(
+                f"/calendar/v4/calendars/{quote(calendar_id, safe='')}/events/"
+                f"{quote(event_id, safe='')}"
+            ),
+            payload={
+                "summary": f"OfferPilot 复习：{topic.strip()}",
+                "description": description,
+                "start_time": {
+                    "timestamp": str(int(start_at.timestamp())),
+                    "timezone": event_timezone,
+                },
+                "end_time": {
+                    "timestamp": str(int(end_at.timestamp())),
+                    "timezone": event_timezone,
+                },
+                "reminders": [{"minutes": max(0, int(reminder_minutes))}],
+            },
+            headers={"Authorization": f"Bearer {user_access_token}"},
+        )
+        self._raise_for_feishu_code(response_data)
+        return FeishuCalendarEventResult(
+            event_id=_extract_calendar_event_id(response_data) or event_id,
+            raw_response=response_data,
+        )
+
+    async def delete_user_calendar_event(
+        self,
+        user_access_token: str,
+        event_id: str,
+        calendar_id: str = "primary",
+    ) -> FeishuCalendarEventResult:
+        if not user_access_token.strip():
+            raise FeishuConfigurationError("Feishu user access token is missing.")
+        if not event_id or not calendar_id:
+            raise FeishuConfigurationError("Feishu calendar event identity is missing.")
+        response_data = await asyncio.to_thread(
+            self._delete_json_sync,
+            path=(
+                f"/calendar/v4/calendars/{quote(calendar_id, safe='')}/events/"
+                f"{quote(event_id, safe='')}"
+            ),
+            headers={"Authorization": f"Bearer {user_access_token}"},
+        )
+        self._raise_for_feishu_code(response_data)
+        return FeishuCalendarEventResult(event_id=event_id, raw_response=response_data)
+
     # 判断是否由 OfferPilot 自动管理共享日历。
     def should_manage_offerpilot_calendar(self) -> bool:
         return self.auto_create_enabled and self.calendar_id.strip().lower() in {"", "primary"}
@@ -772,6 +1032,71 @@ class FeishuCalendarService(FeishuMessageService):
             attendee_ids=_extract_attendee_ids(response_data),
             raw_response=response_data,
         )
+
+
+def _validate_user_calendar_request(
+    user_access_token: str,
+    start_at: datetime,
+    end_at: datetime,
+) -> None:
+    if not user_access_token:
+        raise FeishuConfigurationError("Feishu user access token is missing.")
+    if start_at.tzinfo is None or start_at.utcoffset() is None:
+        raise FeishuRequestError("Calendar start_at must be timezone-aware.")
+    if end_at.tzinfo is None or end_at.utcoffset() is None:
+        raise FeishuRequestError("Calendar end_at must be timezone-aware.")
+    if end_at <= start_at:
+        raise FeishuRequestError("Calendar end_at must be after start_at.")
+
+
+def _extract_freebusy_intervals(
+    response_data: Dict[str, Any],
+) -> List[FeishuCalendarBusyInterval]:
+    data = response_data.get("data")
+    if not isinstance(data, dict):
+        return []
+    values = data.get("freebusy_list") or data.get("free_busy_list") or []
+    if not isinstance(values, list):
+        return []
+    intervals: List[FeishuCalendarBusyInterval] = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        start_at = _parse_feishu_calendar_datetime(
+            item.get("start_time") or item.get("start_at")
+        )
+        end_at = _parse_feishu_calendar_datetime(
+            item.get("end_time") or item.get("end_at")
+        )
+        if start_at is not None and end_at is not None and end_at > start_at:
+            intervals.append(FeishuCalendarBusyInterval(start_at, end_at))
+    return sorted(intervals, key=lambda item: (item.start_at, item.end_at))
+
+
+def _parse_feishu_calendar_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, dict):
+        value = value.get("timestamp") or value.get("time")
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+    elif isinstance(value, str) and value.strip():
+        raw = value.strip()
+        if raw.replace(".", "", 1).isdigit():
+            timestamp = float(raw)
+        else:
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    else:
+        return None
+    if timestamp > 10_000_000_000:
+        timestamp /= 1000
+    return datetime.fromtimestamp(timestamp, timezone.utc)
+
+
+def _datetime_timezone_name(value: datetime, fallback: str) -> str:
+    return str(getattr(value.tzinfo, "key", "") or fallback or "UTC")
 
 
 # 构造创建和更新日程共用的请求体。
@@ -1061,6 +1386,7 @@ class FeishuBitableService(FeishuMessageService):
         {"field_name": "OfferPilot记录ID", "type": TEXT_FIELD_TYPE},
         {"field_name": "公司", "type": TEXT_FIELD_TYPE},
         {"field_name": "岗位", "type": TEXT_FIELD_TYPE},
+        {"field_name": "工作地点", "type": TEXT_FIELD_TYPE},
         {
             "field_name": "投递状态",
             "type": SINGLE_SELECT_FIELD_TYPE,
@@ -1235,6 +1561,15 @@ class FeishuBitableService(FeishuMessageService):
                 app_token=app_token,
                 table_id=table_id,
                 field_name="OfferPilot记录ID",
+                field_type=self.TEXT_FIELD_TYPE,
+            )
+            created_fields += 1
+
+        if fields_by_name.get("工作地点") is None:
+            self.create_field(
+                app_token=app_token,
+                table_id=table_id,
+                field_name="工作地点",
                 field_type=self.TEXT_FIELD_TYPE,
             )
             created_fields += 1

@@ -9,10 +9,14 @@ from pydantic import BaseModel, Field
 from app.core.config import settings
 from app.rag.qdrant_store import QdrantHybridStore
 from app.rag.service import CareerKnowledgeRAGService
-from app.services.knowledge_dependencies import get_default_knowledge_repository
-from app.services.project_training_dependencies import (
-    get_default_project_training_repository,
+from app.repositories.interview_knowledge_repository import (
+    InMemoryInterviewKnowledgeRepository,
+    InterviewKnowledgeRepository,
 )
+from app.repositories.sqlite_interview_knowledge_repository import (
+    SQLiteInterviewKnowledgeRepository,
+)
+from app.services.knowledge_catalog import load_knowledge_catalog
 
 
 mcp = FastMCP(
@@ -24,6 +28,8 @@ mcp = FastMCP(
 )
 _service: Optional[CareerKnowledgeRAGService] = None
 _service_lock = threading.Lock()
+_knowledge_repository: Optional[InterviewKnowledgeRepository] = None
+_knowledge_repository_lock = threading.Lock()
 
 
 class SearchResponse(BaseModel):
@@ -36,12 +42,34 @@ class EvidenceResponse(BaseModel):
     evidence: Optional[Dict[str, Any]] = None
 
 
+def get_knowledge_repository() -> InterviewKnowledgeRepository:
+    global _knowledge_repository
+    if _knowledge_repository is not None:
+        return _knowledge_repository
+    with _knowledge_repository_lock:
+        if _knowledge_repository is None:
+            if settings.storage_backend.strip().lower() == "sqlite":
+                _knowledge_repository = SQLiteInterviewKnowledgeRepository(
+                    settings.sqlite_path, read_only=True
+                )
+            else:
+                _knowledge_repository = InMemoryInterviewKnowledgeRepository(
+                    questions=load_knowledge_catalog().questions
+                )
+    return _knowledge_repository
+
+
 def get_rag_service() -> CareerKnowledgeRAGService:
     global _service
     if _service is not None:
         return _service
     with _service_lock:
         if _service is None:
+            knowledge_repository = get_knowledge_repository()
+            from app.services.project_training_dependencies import (
+                get_default_project_training_repository,
+            )
+
             store = QdrantHybridStore(
                 path=settings.rag_qdrant_path,
                 collection_name=settings.rag_collection_name,
@@ -50,7 +78,7 @@ def get_rag_service() -> CareerKnowledgeRAGService:
                 cache_dir=settings.rag_fastembed_cache_path,
             )
             _service = CareerKnowledgeRAGService(
-                knowledge_repository=get_default_knowledge_repository(),
+                knowledge_repository=knowledge_repository,
                 project_repository=get_default_project_training_repository(),
                 store=store,
             )
@@ -138,7 +166,7 @@ def read_evidence(evidence_id: str, owner_id: str) -> EvidenceResponse:
     mime_type="application/json",
 )
 def read_knowledge_resource(question_id: str) -> str:
-    question = get_default_knowledge_repository().get_question(question_id)
+    question = get_knowledge_repository().get_question(question_id)
     return json.dumps(
         question.to_dict() if question is not None else {"error": "not_found"},
         ensure_ascii=False,

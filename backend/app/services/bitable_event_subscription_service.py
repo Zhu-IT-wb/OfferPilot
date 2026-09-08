@@ -28,6 +28,7 @@ def ensure_bitable_event_subscription(
     repository: OfferPilotRepository,
     bitable_service: Optional[FeishuBitableService] = None,
     force: bool = False,
+    app_token: Optional[str] = None,
 ) -> BitableEventSubscriptionResult:
     service = bitable_service or FeishuBitableService()
     if not settings.feishu_bitable_sync_enabled:
@@ -35,34 +36,47 @@ def ensure_bitable_event_subscription(
     if hasattr(service, "is_configured") and not service.is_configured():
         return BitableEventSubscriptionResult(False, "missing_credentials")
 
-    app_token = (
-        repository.get_runtime_setting(_OFFERPILOT_BITABLE_APP_TOKEN_SETTING)
+    resolved_app_token = (
+        (app_token or "").strip()
+        or repository.get_runtime_setting(_OFFERPILOT_BITABLE_APP_TOKEN_SETTING)
         or getattr(service, "app_token", None)
     )
-    if not app_token:
+    if not resolved_app_token:
         return BitableEventSubscriptionResult(False, "missing_app_token")
     if not hasattr(service, "subscribe_bitable_file"):
-        return BitableEventSubscriptionResult(False, "not_supported", app_token=app_token)
+        return BitableEventSubscriptionResult(
+            False,
+            "not_supported",
+            app_token=resolved_app_token,
+        )
 
-    setting_key = _bitable_event_subscription_setting_key(app_token)
+    setting_key = _bitable_event_subscription_setting_key(resolved_app_token)
     current_status = repository.get_runtime_setting(setting_key)
     if not force and current_status == "subscribed":
-        return BitableEventSubscriptionResult(True, "cached", app_token=app_token)
+        return BitableEventSubscriptionResult(
+            True,
+            "cached",
+            app_token=resolved_app_token,
+        )
 
     try:
-        service.subscribe_bitable_file(app_token=app_token)
+        service.subscribe_bitable_file(app_token=resolved_app_token)
     except (FeishuConfigurationError, FeishuRequestError) as exc:
         error = _summarize_error(str(exc))
         repository.set_runtime_setting(setting_key, f"failed: {error}")
         return BitableEventSubscriptionResult(
             False,
             "failed",
-            app_token=app_token,
+            app_token=resolved_app_token,
             error=error,
         )
 
     repository.set_runtime_setting(setting_key, "subscribed")
-    return BitableEventSubscriptionResult(True, "subscribed", app_token=app_token)
+    return BitableEventSubscriptionResult(
+        True,
+        "subscribed",
+        app_token=resolved_app_token,
+    )
 
 
 # 处理 bitable_event_subscription_setting_key 相关逻辑。

@@ -1,7 +1,8 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.schemas.agent import AgentActionName
+from app.core.config import Settings
+from app.tools.tool_names import AgentActionName
 from app.models.application import ApplicationStatus
 from app.services.feishu_service import (
     FeishuBitableAppResult,
@@ -48,6 +49,46 @@ def test_tool_registry_raises_for_missing_tool() -> None:
         raise AssertionError("Expected ToolNotFoundError")
 
 
+def test_application_bitable_link_reports_disabled_and_not_ready_states() -> None:
+    repository = InMemoryOfferPilotRepository()
+
+    disabled = offerpilot_tools.get_application_bitable_link(
+        repository,
+        app_settings=Settings(feishu_bitable_sync_enabled=False),
+    )
+    not_ready = offerpilot_tools.get_application_bitable_link(
+        repository,
+        app_settings=Settings(feishu_bitable_sync_enabled=True),
+    )
+
+    assert disabled.success is False
+    assert disabled.data["error"]["code"] == "bitable_sync_disabled"
+    assert "尚未启用" in disabled.message
+    assert not_ready.success is False
+    assert not_ready.data["error"]["code"] == "bitable_not_ready"
+    assert "尚未创建" in not_ready.message
+
+
+def test_application_bitable_link_requires_recorded_nonlocal_access() -> None:
+    repository = InMemoryOfferPilotRepository()
+    repository.set_runtime_setting(
+        "feishu.offerpilot_bitable_app_token", "bascn_offerpilot"
+    )
+    repository.set_runtime_setting(
+        "feishu.offerpilot_bitable_table_id", "tbl_applications"
+    )
+
+    result = offerpilot_tools.get_application_bitable_link(
+        repository,
+        {"owner_id": "feishu:ou_unknown"},
+        app_settings=Settings(feishu_bitable_sync_enabled=True),
+    )
+
+    assert result.success is False
+    assert result.data["error"]["code"] == "bitable_access_unverified"
+    assert "尚未确认你有访问权限" in result.message
+
+
 def test_offerpilot_tools_create_and_list_application(monkeypatch) -> None:
     monkeypatch.setattr(
         offerpilot_tools,
@@ -62,6 +103,7 @@ def test_offerpilot_tools_create_and_list_application(monkeypatch) -> None:
         {
             "company": "深信服",
             "role": "开发实习",
+            "base_location": "深圳",
             "interview_time": "明天下午三点",
             "round": "一面",
         },
@@ -74,8 +116,41 @@ def test_offerpilot_tools_create_and_list_application(monkeypatch) -> None:
     assert result.data["interview_schedule"]["start_time"] == "明天下午三点"
     assert result.data["interview_schedule"]["start_at"] == "2026-07-01T15:00:00+08:00"
     assert "公司：深信服" in result.message
+    assert "工作地点：深圳" in result.message
     assert "状态：一面阶段" in result.message
     assert repository.applications[0].company == "深信服"
+
+
+def test_offerpilot_tools_updates_and_queries_application_base_location() -> None:
+    repository = InMemoryOfferPilotRepository()
+    repository.create_application(
+        company="字节",
+        role="Agent 开发",
+        base_location="杭州",
+    )
+    registry = build_offerpilot_tool_registry(
+        repository,
+        calendar_service=None,
+        bitable_service=None,
+    )
+
+    update_result = registry.run(
+        AgentActionName.UPDATE_APPLICATION.value,
+        {
+            "company": "字节",
+            "base_location": "上海",
+            "update_type": "location_update",
+        },
+    )
+    query_result = registry.run(
+        AgentActionName.QUERY_APPLICATION.value,
+        {"company": "字节", "query_type": "company_status"},
+    )
+
+    assert update_result.success is True
+    assert update_result.data["application"]["base_location"] == "上海"
+    assert "工作地点：上海" in update_result.message
+    assert "工作地点：上海" in query_result.message
 
 
 def test_offerpilot_tools_syncs_created_application_to_bitable() -> None:
@@ -157,6 +232,7 @@ def test_offerpilot_tools_syncs_created_application_to_bitable() -> None:
         {
             "company": "腾讯",
             "role": "AI 应用开发",
+            "base_location": "深圳",
             "bitable_collaborator_user_id": "ou_test",
             "bitable_collaborator_user_id_type": "open_id",
         },
@@ -173,6 +249,7 @@ def test_offerpilot_tools_syncs_created_application_to_bitable() -> None:
     assert bitable_service.created_records[0]["fields"]["OfferPilot记录ID"] == "app_1"
     assert bitable_service.created_records[0]["fields"]["公司"] == "腾讯"
     assert bitable_service.created_records[0]["fields"]["岗位"] == "AI 应用开发"
+    assert bitable_service.created_records[0]["fields"]["工作地点"] == "深圳"
     assert bitable_service.created_records[0]["fields"]["投递状态"] == "已投递"
     assert "状态值" not in bitable_service.created_records[0]["fields"]
     assert bitable_service.created_records[0]["fields"]["优先级"] == "高"
@@ -180,7 +257,7 @@ def test_offerpilot_tools_syncs_created_application_to_bitable() -> None:
     assert bitable_service.created_records[0]["fields"]["下一步"] == "等待反馈，超过 7 天可跟进"
     assert repository.get_runtime_setting("feishu.offerpilot_bitable_app_token") == "bascn_offerpilot"
     assert repository.get_runtime_setting("feishu.offerpilot_bitable_table_id") == "tbl_applications"
-    assert repository.get_runtime_setting("feishu.offerpilot_bitable_schema_version") == "v3"
+    assert repository.get_runtime_setting("feishu.offerpilot_bitable_schema_version") == "v4"
     assert repository.get_runtime_setting("feishu.offerpilot_bitable_record_id.tbl_applications.app_1") == "rec_app_1"
     assert repository.get_runtime_setting("feishu.offerpilot_bitable_collaborator.bascn_offerpilot.ou_test") == "ou_test"
     assert bitable_service.collaborator_calls == [
@@ -312,6 +389,7 @@ def test_offerpilot_tools_updates_existing_bitable_record_for_application_progre
                 "OfferPilot记录ID": "app_1",
                 "公司": "腾讯",
                 "岗位": "AI 应用开发",
+                "工作地点": "",
                 "投递状态": "一面阶段",
                 "优先级": "高",
                 "来源": "飞书助手",
@@ -603,6 +681,73 @@ def test_offerpilot_tools_auto_creates_managed_calendar_once() -> None:
     assert "已自动创建 OfferPilot 秋招日历" in first_result.message
 
 
+def test_offerpilot_tools_creates_a_separate_managed_calendar_per_owner() -> None:
+    class FakeCalendarService:
+        calendar_id = "primary"
+
+        def __init__(self):
+            self.create_calendar_calls = 0
+            self.created_events = []
+
+        def is_calendar_sync_enabled(self):
+            return True
+
+        def should_manage_offerpilot_calendar(self):
+            return True
+
+        def create_shared_calendar(self):
+            self.create_calendar_calls += 1
+            return FeishuCalendarResult(
+                calendar_id=f"calendar_{self.create_calendar_calls}",
+                raw_response={"code": 0},
+            )
+
+        def create_interview_event(self, **kwargs):
+            self.created_events.append(kwargs)
+            return FeishuCalendarEventResult(
+                event_id=f"event_{len(self.created_events)}",
+                raw_response={"code": 0},
+            )
+
+    repository = InMemoryOfferPilotRepository()
+    calendar_service = FakeCalendarService()
+    registry = build_offerpilot_tool_registry(
+        repository,
+        calendar_service=calendar_service,
+        bitable_service=None,
+    )
+    for owner_id, company in (("feishu:ou_a", "公司A"), ("feishu:ou_b", "公司B")):
+        repository.create_application(
+            company=company,
+            role="后端开发",
+            owner_id=owner_id,
+        )
+        result = registry.run(
+            AgentActionName.UPDATE_APPLICATION.value,
+            {
+                "company": company,
+                "round": "一面",
+                "interview_time": "明天早上八点",
+                "start_at": "2026-06-30T08:00:00+08:00",
+                "update_type": "schedule_interview",
+                "status": "interview_1",
+                "owner_id": owner_id,
+            },
+        )
+        assert result.success is True
+
+    assert calendar_service.create_calendar_calls == 2
+    assert [event["calendar_id"] for event in calendar_service.created_events] == [
+        "calendar_1",
+        "calendar_2",
+    ]
+    owner_settings = repository.list_runtime_settings(
+        "feishu.offerpilot_calendar_id.owner."
+    )
+    assert len(owner_settings) == 2
+    assert set(owner_settings.values()) == {"calendar_1", "calendar_2"}
+
+
 def test_offerpilot_tools_adds_feishu_user_as_event_attendee() -> None:
     class FakeCalendarService:
         calendar_id = "primary"
@@ -731,6 +876,27 @@ def test_offerpilot_tools_complete_seed_task() -> None:
     assert result.success is True
     assert result.data["task"]["id"] == "task_1"
     assert result.data["task"]["status"] == "passed"
+
+
+def test_task_update_requires_selection_before_mutating_multiple_candidates() -> None:
+    repository = InMemoryOfferPilotRepository()
+    registry = build_offerpilot_tool_registry(
+        repository,
+        calendar_service=None,
+        bitable_service=None,
+    )
+    before = [task.status.value for task in repository.list_today_tasks()]
+
+    result = registry.run(AgentActionName.COMPLETE_TASK.value, {})
+
+    assert result.success is False
+    assert result.data["requires_selection"] is True
+    assert result.data["selection_slot"] == "task_title"
+    assert [candidate["task_id"] for candidate in result.data["candidates"]] == [
+        "task_1",
+        "task_2",
+    ]
+    assert [task.status.value for task in repository.list_today_tasks()] == before
 
 
 def test_update_application_requires_application_id_when_company_has_multiple_matches() -> None:

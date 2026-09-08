@@ -6,7 +6,10 @@ import pytest
 from app.models.tool_calling import ModelOptions
 from app.services.llm_service import LLMRequestError
 from app.services.tool_calling_model import (
+    ChatCompletionsToolCallingModel,
     DeepSeekToolCallingModel,
+    OpenAIToolCallingModel,
+    build_tool_calling_model,
 )
 
 
@@ -281,3 +284,127 @@ def test_complete_reports_status_type_when_response_body_is_empty() -> None:
                 options=ModelOptions(),
             )
         )
+
+
+def test_openai_complete_uses_openai_parameters_and_parses_tool_call() -> None:
+    model = OpenAIToolCallingModel(api_key="test-key")
+    captured_payload = {}
+
+    async def fake_post(payload):
+        captured_payload.update(payload)
+        return {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_openai_001",
+                                "type": "function",
+                                "function": {
+                                    "name": "list_applications",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18,
+            },
+        }
+
+    model._post_chat_completions = fake_post
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "list_applications",
+                "description": "List applications.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+    turn = asyncio.run(
+        model.complete(
+            messages=[{"role": "user", "content": "查询投递"}],
+            tools=tools,
+            options=ModelOptions(
+                max_tokens=777,
+                temperature=0.2,
+                thinking={"type": "enabled"},
+                response_format={"type": "json_object"},
+                tool_choice="auto",
+            ),
+        )
+    )
+
+    assert model.base_url == "https://api.openai.com/v1"
+    assert model.default_model == "gpt-4.1-mini"
+    assert captured_payload["max_completion_tokens"] == 777
+    assert captured_payload["tools"] == tools
+    assert captured_payload["tool_choice"] == "auto"
+    assert captured_payload["response_format"] == {"type": "json_object"}
+    assert "max_tokens" not in captured_payload
+    assert "thinking" not in captured_payload
+    assert turn.provider == "openai"
+    assert turn.tool_calls[0].id == "call_openai_001"
+    assert turn.tool_calls[0].name == "list_applications"
+    assert turn.tool_calls[0].arguments == {}
+
+
+def test_openai_complete_omits_empty_tools_for_verifier_call() -> None:
+    model = OpenAIToolCallingModel(api_key="test-key")
+    captured_payload = {}
+
+    async def fake_post(payload):
+        captured_payload.update(payload)
+        return {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "{}"},
+                }
+            ],
+            "usage": {},
+        }
+
+    model._post_chat_completions = fake_post
+
+    asyncio.run(
+        model.complete(
+            messages=[{"role": "user", "content": "verify"}],
+            tools=[],
+            options=ModelOptions(response_format={"type": "json_object"}),
+        )
+    )
+
+    assert "tools" not in captured_payload
+
+
+def test_tool_calling_model_factory_selects_provider_adapter() -> None:
+    openai_model = build_tool_calling_model(
+        provider="chatgpt",
+        api_key="openai-key",
+    )
+    deepseek_model = build_tool_calling_model(
+        provider="deepseek",
+        api_key="deepseek-key",
+    )
+    custom_model = build_tool_calling_model(
+        provider="custom-provider",
+        api_key="custom-key",
+        base_url="https://custom.example/v1",
+        default_model="custom-model",
+    )
+
+    assert isinstance(openai_model, OpenAIToolCallingModel)
+    assert openai_model.provider == "openai"
+    assert isinstance(deepseek_model, DeepSeekToolCallingModel)
+    assert type(custom_model) is ChatCompletionsToolCallingModel

@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -8,6 +8,8 @@ class ToolSpec(BaseModel):
     name: str
     description: str = ""
     mutating: bool = False
+    effect: Optional[str] = None
+    approval: Optional[str] = None
     required_slots: List[str] = Field(default_factory=list)
     optional_slots: List[str] = Field(default_factory=list)
     examples: List[str] = Field(default_factory=list)

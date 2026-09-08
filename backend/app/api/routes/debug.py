@@ -1,9 +1,19 @@
-from fastapi import APIRouter, HTTPException, status
+from typing import Any
 
-from app.agents.intent_classifier import IntentClassifier
-from app.agents.orchestrator import AgentOrchestrator
-from app.schemas.agent import AgentResponse, DebugAgentRequest
-from app.schemas.intent import DebugIntentRequest, IntentClassification
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from app.api.routes.agent import _raise_runtime_http_error, get_agent_runtime
+from app.agents.runtime import (
+    AgentActorMismatch,
+    AgentInteractionError,
+    AgentRuntimeConflict,
+    AgentThreadNotFound,
+)
+from app.schemas.agent import (
+    AgentRunPublicResponse,
+    AgentRunResponse,
+    DebugAgentRequest,
+)
 from app.schemas.llm import DebugLLMRequest, DebugLLMResponse
 from app.services.llm_service import (
     LLMConfigurationError,
@@ -45,35 +55,30 @@ async def debug_llm(request: DebugLLMRequest) -> DebugLLMResponse:
     )
 
 
-# 调试自然语言意图识别结果。
-@router.post("/intent", response_model=IntentClassification)
-async def debug_intent(request: DebugIntentRequest) -> IntentClassification:
-    classifier = IntentClassifier()
-
-    try:
-        return await classifier.classify(request.message)
-    except LLMRequestError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
-
-
 # 调试 Agent 编排后的响应。
-@router.post("/agent", response_model=AgentResponse, response_model_exclude_none=True)
-async def debug_agent(request: DebugAgentRequest) -> AgentResponse:
-    orchestrator = AgentOrchestrator()
-
+@router.post(
+    "/agent",
+    response_model=AgentRunPublicResponse,
+    response_model_exclude_none=True,
+)
+async def debug_agent(
+    request: DebugAgentRequest,
+    runtime: Any = Depends(get_agent_runtime),
+) -> AgentRunResponse:
     try:
-        return await orchestrator.handle_message(
+        return await runtime.start(
             message=request.message,
-            confirmed=request.confirmed,
             user_id=request.user_id,
-            source=request.source,
+            source="debug",
             conversation_scope=request.conversation_scope,
+            request_id=request.request_id,
         )
-    except LLMRequestError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
+    except (
+        AgentActorMismatch,
+        AgentRuntimeConflict,
+        AgentInteractionError,
+        AgentThreadNotFound,
+        LLMConfigurationError,
+        LLMRequestError,
+    ) as exc:
+        _raise_runtime_http_error(exc)

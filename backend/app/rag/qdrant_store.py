@@ -76,7 +76,7 @@ class QdrantHybridStore:
                         for document in changed
                     ],
                     payload=[document.to_payload() for document in changed],
-                    ids=[self._point_id(document.evidence_id) for document in changed],
+                    ids=[self._point_id(scope, document.evidence_id) for document in changed],
                     wait=True,
                 )
             if stale_ids:
@@ -278,8 +278,8 @@ class QdrantHybridStore:
         return models.Filter(should=allowed)
 
     @staticmethod
-    def _point_id(evidence_id: str) -> str:
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"offerpilot:{evidence_id}"))
+    def _point_id(scope: str, evidence_id: str) -> str:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"offerpilot:{scope}:{evidence_id}"))
 
     @staticmethod
     def _hit(payload: Dict[str, object], score: float) -> RetrievalHit:

@@ -1,4 +1,6 @@
-from dataclasses import dataclass, field
+import json
+from dataclasses import dataclass, field, replace
+from threading import Lock
 from typing import Any, Dict, List, Optional
 
 from app.models.application import (
@@ -8,6 +10,11 @@ from app.models.application import (
     application_status_from_round,
 )
 from app.repositories.offerpilot_repository import OfferPilotRepository
+from app.services.bitable_tenancy import (
+    bitable_resource_owner_setting_key,
+    get_bitable_resource_owner,
+    list_owner_bitable_resources,
+)
 from app.services.feishu_service import (
     FeishuBitableService,
     FeishuConfigurationError,
@@ -18,7 +25,10 @@ from app.services.feishu_service import (
 _OFFERPILOT_BITABLE_APP_TOKEN_SETTING = "feishu.offerpilot_bitable_app_token"
 _OFFERPILOT_BITABLE_TABLE_ID_SETTING = "feishu.offerpilot_bitable_table_id"
 _OFFERPILOT_BITABLE_RECORD_ID_PREFIX = "feishu.offerpilot_bitable_record_id."
+_OFFERPILOT_BITABLE_APPLICATION_ID_PREFIX = "feishu.offerpilot_bitable_application_id."
 _DEFAULT_OWNER_ID = "local_user"
+_RECORD_LOCKS_GUARD = Lock()
+_RECORD_LOCKS: Dict[tuple[str, str, str], Lock] = {}
 
 
 # 承载外部服务调用后的结构化结果。
@@ -30,8 +40,11 @@ class BitableRecordSyncResult:
     table_id: Optional[str] = None
     record_id: Optional[str] = None
     application_id: Optional[str] = None
+    owner_id: Optional[str] = None
     created: bool = False
     updated_fields: List[str] = field(default_factory=list)
+    metadata_updated: bool = False
+    metadata_error: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -42,6 +55,8 @@ def sync_bitable_record_to_repository(
     record_id: str,
     app_token: Optional[str] = None,
     table_id: Optional[str] = None,
+    fallback_owner_id: Optional[str] = None,
+    allow_default_local_owner: bool = True,
 ) -> BitableRecordSyncResult:
     resolved_app_token = _resolve_app_token(repository, bitable_service, app_token)
     resolved_table_id = _resolve_table_id(repository, bitable_service, table_id)
@@ -60,8 +75,35 @@ def sync_bitable_record_to_repository(
             record_id=record_id,
         )
 
+    stored_app_token = repository.get_runtime_setting(_OFFERPILOT_BITABLE_APP_TOKEN_SETTING)
     stored_table_id = repository.get_runtime_setting(_OFFERPILOT_BITABLE_TABLE_ID_SETTING)
-    if table_id and stored_table_id and table_id != stored_table_id:
+    registered_owner_id = get_bitable_resource_owner(
+        repository,
+        resolved_app_token,
+        resolved_table_id,
+        include_legacy_local=False,
+    )
+    known_resources = list_owner_bitable_resources(repository)
+    is_legacy_resource = bool(
+        stored_app_token
+        and stored_table_id
+        and (resolved_app_token, resolved_table_id)
+        == (stored_app_token, stored_table_id)
+    )
+    if (
+        app_token
+        and table_id
+        and not registered_owner_id
+        and not is_legacy_resource
+        and (
+            known_resources
+            or (
+                stored_app_token
+                and stored_table_id
+                and (app_token, table_id) != (stored_app_token, stored_table_id)
+            )
+        )
+    ):
         return BitableRecordSyncResult(
             synced=False,
             status="ignored_foreign_table",
@@ -69,6 +111,23 @@ def sync_bitable_record_to_repository(
             table_id=resolved_table_id,
             record_id=record_id,
         )
+
+    normalized_fallback_owner = (fallback_owner_id or "").strip() or None
+    if (
+        registered_owner_id
+        and normalized_fallback_owner
+        and normalized_fallback_owner != registered_owner_id
+    ):
+        return BitableRecordSyncResult(
+            synced=False,
+            status="owner_conflict",
+            app_token=resolved_app_token,
+            table_id=resolved_table_id,
+            record_id=record_id,
+            owner_id=registered_owner_id,
+        )
+    if registered_owner_id:
+        fallback_owner_id = registered_owner_id
 
     try:
         record = bitable_service.get_record(
@@ -93,6 +152,9 @@ def sync_bitable_record_to_repository(
         fields=fields,
         app_token=resolved_app_token,
         table_id=resolved_table_id,
+        fallback_owner_id=fallback_owner_id,
+        allow_default_local_owner=allow_default_local_owner,
+        bitable_service=bitable_service,
     )
 
 
@@ -103,12 +165,153 @@ def sync_bitable_record_fields_to_repository(
     fields: Dict[str, Any],
     app_token: str,
     table_id: str,
+    fallback_owner_id: Optional[str] = None,
+    allow_default_local_owner: bool = True,
+    bitable_service: Optional[FeishuBitableService] = None,
 ) -> BitableRecordSyncResult:
-    owner_id = _owner_id_from_bitable_fields(fields)
-    application_id = (
-        _field_to_text(fields.get("OfferPilot记录ID")).strip()
-        or _find_application_id_by_record_id(repository, table_id, record_id, owner_id=owner_id)
+    record_lock = _record_sync_lock(app_token, table_id, record_id)
+    with record_lock:
+        return _sync_bitable_record_fields_locked(
+            repository=repository,
+            record_id=record_id,
+            fields=fields,
+            app_token=app_token,
+            table_id=table_id,
+            fallback_owner_id=fallback_owner_id,
+            allow_default_local_owner=allow_default_local_owner,
+            bitable_service=bitable_service,
+        )
+
+
+def _sync_bitable_record_fields_locked(
+    repository: OfferPilotRepository,
+    record_id: str,
+    fields: Dict[str, Any],
+    app_token: str,
+    table_id: str,
+    fallback_owner_id: Optional[str],
+    allow_default_local_owner: bool,
+    bitable_service: Optional[FeishuBitableService],
+) -> BitableRecordSyncResult:
+    field_application_id = _field_to_text(fields.get("OfferPilot记录ID")).strip() or None
+    explicit_owner_id = extract_bitable_owner_id(fields)
+    mapped_application_id, mapped_owner_id = _load_record_mapping(
+        repository=repository,
+        app_token=app_token,
+        table_id=table_id,
+        record_id=record_id,
     )
+    mapping_is_authoritative = bool(mapped_application_id and mapped_owner_id)
+    if (
+        mapping_is_authoritative
+        and field_application_id
+        and field_application_id != mapped_application_id
+    ):
+        return BitableRecordSyncResult(
+            synced=False,
+            status="owner_conflict",
+            app_token=app_token,
+            table_id=table_id,
+            record_id=record_id,
+            application_id=mapped_application_id,
+            owner_id=mapped_owner_id,
+        )
+    if field_application_id and not mapped_application_id:
+        mapped_application_id = field_application_id
+        mapped_owner_id = _find_application_owner_id(repository, field_application_id)
+        mapping_is_authoritative = bool(mapped_owner_id)
+    legacy_mapping_used = False
+    if not mapped_application_id:
+        legacy_mapping = _find_legacy_record_mapping(
+            repository,
+            table_id,
+            record_id,
+        )
+        if legacy_mapping:
+            mapped_application_id, mapped_owner_id = legacy_mapping
+            legacy_mapping_used = True
+
+    table_owner_id = get_bitable_table_owner(repository, app_token, table_id)
+    authoritative_owner_id = (
+        mapped_owner_id if mapping_is_authoritative else table_owner_id or fallback_owner_id
+    )
+    for asserted_owner_id in (
+        explicit_owner_id,
+        fallback_owner_id,
+        table_owner_id,
+    ):
+        normalized_asserted_owner = (asserted_owner_id or "").strip()
+        if (
+            authoritative_owner_id
+            and normalized_asserted_owner
+            and normalized_asserted_owner != authoritative_owner_id
+        ):
+            return BitableRecordSyncResult(
+                synced=False,
+                status="owner_conflict",
+                app_token=app_token,
+                table_id=table_id,
+                record_id=record_id,
+                application_id=field_application_id or mapped_application_id,
+                owner_id=authoritative_owner_id,
+            )
+    preferred_nonlocal_owner = next(
+        (
+            candidate
+            for candidate in (explicit_owner_id, fallback_owner_id, table_owner_id)
+            if candidate and candidate != _DEFAULT_OWNER_ID
+        ),
+        None,
+    )
+    owner_for_resolution = mapped_owner_id
+    if mapped_owner_id == _DEFAULT_OWNER_ID and preferred_nonlocal_owner:
+        owner_for_resolution = None
+    owner_id = authoritative_owner_id or _owner_id_from_bitable_fields(
+        fields,
+        mapped_owner_id=owner_for_resolution,
+        fallback_owner_id=fallback_owner_id,
+        table_owner_id=table_owner_id,
+        allow_default_local_owner=allow_default_local_owner,
+    )
+    if not owner_id:
+        return BitableRecordSyncResult(
+            synced=False,
+            status="missing_owner",
+            app_token=app_token,
+            table_id=table_id,
+            record_id=record_id,
+        )
+
+    remember_bitable_table_owner(repository, app_token, table_id, owner_id)
+    application_id = (
+        field_application_id
+        or mapped_application_id
+    )
+    if (
+        application_id
+        and mapped_owner_id
+        and mapped_owner_id != owner_id
+    ):
+        may_migrate_legacy_local_mapping = (
+            legacy_mapping_used
+            and mapped_owner_id == _DEFAULT_OWNER_ID
+            and owner_id != _DEFAULT_OWNER_ID
+        )
+        if not may_migrate_legacy_local_mapping or not _reassign_application_owner(
+            repository,
+            application_id=application_id,
+            from_owner_id=mapped_owner_id,
+            to_owner_id=owner_id,
+        ):
+            return BitableRecordSyncResult(
+                synced=False,
+                status="owner_conflict",
+                app_token=app_token,
+                table_id=table_id,
+                record_id=record_id,
+                application_id=application_id,
+                owner_id=owner_id,
+            )
     values = _application_values_from_bitable_fields(fields)
 
     if application_id:
@@ -118,7 +321,7 @@ def sync_bitable_record_fields_to_repository(
             **values,
         )
         if application is None:
-            return _create_application_from_fields(
+            result = _create_application_from_fields(
                 repository=repository,
                 table_id=table_id,
                 record_id=record_id,
@@ -127,29 +330,40 @@ def sync_bitable_record_fields_to_repository(
                 app_token=app_token,
                 owner_id=owner_id,
             )
-
-        repository.set_runtime_setting(
-            _bitable_record_setting_key(table_id, application.id),
-            record_id,
-        )
-        return BitableRecordSyncResult(
-            synced=True,
-            status="updated",
-            app_token=app_token,
+        else:
+            remember_bitable_record_mapping(
+                repository=repository,
+                app_token=app_token,
+                table_id=table_id,
+                record_id=record_id,
+                application_id=application.id,
+                owner_id=owner_id,
+            )
+            result = BitableRecordSyncResult(
+                synced=True,
+                status="updated",
+                app_token=app_token,
+                table_id=table_id,
+                record_id=record_id,
+                application_id=application.id,
+                owner_id=owner_id,
+                updated_fields=_updated_field_names(values),
+            )
+    else:
+        result = _create_application_from_fields(
+            repository=repository,
             table_id=table_id,
             record_id=record_id,
-            application_id=application.id,
-            updated_fields=_updated_field_names(values),
+            fields=fields,
+            values=values,
+            app_token=app_token,
+            owner_id=owner_id,
         )
 
-    return _create_application_from_fields(
-        repository=repository,
-        table_id=table_id,
-        record_id=record_id,
+    return _write_missing_bitable_metadata(
+        result=result,
         fields=fields,
-        values=values,
-        app_token=app_token,
-        owner_id=owner_id,
+        bitable_service=bitable_service,
     )
 
 
@@ -177,6 +391,7 @@ def _create_application_from_fields(
     application = repository.create_application(
         company=company,
         role=role,
+        base_location=values.get("base_location"),
         interview_time=values.get("interview_time"),
         round_name=values.get("round_name"),
         jd_keywords=values.get("jd_keywords") or [],
@@ -187,9 +402,13 @@ def _create_application_from_fields(
         repository.update_application_by_id(application.id, status=status, owner_id=owner_id)
         application.status = status
 
-    repository.set_runtime_setting(
-        _bitable_record_setting_key(table_id, application.id),
-        record_id,
+    remember_bitable_record_mapping(
+        repository=repository,
+        app_token=app_token,
+        table_id=table_id,
+        record_id=record_id,
+        application_id=application.id,
+        owner_id=owner_id,
     )
     return BitableRecordSyncResult(
         synced=True,
@@ -198,6 +417,7 @@ def _create_application_from_fields(
         table_id=table_id,
         record_id=record_id,
         application_id=application.id,
+        owner_id=owner_id,
         created=True,
         updated_fields=_updated_field_names(values),
     )
@@ -214,6 +434,8 @@ def _application_values_from_bitable_fields(fields: Dict[str, Any]) -> Dict[str,
         role = _field_to_text(fields.get("岗位")).strip()
         if role:
             values["role"] = role
+    if "工作地点" in fields:
+        values["base_location"] = _field_to_text(fields.get("工作地点")).strip()
 
     status = _status_from_fields(fields)
     if status is not None:
@@ -232,9 +454,207 @@ def _application_values_from_bitable_fields(fields: Dict[str, Any]) -> Dict[str,
 
 
 # 从多维表格字段中提取数据归属人。
-def _owner_id_from_bitable_fields(fields: Dict[str, Any]) -> str:
+def _owner_id_from_bitable_fields(
+    fields: Dict[str, Any],
+    *,
+    mapped_owner_id: Optional[str] = None,
+    fallback_owner_id: Optional[str] = None,
+    table_owner_id: Optional[str] = None,
+    allow_default_local_owner: bool = True,
+) -> Optional[str]:
+    candidates = (
+        extract_bitable_owner_id(fields) or "",
+        (mapped_owner_id or "").strip(),
+        (fallback_owner_id or "").strip(),
+        (table_owner_id or "").strip(),
+    )
+    for owner_id in candidates:
+        if owner_id:
+            return owner_id
+    return _DEFAULT_OWNER_ID if allow_default_local_owner else None
+
+
+def extract_bitable_owner_id(fields: Dict[str, Any]) -> Optional[str]:
     owner_id = _field_to_text(fields.get("OfferPilot用户ID")).strip()
-    return owner_id or _DEFAULT_OWNER_ID
+    return owner_id or None
+
+
+def get_bitable_table_owner(
+    repository: OfferPilotRepository,
+    app_token: str,
+    table_id: str,
+) -> Optional[str]:
+    owner_id = get_bitable_resource_owner(
+        repository,
+        app_token,
+        table_id,
+        include_legacy_local=False,
+    )
+    return owner_id.strip() if owner_id and owner_id.strip() else None
+
+
+def remember_bitable_table_owner(
+    repository: OfferPilotRepository,
+    app_token: str,
+    table_id: str,
+    owner_id: Optional[str],
+) -> Optional[str]:
+    normalized_owner_id = (owner_id or "").strip()
+    if not normalized_owner_id or normalized_owner_id == _DEFAULT_OWNER_ID:
+        return get_bitable_table_owner(repository, app_token, table_id)
+
+    setting_key = _bitable_table_owner_setting_key(app_token, table_id)
+    existing_owner_id = repository.get_runtime_setting(setting_key)
+    if existing_owner_id and existing_owner_id.strip():
+        return existing_owner_id.strip()
+    repository.set_runtime_setting(setting_key, normalized_owner_id)
+    return normalized_owner_id
+
+
+def remember_bitable_record_mapping(
+    repository: OfferPilotRepository,
+    app_token: str,
+    table_id: str,
+    record_id: str,
+    application_id: str,
+    owner_id: str,
+) -> None:
+    repository.set_runtime_setting(
+        _bitable_record_setting_key(table_id, application_id),
+        record_id,
+    )
+    repository.set_runtime_setting(
+        _bitable_application_setting_key(app_token, table_id, record_id),
+        json.dumps(
+            {
+                "application_id": application_id,
+                "owner_id": owner_id,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+    )
+
+
+def _load_record_mapping(
+    repository: OfferPilotRepository,
+    app_token: str,
+    table_id: str,
+    record_id: str,
+) -> tuple[Optional[str], Optional[str]]:
+    raw_mapping = repository.get_runtime_setting(
+        _bitable_application_setting_key(app_token, table_id, record_id)
+    )
+    if not raw_mapping:
+        return None, None
+    try:
+        mapping = json.loads(raw_mapping)
+    except (TypeError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(mapping, dict):
+        return None, None
+    application_id = mapping.get("application_id")
+    owner_id = mapping.get("owner_id")
+    return (
+        (
+            application_id.strip()
+            if isinstance(application_id, str) and application_id.strip()
+            else None
+        ),
+        owner_id.strip() if isinstance(owner_id, str) and owner_id.strip() else None,
+    )
+
+
+def _write_missing_bitable_metadata(
+    result: BitableRecordSyncResult,
+    fields: Dict[str, Any],
+    bitable_service: Optional[FeishuBitableService],
+) -> BitableRecordSyncResult:
+    if not result.synced or not result.application_id or not result.owner_id:
+        return result
+    update_record = getattr(bitable_service, "update_record", None)
+    if not callable(update_record):
+        return result
+
+    metadata_fields: Dict[str, Any] = {}
+    if not _field_to_text(fields.get("OfferPilot记录ID")).strip():
+        metadata_fields["OfferPilot记录ID"] = result.application_id
+    if (
+        result.owner_id != _DEFAULT_OWNER_ID
+        and not _field_to_text(fields.get("OfferPilot用户ID")).strip()
+    ):
+        metadata_fields["OfferPilot用户ID"] = result.owner_id
+    if not metadata_fields:
+        return result
+
+    try:
+        update_record(
+            app_token=result.app_token or "",
+            table_id=result.table_id or "",
+            record_id=result.record_id or "",
+            fields=metadata_fields,
+        )
+    except (FeishuConfigurationError, FeishuRequestError) as exc:
+        return replace(result, metadata_error=_summarize_error(str(exc)))
+    return replace(result, metadata_updated=True)
+
+
+def _reassign_application_owner(
+    repository: OfferPilotRepository,
+    application_id: str,
+    from_owner_id: str,
+    to_owner_id: str,
+) -> bool:
+    reassign_owner = getattr(repository, "reassign_application_owner", None)
+    if not callable(reassign_owner):
+        return False
+    return bool(
+        reassign_owner(
+            application_id=application_id,
+            from_owner_id=from_owner_id,
+            to_owner_id=to_owner_id,
+        )
+    )
+
+
+def _find_application_owner_id(
+    repository: OfferPilotRepository,
+    application_id: str,
+) -> Optional[str]:
+    find_owner = getattr(repository, "find_application_owner_id", None)
+    if not callable(find_owner):
+        return None
+    owner_id = find_owner(application_id)
+    return owner_id.strip() if isinstance(owner_id, str) and owner_id.strip() else None
+
+
+def _find_legacy_record_mapping(
+    repository: OfferPilotRepository,
+    table_id: str,
+    record_id: str,
+) -> Optional[tuple[str, str]]:
+    find_mapping = getattr(repository, "find_application_by_bitable_record_id", None)
+    if not callable(find_mapping):
+        return None
+    mapping = find_mapping(table_id, record_id)
+    if not isinstance(mapping, tuple) or len(mapping) != 2:
+        return None
+    application_id, owner_id = mapping
+    if not isinstance(application_id, str) or not application_id.strip():
+        return None
+    if not isinstance(owner_id, str) or not owner_id.strip():
+        return None
+    return application_id.strip(), owner_id.strip()
+
+
+def _record_sync_lock(app_token: str, table_id: str, record_id: str) -> Lock:
+    key = (app_token, table_id, record_id)
+    with _RECORD_LOCKS_GUARD:
+        lock = _RECORD_LOCKS.get(key)
+        if lock is None:
+            lock = Lock()
+            _RECORD_LOCKS[key] = lock
+        return lock
 
 
 # 处理 status_from_fields 相关逻辑。
@@ -310,25 +730,21 @@ def _resolve_table_id(
     )
 
 
-# 查找 application id by record id。
-def _find_application_id_by_record_id(
-    repository: OfferPilotRepository,
-    table_id: str,
-    record_id: str,
-    owner_id: str = _DEFAULT_OWNER_ID,
-) -> Optional[str]:
-    for application in repository.list_applications(owner_id=owner_id):
-        stored_record_id = repository.get_runtime_setting(
-            _bitable_record_setting_key(table_id, application.id)
-        )
-        if stored_record_id == record_id:
-            return application.id
-    return None
-
-
 # 处理 bitable_record_setting_key 相关逻辑。
 def _bitable_record_setting_key(table_id: str, application_id: str) -> str:
     return f"{_OFFERPILOT_BITABLE_RECORD_ID_PREFIX}{table_id}.{application_id}"
+
+
+def _bitable_application_setting_key(
+    app_token: str,
+    table_id: str,
+    record_id: str,
+) -> str:
+    return f"{_OFFERPILOT_BITABLE_APPLICATION_ID_PREFIX}{app_token}.{table_id}.{record_id}"
+
+
+def _bitable_table_owner_setting_key(app_token: str, table_id: str) -> str:
+    return bitable_resource_owner_setting_key(app_token, table_id)
 
 
 # 处理 updated_field_names 相关逻辑。
@@ -336,6 +752,7 @@ def _updated_field_names(values: Dict[str, Any]) -> List[str]:
     field_names = {
         "company": "公司",
         "role": "岗位",
+        "base_location": "工作地点",
         "status": "投递状态",
         "interview_time": "面试时间文本",
         "round_name": "面试轮次",

@@ -24,6 +24,15 @@ backend/data/
 # Keep generated/local docs ignored, but version the active coding checkpoint.
 docs/*
 !docs/编码任务4-八股学习中心编码实施与进度.md
+# Version only curated demo assets, not raw recordings.
+!docs/demo/
+docs/demo/*
+!docs/demo/README.md
+!docs/demo/01-application-confirmation.gif
+!docs/demo/02-interview-calendar.gif
+!docs/demo/03-knowledge-rag.gif
+!docs/demo/04-repository-analysis.gif
+!docs/demo/05-project-training.gif
 data/*
 !data/knowledge/
 data/knowledge/*

@@ -78,8 +78,10 @@ def test_today_tasks_combines_leetcode_and_other_job_search_tasks(monkeypatch) -
         leetcode_repository=leetcode_repository,
     )
 
+    generated = registry.run("get_today_leetcode", {"owner_id": "feishu:ou_1"})
     result = registry.run("list_today_tasks", {"owner_id": "feishu:ou_1"})
 
+    assert generated.success is True
     assert result.success is True
     assert len(result.data["leetcode_recommendations"]) == 3
     assert len(result.data["tasks"]) == 2

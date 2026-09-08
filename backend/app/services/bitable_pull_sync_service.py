@@ -5,7 +5,14 @@ from typing import Optional
 
 from app.core.config import settings
 from app.repositories.offerpilot_repository import OfferPilotRepository
-from app.services.bitable_sync_service import sync_bitable_record_fields_to_repository
+from app.services.bitable_sync_service import (
+    get_bitable_table_owner,
+    sync_bitable_record_fields_to_repository,
+)
+from app.services.bitable_tenancy import (
+    OwnerBitableResource,
+    list_owner_bitable_resources,
+)
 from app.services.feishu_service import (
     FeishuBitableService,
     FeishuConfigurationError,
@@ -59,7 +66,16 @@ class BitablePullSyncService:
 
     # 判断 enabled 是否成立。
     def is_enabled(self) -> bool:
-        return settings.feishu_bitable_pull_sync_enabled and self.bitable_service.is_bitable_sync_enabled()
+        if not settings.feishu_bitable_pull_sync_enabled:
+            return False
+        if self.bitable_service.is_bitable_sync_enabled():
+            return True
+        if not self._resolve_resources() or not bool(
+            getattr(self.bitable_service, "sync_enabled", False)
+        ):
+            return False
+        is_configured = getattr(self.bitable_service, "is_configured", None)
+        return not callable(is_configured) or bool(is_configured())
 
     # 启动后台任务。
     def start(self) -> None:
@@ -104,21 +120,34 @@ class BitablePullSyncService:
 
     # 执行一次多维表格全量拉取同步。
     def sync_once(self) -> BitablePullSyncSummary:
-        app_token = self._resolve_app_token()
-        table_id = self._resolve_table_id()
-        if not app_token:
+        resources = self._resolve_resources()
+        if not resources:
             return BitablePullSyncSummary(0, 0, skipped=True, reason="missing_app_token")
-        if not table_id:
-            return BitablePullSyncSummary(0, 0, skipped=True, reason="missing_table_id")
 
+        synced_count = 0
+        failed_count = 0
+        first_error: Optional[str] = None
+        for resource in resources:
+            summary = self._sync_resource(resource)
+            synced_count += summary.synced_count
+            failed_count += summary.failed_count
+            if summary.reason and first_error is None:
+                first_error = summary.reason
+        return BitablePullSyncSummary(
+            synced_count=synced_count,
+            failed_count=failed_count,
+            reason=first_error,
+        )
+
+    def _sync_resource(self, resource: OwnerBitableResource) -> BitablePullSyncSummary:
         synced_count = 0
         failed_count = 0
         page_token: Optional[str] = None
         while True:
             try:
                 page = self.bitable_service.list_records(
-                    app_token=app_token,
-                    table_id=table_id,
+                    app_token=resource.app_token,
+                    table_id=resource.table_id,
                     page_size=self.page_size,
                     page_token=page_token,
                 )
@@ -131,13 +160,22 @@ class BitablePullSyncService:
                     reason=str(exc),
                 )
 
+            fallback_owner_id = get_bitable_table_owner(
+                self.repository,
+                resource.app_token,
+                resource.table_id,
+            )
+
             for record in page.records:
                 result = sync_bitable_record_fields_to_repository(
                     repository=self.repository,
                     record_id=record.record_id or "",
                     fields=record.fields or {},
-                    app_token=app_token,
-                    table_id=table_id,
+                    app_token=resource.app_token,
+                    table_id=resource.table_id,
+                    fallback_owner_id=fallback_owner_id,
+                    allow_default_local_owner=False,
+                    bitable_service=self.bitable_service,
                 )
                 if result.synced:
                     synced_count += 1
@@ -153,6 +191,13 @@ class BitablePullSyncService:
         return BitablePullSyncSummary(
             synced_count=synced_count,
             failed_count=failed_count,
+        )
+
+    def _resolve_resources(self) -> list[OwnerBitableResource]:
+        return list_owner_bitable_resources(
+            self.repository,
+            legacy_app_token=getattr(self.bitable_service, "app_token", None),
+            legacy_table_id=getattr(self.bitable_service, "table_id", None),
         )
 
     # 解析并确定 app token。

@@ -3,7 +3,13 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from app.core.config import settings
+from app.core.config import (
+    default_llm_api_key,
+    default_llm_base_url,
+    default_llm_model,
+    normalize_llm_provider,
+    settings,
+)
 
 
 # 表示当前模块抛出的业务异常。
@@ -40,10 +46,24 @@ class LLMService:
         default_model: Optional[str] = None,
         timeout_seconds: Optional[float] = None,
     ) -> None:
-        self.api_key = api_key if api_key is not None else settings.llm_api_key
-        self.base_url = (base_url or settings.llm_base_url).rstrip("/")
-        self.provider = provider or settings.llm_provider
-        self.default_model = default_model or settings.llm_model
+        self.provider = normalize_llm_provider(provider or settings.llm_provider)
+        provider_was_overridden = provider is not None
+        self.api_key = api_key if api_key is not None else (
+            default_llm_api_key(self.provider)
+            if provider_was_overridden
+            else settings.llm_api_key
+        )
+        selected_base_url = base_url or (
+            default_llm_base_url(self.provider)
+            if provider_was_overridden
+            else settings.llm_base_url
+        )
+        self.base_url = selected_base_url.rstrip("/")
+        self.default_model = default_model or (
+            default_llm_model(self.provider)
+            if provider_was_overridden
+            else settings.llm_model
+        )
         self.timeout_seconds = timeout_seconds or settings.llm_timeout_seconds
 
     # 处理 generate_text 相关逻辑。
@@ -59,22 +79,20 @@ class LLMService:
     ) -> LLMResult:
         if not self.api_key:
             raise LLMConfigurationError(
-                "LLM API key is not configured. Set DEEPSEEK_API_KEY or OFFERPILOT_LLM_API_KEY."
+                "LLM API key is not configured. Set OFFERPILOT_LLM_API_KEY, "
+                "OPENAI_API_KEY, or DEEPSEEK_API_KEY."
             )
 
         selected_model = model or self.default_model
         messages = self._build_messages(prompt=prompt, system_prompt=system_prompt)
-        payload: Dict[str, Any] = {
-            "model": selected_model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": False,
-        }
-        if response_format is not None:
-            payload["response_format"] = response_format
-        if thinking is not None:
-            payload["thinking"] = thinking
+        payload = self._build_chat_completions_payload(
+            messages=messages,
+            selected_model=selected_model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+            thinking=thinking,
+        )
 
         try:
             response_data = await self._post_chat_completions(payload)
@@ -92,6 +110,34 @@ class LLMService:
             content=content,
             raw_response=response_data,
         )
+
+    def _build_chat_completions_payload(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        selected_model: str,
+        temperature: float,
+        max_tokens: int,
+        response_format: Optional[Dict[str, Any]] = None,
+        thinking: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build the provider-specific Chat Completions request body."""
+
+        payload: Dict[str, Any] = {
+            "model": selected_model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": False,
+        }
+        if self.provider == "openai":
+            payload["max_completion_tokens"] = max_tokens
+        else:
+            payload["max_tokens"] = max_tokens
+            if thinking is not None:
+                payload["thinking"] = thinking
+        if response_format is not None:
+            payload["response_format"] = response_format
+        return payload
 
     # 发送 POST 请求处理 chat completions。
     async def _post_chat_completions(self, payload: Dict[str, Any]) -> Dict[str, Any]:

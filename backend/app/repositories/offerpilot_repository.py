@@ -1,9 +1,17 @@
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import List, Optional, Protocol
 
 from app.models.application import Application, ApplicationStatus, application_status_from_round
 from app.models.interview_review import InterviewReview
 from app.models.interview_schedule import InterviewSchedule, InterviewScheduleStatus
+from app.models.study import (
+    StudyPlan,
+    StudyPlanStatus,
+    StudyPreferences,
+    StudySession,
+    StudySessionStatus,
+)
 from app.models.task import Task, TaskPriority, TaskStatus, TaskType
 
 
@@ -17,6 +25,9 @@ class OfferPilotRepository(Protocol):
     def set_runtime_setting(self, key: str, value: str) -> None:
         ...
 
+    def list_runtime_settings(self, prefix: str = "") -> dict[str, str]:
+        ...
+
     # 查询并格式化今天的秋招任务。
     def list_today_tasks(self, owner_id: str = "local_user") -> List[Task]:
         ...
@@ -26,6 +37,7 @@ class OfferPilotRepository(Protocol):
         self,
         company: str,
         role: str,
+        base_location: Optional[str] = None,
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         jd_keywords: Optional[List[str]] = None,
@@ -49,6 +61,7 @@ class OfferPilotRepository(Protocol):
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         role: Optional[str] = None,
+        base_location: Optional[str] = None,
         owner_id: str = "local_user",
     ) -> Optional[Application]:
         ...
@@ -59,6 +72,7 @@ class OfferPilotRepository(Protocol):
         application_id: str,
         company: Optional[str] = None,
         role: Optional[str] = None,
+        base_location: Optional[str] = None,
         status: Optional[ApplicationStatus] = None,
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
@@ -66,6 +80,27 @@ class OfferPilotRepository(Protocol):
         clear_interview_fields: bool = False,
         owner_id: str = "local_user",
     ) -> Optional[Application]:
+        ...
+
+    # 将误归属的投递记录迁移到明确的用户空间。
+    def reassign_application_owner(
+        self,
+        application_id: str,
+        from_owner_id: str,
+        to_owner_id: str,
+    ) -> bool:
+        ...
+
+    # 按全局唯一 application id 查询当前归属。
+    def find_application_owner_id(self, application_id: str) -> Optional[str]:
+        ...
+
+    # 通过旧版 Bitable 正向映射精确查找投递记录及其归属。
+    def find_application_by_bitable_record_id(
+        self,
+        table_id: str,
+        record_id: str,
+    ) -> Optional[tuple[str, str]]:
         ...
 
     # 创建 interview schedule。
@@ -149,6 +184,75 @@ class OfferPilotRepository(Protocol):
     ) -> InterviewReview:
         ...
 
+    def get_study_preferences(
+        self,
+        owner_id: str = "local_user",
+    ) -> Optional[StudyPreferences]:
+        ...
+
+    def save_study_preferences(
+        self,
+        preferences: StudyPreferences,
+    ) -> StudyPreferences:
+        ...
+
+    def create_study_plan(self, plan: StudyPlan) -> StudyPlan:
+        ...
+
+    def get_study_plan(
+        self,
+        plan_id: str,
+        owner_id: str = "local_user",
+    ) -> Optional[StudyPlan]:
+        ...
+
+    def list_study_plans(
+        self,
+        owner_id: str = "local_user",
+        status: Optional[StudyPlanStatus] = None,
+    ) -> List[StudyPlan]:
+        ...
+
+    def update_study_plan(self, plan: StudyPlan) -> Optional[StudyPlan]:
+        ...
+
+    def delete_study_plan(
+        self,
+        plan_id: str,
+        owner_id: str = "local_user",
+    ) -> bool:
+        ...
+
+    def create_study_session(self, session: StudySession) -> StudySession:
+        ...
+
+    def get_study_session(
+        self,
+        session_id: str,
+        owner_id: str = "local_user",
+    ) -> Optional[StudySession]:
+        ...
+
+    def list_study_sessions(
+        self,
+        owner_id: str = "local_user",
+        plan_id: Optional[str] = None,
+        range_start: Optional[datetime] = None,
+        range_end: Optional[datetime] = None,
+        status: Optional[StudySessionStatus] = None,
+    ) -> List[StudySession]:
+        ...
+
+    def update_study_session(self, session: StudySession) -> Optional[StudySession]:
+        ...
+
+    def delete_study_session(
+        self,
+        session_id: str,
+        owner_id: str = "local_user",
+    ) -> bool:
+        ...
+
 
 # 处理 default_tasks 相关逻辑。
 def _default_tasks() -> List[Task]:
@@ -178,6 +282,9 @@ class InMemoryOfferPilotRepository:
     interview_reviews: List[InterviewReview] = field(default_factory=list)
     interview_schedules: List[InterviewSchedule] = field(default_factory=list)
     runtime_settings: dict[str, str] = field(default_factory=dict)
+    study_preferences: dict[str, StudyPreferences] = field(default_factory=dict)
+    study_plans: List[StudyPlan] = field(default_factory=list)
+    study_sessions: List[StudySession] = field(default_factory=list)
 
     # 获取 runtime setting。
     def get_runtime_setting(self, key: str) -> Optional[str]:
@@ -186,6 +293,13 @@ class InMemoryOfferPilotRepository:
     # 保存或更新 runtime setting。
     def set_runtime_setting(self, key: str, value: str) -> None:
         self.runtime_settings[key] = value
+
+    def list_runtime_settings(self, prefix: str = "") -> dict[str, str]:
+        return {
+            key: value
+            for key, value in self.runtime_settings.items()
+            if key.startswith(prefix)
+        }
 
     # 查询并格式化今天的秋招任务。
     def list_today_tasks(self, owner_id: str = "local_user") -> List[Task]:
@@ -206,6 +320,7 @@ class InMemoryOfferPilotRepository:
         self,
         company: str,
         role: str,
+        base_location: Optional[str] = None,
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         jd_keywords: Optional[List[str]] = None,
@@ -215,6 +330,7 @@ class InMemoryOfferPilotRepository:
             id=f"app_{len(self.applications) + 1}",
             company=company,
             role=role,
+            base_location=base_location,
             owner_id=owner_id,
             status=(
                 application_status_from_round(round_name)
@@ -234,10 +350,6 @@ class InMemoryOfferPilotRepository:
         company: Optional[str] = None,
         owner_id: str = "local_user",
     ) -> List[Application]:
-        self._claim_legacy_records_for_owner(
-            records=self.applications,
-            owner_id=owner_id,
-        )
         applications = [
             application
             for application in self.applications
@@ -261,6 +373,7 @@ class InMemoryOfferPilotRepository:
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
         role: Optional[str] = None,
+        base_location: Optional[str] = None,
         owner_id: str = "local_user",
     ) -> Optional[Application]:
         application = self._find_application(company, owner_id=owner_id)
@@ -275,6 +388,8 @@ class InMemoryOfferPilotRepository:
             application.round = round_name
         if role is not None:
             application.role = role
+        if base_location is not None:
+            application.base_location = base_location.strip() or None
         return application
 
     # 更新 application by id。
@@ -283,6 +398,7 @@ class InMemoryOfferPilotRepository:
         application_id: str,
         company: Optional[str] = None,
         role: Optional[str] = None,
+        base_location: Optional[str] = None,
         status: Optional[ApplicationStatus] = None,
         interview_time: Optional[str] = None,
         round_name: Optional[str] = None,
@@ -298,6 +414,8 @@ class InMemoryOfferPilotRepository:
             application.company = company
         if role is not None:
             application.role = role
+        if base_location is not None:
+            application.base_location = base_location.strip() or None
         if status is not None:
             application.status = status
         if interview_time is not None:
@@ -310,6 +428,48 @@ class InMemoryOfferPilotRepository:
             application.interview_time = None
             application.round = None
         return application
+
+    # 将误归属的投递记录迁移到明确的用户空间。
+    def reassign_application_owner(
+        self,
+        application_id: str,
+        from_owner_id: str,
+        to_owner_id: str,
+    ) -> bool:
+        application = self._find_application_by_id(
+            application_id,
+            owner_id=from_owner_id,
+        )
+        if application is None:
+            return False
+        application.owner_id = to_owner_id
+        for schedule in self.interview_schedules:
+            if schedule.application_id == application_id and schedule.owner_id == from_owner_id:
+                schedule.owner_id = to_owner_id
+        return True
+
+    # 按全局唯一 application id 查询当前归属。
+    def find_application_owner_id(self, application_id: str) -> Optional[str]:
+        for application in self.applications:
+            if application.id == application_id:
+                return application.owner_id
+        return None
+
+    # 通过旧版 Bitable 正向映射精确查找投递记录及其归属。
+    def find_application_by_bitable_record_id(
+        self,
+        table_id: str,
+        record_id: str,
+    ) -> Optional[tuple[str, str]]:
+        setting_prefix = f"feishu.offerpilot_bitable_record_id.{table_id}."
+        for key, value in self.runtime_settings.items():
+            if not key.startswith(setting_prefix) or value != record_id:
+                continue
+            application_id = key[len(setting_prefix) :]
+            owner_id = self.find_application_owner_id(application_id)
+            if owner_id:
+                return application_id, owner_id
+        return None
 
     # 创建 interview schedule。
     def create_interview_schedule(
@@ -324,6 +484,13 @@ class InMemoryOfferPilotRepository:
         raw_message: str = "",
         owner_id: str = "local_user",
     ) -> InterviewSchedule:
+        if application_id is not None and not any(
+            application.id == application_id and application.owner_id == owner_id
+            for application in self.applications
+        ):
+            raise ValueError(
+                "Interview schedule application does not belong to the current owner."
+            )
         schedule = InterviewSchedule(
             id=f"schedule_{len(self.interview_schedules) + 1}",
             owner_id=owner_id,
@@ -345,10 +512,6 @@ class InMemoryOfferPilotRepository:
         company: Optional[str] = None,
         owner_id: str = "local_user",
     ) -> List[InterviewSchedule]:
-        self._claim_legacy_records_for_owner(
-            records=self.interview_schedules,
-            owner_id=owner_id,
-        )
         schedules = [
             schedule
             for schedule in self.interview_schedules
@@ -462,6 +625,137 @@ class InMemoryOfferPilotRepository:
         self.interview_reviews.append(review)
         return review
 
+    def get_study_preferences(
+        self,
+        owner_id: str = "local_user",
+    ) -> Optional[StudyPreferences]:
+        return self.study_preferences.get(owner_id)
+
+    def save_study_preferences(
+        self,
+        preferences: StudyPreferences,
+    ) -> StudyPreferences:
+        self.study_preferences[preferences.owner_id] = preferences
+        return preferences
+
+    def create_study_plan(self, plan: StudyPlan) -> StudyPlan:
+        if self.get_study_plan(plan.id, owner_id=plan.owner_id) is not None:
+            raise ValueError(f"Study plan already exists: {plan.id}")
+        self.study_plans.append(plan)
+        return plan
+
+    def get_study_plan(
+        self,
+        plan_id: str,
+        owner_id: str = "local_user",
+    ) -> Optional[StudyPlan]:
+        return next(
+            (
+                plan
+                for plan in self.study_plans
+                if plan.id == plan_id and plan.owner_id == owner_id
+            ),
+            None,
+        )
+
+    def list_study_plans(
+        self,
+        owner_id: str = "local_user",
+        status: Optional[StudyPlanStatus] = None,
+    ) -> List[StudyPlan]:
+        return [
+            plan
+            for plan in self.study_plans
+            if plan.owner_id == owner_id and (status is None or plan.status == status)
+        ]
+
+    def update_study_plan(self, plan: StudyPlan) -> Optional[StudyPlan]:
+        for index, existing in enumerate(self.study_plans):
+            if existing.id == plan.id and existing.owner_id == plan.owner_id:
+                self.study_plans[index] = plan
+                return plan
+        return None
+
+    def delete_study_plan(
+        self,
+        plan_id: str,
+        owner_id: str = "local_user",
+    ) -> bool:
+        plan = self.get_study_plan(plan_id, owner_id=owner_id)
+        if plan is None:
+            return False
+        self.study_plans.remove(plan)
+        self.study_sessions = [
+            session
+            for session in self.study_sessions
+            if not (session.plan_id == plan_id and session.owner_id == owner_id)
+        ]
+        return True
+
+    def create_study_session(self, session: StudySession) -> StudySession:
+        if self.get_study_session(session.id, owner_id=session.owner_id) is not None:
+            raise ValueError(f"Study session already exists: {session.id}")
+        plan = self.get_study_plan(session.plan_id, owner_id=session.owner_id)
+        if plan is None:
+            raise ValueError(f"Study plan does not exist: {session.plan_id}")
+        self.study_sessions.append(session)
+        return session
+
+    def get_study_session(
+        self,
+        session_id: str,
+        owner_id: str = "local_user",
+    ) -> Optional[StudySession]:
+        return next(
+            (
+                session
+                for session in self.study_sessions
+                if session.id == session_id and session.owner_id == owner_id
+            ),
+            None,
+        )
+
+    def list_study_sessions(
+        self,
+        owner_id: str = "local_user",
+        plan_id: Optional[str] = None,
+        range_start: Optional[datetime] = None,
+        range_end: Optional[datetime] = None,
+        status: Optional[StudySessionStatus] = None,
+    ) -> List[StudySession]:
+        sessions = [
+            session
+            for session in self.study_sessions
+            if session.owner_id == owner_id
+            and (plan_id is None or session.plan_id == plan_id)
+            and (status is None or session.status == status)
+            and (range_start is None or session.end_at > range_start)
+            and (range_end is None or session.start_at < range_end)
+        ]
+        return sorted(sessions, key=lambda session: (session.start_at, session.id))
+
+    def update_study_session(self, session: StudySession) -> Optional[StudySession]:
+        if self.get_study_plan(session.plan_id, owner_id=session.owner_id) is None:
+            raise ValueError(
+                "Study session plan does not belong to the current owner."
+            )
+        for index, existing in enumerate(self.study_sessions):
+            if existing.id == session.id and existing.owner_id == session.owner_id:
+                self.study_sessions[index] = session
+                return session
+        return None
+
+    def delete_study_session(
+        self,
+        session_id: str,
+        owner_id: str = "local_user",
+    ) -> bool:
+        session = self.get_study_session(session_id, owner_id=owner_id)
+        if session is None:
+            return False
+        self.study_sessions.remove(session)
+        return True
+
     # 查找 task。
     def _find_task(
         self,
@@ -521,18 +815,6 @@ class InMemoryOfferPilotRepository:
                     priority=task.priority,
                 )
             )
-
-    # 把升级前默认归属 local_user 的旧记录迁到第一个真实访问用户名下。
-    @staticmethod
-    def _claim_legacy_records_for_owner(records: List, owner_id: str) -> None:
-        if owner_id == "local_user":
-            return
-        if any(getattr(record, "owner_id", "local_user") == owner_id for record in records):
-            return
-
-        for record in records:
-            if getattr(record, "owner_id", "local_user") == "local_user":
-                record.owner_id = owner_id
 
     # 处理 normalize 相关逻辑。
     @staticmethod

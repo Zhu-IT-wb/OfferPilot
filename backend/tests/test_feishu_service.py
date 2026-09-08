@@ -1,7 +1,7 @@
 import asyncio
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -164,6 +164,118 @@ def test_feishu_service_sends_interactive_message(monkeypatch) -> None:
     assert calls[1]["payload"]["msg_type"] == "interactive"
     assert json.loads(calls[1]["payload"]["content"]) == card
     assert calls[1]["payload"]["uuid"] == "3d0e89f8-0180-52bd-b975-7fd07845af58"
+
+
+def test_feishu_service_replies_to_message_with_stable_uuid(monkeypatch) -> None:
+    calls = []
+    service = FeishuMessageService(app_id="app_id", app_secret="app_secret")
+
+    async def fake_post_json(path, payload, headers=None, params=None):
+        calls.append(
+            {
+                "path": path,
+                "payload": payload,
+                "headers": headers,
+                "params": params,
+            }
+        )
+        if path == "/auth/v3/tenant_access_token/internal":
+            return {"code": 0, "tenant_access_token": "tenant_token", "expire": 7200}
+        return {"code": 0, "data": {"message_id": "om_reply"}}
+
+    monkeypatch.setattr(service, "_post_json", fake_post_json)
+
+    result = asyncio.run(
+        service.reply_text_message(
+            message_id="om/source",
+            text="任务已完成。",
+            idempotency_key="3d0e89f8-0180-52bd-b975-7fd07845af58",
+            reply_in_thread=True,
+        )
+    )
+
+    assert result.message_id == "om_reply"
+    assert calls[1] == {
+        "path": "/im/v1/messages/om%2Fsource/reply",
+        "payload": {
+            "msg_type": "text",
+            "content": json.dumps({"text": "任务已完成。"}, ensure_ascii=False),
+            "uuid": "3d0e89f8-0180-52bd-b975-7fd07845af58",
+            "reply_in_thread": True,
+        },
+        "headers": {"Authorization": "Bearer tenant_token"},
+        "params": None,
+    }
+
+
+def test_feishu_service_replies_with_interactive_card(monkeypatch) -> None:
+    calls = []
+    service = FeishuMessageService(app_id="app_id", app_secret="app_secret")
+    card = {"elements": [{"tag": "markdown", "content": "**复习计划**"}]}
+
+    async def fake_post_json(path, payload, headers=None, params=None):
+        calls.append({"path": path, "payload": payload})
+        if path == "/auth/v3/tenant_access_token/internal":
+            return {"code": 0, "tenant_access_token": "tenant_token", "expire": 7200}
+        return {"code": 0, "data": {"message_id": "om_card_reply"}}
+
+    monkeypatch.setattr(service, "_post_json", fake_post_json)
+
+    result = asyncio.run(
+        service.reply_interactive_message(
+            message_id="om_source",
+            card=card,
+            idempotency_key="bca12f29-fb35-54cf-a0ef-930c5b1657f2",
+        )
+    )
+
+    assert result.message_id == "om_card_reply"
+    assert calls[1]["path"] == "/im/v1/messages/om_source/reply"
+    assert calls[1]["payload"]["msg_type"] == "interactive"
+    assert json.loads(calls[1]["payload"]["content"]) == card
+    assert calls[1]["payload"]["uuid"] == "bca12f29-fb35-54cf-a0ef-930c5b1657f2"
+
+
+def test_feishu_service_updates_interactive_message(monkeypatch) -> None:
+    calls = []
+    service = FeishuMessageService(app_id="app_id", app_secret="app_secret")
+    card = {"elements": [{"tag": "markdown", "content": "处理完成"}]}
+
+    async def fake_post_json(path, payload, headers=None, params=None):
+        if path == "/auth/v3/tenant_access_token/internal":
+            return {"code": 0, "tenant_access_token": "tenant_token", "expire": 7200}
+        raise AssertionError(f"unexpected POST path: {path}")
+
+    async def fake_patch_json(path, payload, headers=None, params=None):
+        calls.append(
+            {
+                "path": path,
+                "payload": payload,
+                "headers": headers,
+                "params": params,
+            }
+        )
+        return {"code": 0, "data": {"message_id": "om_progress"}}
+
+    monkeypatch.setattr(service, "_post_json", fake_post_json)
+    monkeypatch.setattr(service, "_patch_json", fake_patch_json)
+
+    result = asyncio.run(
+        service.update_interactive_message(
+            message_id="om/progress",
+            card=card,
+        )
+    )
+
+    assert result.message_id == "om_progress"
+    assert calls == [
+        {
+            "path": "/im/v1/messages/om%2Fprogress",
+            "payload": {"content": json.dumps(card, ensure_ascii=False)},
+            "headers": {"Authorization": "Bearer tenant_token"},
+            "params": None,
+        }
+    ]
 
 
 def test_feishu_service_raises_for_feishu_error_code() -> None:
@@ -575,7 +687,12 @@ def test_feishu_bitable_service_creates_app_table_record_and_updates_record(monk
         field["field_name"] != "状态值"
         for field in calls[2]["payload"]["table"]["fields"]
     )
-    status_field = calls[2]["payload"]["table"]["fields"][4]
+    assert {"field_name": "工作地点", "type": 1} in calls[2]["payload"]["table"]["fields"]
+    status_field = next(
+        field
+        for field in calls[2]["payload"]["table"]["fields"]
+        if field["field_name"] == "投递状态"
+    )
     assert status_field["field_name"] == "投递状态"
     assert status_field["type"] == 3
     assert [option["name"] for option in status_field["property"]["options"][:4]] == [
@@ -585,7 +702,12 @@ def test_feishu_bitable_service_creates_app_table_record_and_updates_record(monk
         "笔试通过",
     ]
     assert all("color" in option for option in status_field["property"]["options"])
-    assert calls[2]["payload"]["table"]["fields"][7] == {
+    datetime_field = next(
+        field
+        for field in calls[2]["payload"]["table"]["fields"]
+        if field["field_name"] == "面试开始时间"
+    )
+    assert datetime_field == {
         "field_name": "面试开始时间",
         "type": 5,
     }
@@ -679,7 +801,7 @@ def test_feishu_bitable_service_migrates_legacy_application_table_in_place(monke
 
     assert result == {
         "renamed_fields": 1,
-        "created_fields": 1,
+        "created_fields": 2,
         "deleted_fields": 1,
         "updated_records": 1,
     }
@@ -691,7 +813,11 @@ def test_feishu_bitable_service_migrates_legacy_application_table_in_place(monke
         {
             "path": "/bitable/v1/apps/bascn_test/tables/tbl_test/fields",
             "payload": {"field_name": "OfferPilot记录ID", "type": 1},
-        }
+        },
+        {
+            "path": "/bitable/v1/apps/bascn_test/tables/tbl_test/fields",
+            "payload": {"field_name": "工作地点", "type": 1},
+        },
     ]
     assert put_calls[1]["payload"] == {
         "fields": {
@@ -705,6 +831,55 @@ def test_feishu_bitable_service_migrates_legacy_application_table_in_place(monke
     ]
 
 
+def test_feishu_calendar_service_updates_and_deletes_user_study_event(monkeypatch) -> None:
+    service = FeishuCalendarService(
+        app_id="app_id",
+        app_secret="app_secret",
+        timezone="Asia/Shanghai",
+    )
+    patch_calls = []
+    delete_calls = []
+
+    def fake_patch(path, payload, headers=None, params=None):
+        patch_calls.append((path, payload, headers, params))
+        return {"code": 0, "data": {"event": {"event_id": "evt_study_1"}}}
+
+    def fake_delete(path, headers=None, params=None):
+        delete_calls.append((path, headers, params))
+        return {"code": 0}
+
+    monkeypatch.setattr(service, "_patch_json_sync", fake_patch)
+    monkeypatch.setattr(service, "_delete_json_sync", fake_delete)
+    start_at = datetime(2026, 9, 3, 19, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    updated = asyncio.run(
+        service.update_user_study_event(
+            user_access_token="user-access",
+            event_id="evt_study_1",
+            topic="系统设计",
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            description="更新后的复习安排",
+        )
+    )
+    deleted = asyncio.run(
+        service.delete_user_calendar_event(
+            user_access_token="user-access",
+            event_id="evt_study_1",
+        )
+    )
+
+    assert updated.event_id == deleted.event_id == "evt_study_1"
+    assert patch_calls[0][0] == "/calendar/v4/calendars/primary/events/evt_study_1"
+    assert patch_calls[0][2] == {"Authorization": "Bearer user-access"}
+    assert patch_calls[0][1]["summary"] == "OfferPilot 复习：系统设计"
+    assert delete_calls == [
+        (
+            "/calendar/v4/calendars/primary/events/evt_study_1",
+            {"Authorization": "Bearer user-access"},
+            None,
+        )
+    ]
 def test_feishu_bitable_service_gets_record(monkeypatch) -> None:
     calls = []
     service = FeishuBitableService(

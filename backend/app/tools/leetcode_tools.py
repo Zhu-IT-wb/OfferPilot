@@ -10,11 +10,11 @@ from app.models.leetcode import (
     LeetCodeSubscription,
 )
 from app.repositories.leetcode_repository import LeetCodeRepository
-from app.schemas.agent import AgentActionName
 from app.schemas.tool import ToolResult
 from app.services.leetcode_messages import format_leetcode_recommendations
 from app.services.leetcode_recommendation import LeetCodeRecommendationWorkflow
 from app.tools.registry import ToolRegistry
+from app.tools.tool_names import AgentActionName
 
 
 def register_leetcode_tools(
@@ -183,6 +183,25 @@ def get_today_recommendations(
         owner_id=owner_id,
         today=today_in_shanghai(),
     )
+
+
+def list_today_recommendations(
+    repository: LeetCodeRepository,
+    owner_id: str,
+) -> List[LeetCodeRecommendation]:
+    assignments = repository.list_assignments(
+        owner_id=owner_id,
+        assigned_on=today_in_shanghai(),
+    )
+    problem_by_id = {problem.id: problem for problem in repository.list_problems()}
+    return [
+        LeetCodeRecommendation(
+            assignment=assignment,
+            problem=problem_by_id[assignment.problem_id],
+        )
+        for assignment in assignments
+        if assignment.problem_id in problem_by_id
+    ]
 
 
 def recommendations_to_dict(

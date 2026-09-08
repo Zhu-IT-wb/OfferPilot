@@ -1,15 +1,22 @@
 import asyncio
-import json
+import os
 import threading
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
+import pytest
+from mcp import ClientSession
+from mcp.types import CallToolResult
 from qdrant_client import models
 
+from app.mcp import client as mcp_client_module
 from app.core.config import Settings
-from app.agents.conversation import InMemoryConversationStore
-from app.agents.orchestrator import AgentOrchestrator
-from app.agents.planner import AgentPlanner
-from app.mcp.client import PersistentMCPClient
+from app.mcp.client import (
+    MCPClientError,
+    MCPToolError,
+    PersistentMCPClient,
+    _structured_result,
+)
 from app.models.interview_knowledge import (
     KnowledgeDifficulty,
     KnowledgeQuestion,
@@ -17,7 +24,6 @@ from app.models.interview_knowledge import (
     KnowledgeRubricPoint,
 )
 from app.models.project_training import ProjectEvidence, ProjectProfile
-from app.rag.answering import GroundedAnswer, GroundedAnswerComposer
 from app.rag.evaluation import RetrievalEvaluationCase, evaluate_retrieval
 from app.rag.models import IndexReport, RAGDocument, RetrievalHit
 from app.rag.qdrant_store import QdrantHybridStore
@@ -28,11 +34,8 @@ from app.rag.source_loader import (
     load_interview_documents,
     load_project_documents,
 )
-from app.schemas.agent import AgentActionName
-from app.schemas.tool import ToolResult
-from app.services.llm_service import LLMResult
 from app.tools.mcp_rag_tools import CareerKnowledgeToolAdapter
-from app.tools.registry import ToolRegistry
+from app.tools.tool_names import AgentActionName
 
 
 class _KnowledgeRepository:
@@ -218,6 +221,25 @@ def test_access_filter_never_grants_private_domain_without_actor():
     assert condition.match.value == "__access_denied__"
 
 
+def test_qdrant_point_identity_is_scoped_per_owner_collection_partition():
+    evidence_id = "project:e1"
+
+    owner_a_point = QdrantHybridStore._point_id(
+        "owner:feishu:ou_a:project_evidence",
+        evidence_id,
+    )
+    owner_b_point = QdrantHybridStore._point_id(
+        "owner:feishu:ou_b:project_evidence",
+        evidence_id,
+    )
+
+    assert owner_a_point != owner_b_point
+    assert owner_a_point == QdrantHybridStore._point_id(
+        "owner:feishu:ou_a:project_evidence",
+        evidence_id,
+    )
+
+
 def test_mcp_adapter_injects_owner_and_returns_traceable_hits():
     class FakeClient:
         def __init__(self):
@@ -239,12 +261,8 @@ def test_mcp_adapter_injects_owner_and_returns_traceable_hits():
                 ]
             }
 
-    class NoSynthesis:
-        async def compose(self, query, hits, answer_kind="knowledge"):
-            return None
-
     client = FakeClient()
-    adapter = CareerKnowledgeToolAdapter(client=client, answer_composer=NoSynthesis())
+    adapter = CareerKnowledgeToolAdapter(client=client)
     result = asyncio.run(
         adapter.search_project_evidence(
             {
@@ -259,177 +277,6 @@ def test_mcp_adapter_injects_owner_and_returns_traceable_hits():
     assert result.data["evidence_ids"] == ["project:e1"]
     assert result.data["citations"][0]["evidence_id"] == "project:e1"
     assert "project:e1" not in result.message
-
-
-def test_grounded_answer_composer_uses_interview_style_and_compact_citations():
-    class FakeLLMService:
-        api_key = "configured"
-
-        def __init__(self):
-            self.call = None
-
-        async def generate_text(self, **kwargs):
-            self.call = kwargs
-            return LLMResult(
-                provider="fake",
-                model="fake",
-                content=json.dumps(
-                    {
-                        "answer": (
-                            "缓存穿透就是反复查询不存在的数据，导致请求持续访问数据库。\n\n"
-                            "常见方案包括参数校验、缓存空值和布隆过滤器。"
-                        ),
-                        "citations": [1],
-                    },
-                    ensure_ascii=False,
-                ),
-                raw_response={},
-            )
-
-    llm = FakeLLMService()
-    composer = GroundedAnswerComposer(llm_service=llm)
-    answer = asyncio.run(
-        composer.compose(
-            query="什么是缓存穿透？",
-            hits=[
-                {
-                    "evidence_id": "knowledge:knowledge_redis_cache_001",
-                    "title": "Redis 缓存穿透",
-                    "text": "缓存穿透是查询数据库中也不存在的数据。",
-                }
-            ],
-            answer_kind="knowledge",
-        )
-    )
-
-    assert answer == GroundedAnswer(
-        text=(
-            "缓存穿透就是反复查询不存在的数据，导致请求持续访问数据库。\n\n"
-            "常见方案包括参数校验、缓存空值和布隆过滤器。"
-        ),
-        citation_indexes=[1],
-    )
-    assert "knowledge:knowledge_redis_cache_001" not in llm.call["prompt"]
-    assert "interview knowledge question" in llm.call["system_prompt"]
-    assert llm.call["temperature"] == 0.2
-    assert llm.call["response_format"] == {"type": "json_object"}
-
-
-def test_mcp_adapter_renders_friendly_answer_and_keeps_traceability_in_data():
-    class FakeClient:
-        async def call_tool(self, name, arguments=None):
-            assert name == "search_knowledge"
-            return {
-                "hits": [
-                    {
-                        "evidence_id": "knowledge:knowledge_redis_cache_001",
-                        "title": "Redis：缓存穿透",
-                        "text": "缓存穿透是查询不存在的数据。",
-                        "source_path": "knowledge/redis.md",
-                    }
-                ]
-            }
-
-    class FriendlySynthesis:
-        async def compose(self, query, hits, answer_kind="knowledge"):
-            assert answer_kind == "knowledge"
-            return GroundedAnswer(
-                text="缓存穿透就是反复查询不存在的数据。",
-                citation_indexes=[1],
-            )
-
-    adapter = CareerKnowledgeToolAdapter(
-        client=FakeClient(),
-        answer_composer=FriendlySynthesis(),
-    )
-    result = asyncio.run(
-        adapter.search_knowledge(
-            {
-                "query": "什么是缓存穿透？",
-                "owner_id": "feishu:ou_a",
-            }
-        )
-    )
-
-    assert "参考依据：" in result.message
-    assert "[1] Redis：缓存穿透" in result.message
-    assert "knowledge:knowledge_redis_cache_001" not in result.message
-    assert result.data["evidence_ids"] == [
-        "knowledge:knowledge_redis_cache_001"
-    ]
-    assert result.data["citations"] == [
-        {
-            "index": 1,
-            "evidence_id": "knowledge:knowledge_redis_cache_001",
-            "title": "Redis：缓存穿透",
-            "source_path": "knowledge/redis.md",
-            "source_url": None,
-            "start_line": None,
-            "end_line": None,
-        }
-    ]
-
-
-def test_agent_planner_executes_async_grounded_retrieval_tool():
-    class FakeLLMService:
-        async def generate_text(self, **kwargs):
-            return LLMResult(
-                provider="fake",
-                model="fake",
-                content=json.dumps(
-                    {
-                        "intent": "ask_help",
-                        "confidence": 0.93,
-                        "action": "search_project_evidence",
-                        "reply": "Searching project evidence.",
-                        "need_confirmation": False,
-                        "slots": {
-                            "query": "How is memory persisted?",
-                            "owner_id": "feishu:ou_attacker_selected",
-                        },
-                        "missing_slots": [],
-                        "steps": [],
-                        "reason": "project implementation question",
-                    }
-                ),
-                raw_response={},
-            )
-
-    async def search(arguments):
-        assert arguments["owner_id"] == "local_user"
-        return ToolResult(
-            tool_name="search_project_evidence",
-            success=True,
-            message="SQLite events [project:e1]",
-            data={"evidence_ids": ["project:e1"], "grounded": True},
-        )
-
-    registry = ToolRegistry()
-    registry.register(
-        "search_project_evidence",
-        search,
-        optional_slots=["query"],
-    )
-    orchestrator = AgentOrchestrator(
-        planner=AgentPlanner(
-            llm_service=FakeLLMService(),
-            llm_planner_enabled=True,
-        ),
-        tool_registry=registry,
-        conversation_store=InMemoryConversationStore(),
-    )
-
-    response = asyncio.run(
-        orchestrator.handle_message(
-            "How is memory persisted?",
-            user_id="local_user",
-            source="api",
-        )
-    )
-
-    assert response.action == AgentActionName.SEARCH_PROJECT_EVIDENCE
-    assert response.tool_result is not None
-    assert response.tool_result.data["evidence_ids"] == ["project:e1"]
 
 
 def test_retrieval_evaluation_reports_recall_mrr_and_latency():
@@ -478,3 +325,118 @@ def test_persistent_mcp_client_discovers_read_only_tools():
         "search_project_evidence",
         "read_evidence",
     }
+
+
+@pytest.mark.parametrize(
+    ("structured", "text"),
+    [([], ""), ("not an object", ""), (None, "[]"), (None, "invalid JSON")],
+)
+def test_mcp_rejects_invalid_results_instead_of_reporting_empty_hits(structured, text):
+    response = SimpleNamespace(
+        structuredContent=structured,
+        content=[SimpleNamespace(text=text)],
+    )
+    with pytest.raises(MCPToolError):
+        _structured_result(response)
+
+
+@pytest.mark.parametrize("structured", [True, False])
+def test_mcp_preserves_valid_object_results(structured):
+    expected = {"hits": [], "evidence_ids": []}
+    response = SimpleNamespace(
+        structuredContent=expected if structured else None,
+        content=[SimpleNamespace(text='{"hits": [], "evidence_ids": []}')],
+    )
+    assert _structured_result(response) == expected
+
+
+@pytest.mark.parametrize(
+    ("failure", "error_type"),
+    [
+        ("tool", MCPToolError),
+        ("schema", MCPToolError),
+        ("validation", MCPToolError),
+        ("transport", MCPClientError),
+    ],
+)
+def test_mcp_distinguishes_tool_failure_from_transport_and_keeps_session(
+    monkeypatch, failure, error_type,
+):
+    @asynccontextmanager
+    async def fake_stdio(parameters):
+        yield None, None
+
+    class FakeSession:
+        _validate_tool_result = ClientSession._validate_tool_result
+
+        def __init__(self, *args):
+            self.calls = 0
+            self._tool_output_schemas = {
+                "search_knowledge": {
+                    "type": "object",
+                    "properties": {"hits": {"type": "array"}},
+                    "required": ["hits"],
+                }
+            }
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def initialize(self):
+            pass
+
+        async def call_tool(self, name, arguments):
+            self.calls += 1
+            if self.calls == 1:
+                if failure == "transport":
+                    raise ConnectionError("connection interrupted")
+                if failure == "schema":
+                    await self._validate_tool_result(
+                        name,
+                        CallToolResult(content=[], structuredContent={"hits": "invalid"}),
+                    )
+                if failure == "validation":
+                    CallToolResult.model_validate({"content": "invalid"})
+                return SimpleNamespace(
+                    isError=True,
+                    structuredContent=None,
+                    content=[SimpleNamespace(text="domains parameter rejected")],
+                )
+            return SimpleNamespace(
+                isError=False,
+                structuredContent={"hits": []},
+                content=[],
+            )
+
+    monkeypatch.setattr(mcp_client_module, "stdio_client", fake_stdio)
+    monkeypatch.setattr(mcp_client_module, "ClientSession", FakeSession)
+    client = PersistentMCPClient(Settings(storage_backend="memory"))
+
+    async def exercise():
+        try:
+            with pytest.raises(error_type) as caught:
+                await client.call_tool("search_knowledge", {"query": "index"})
+            assert type(caught.value) is error_type
+            assert await client.call_tool("search_knowledge", {"query": "index"}) == {
+                "hits": [],
+            }
+        finally:
+            await client.close()
+
+    asyncio.run(exercise())
+
+
+def test_mcp_child_uses_explicit_settings_without_loading_main_env(monkeypatch):
+    monkeypatch.setenv("OFFERPILOT_ENV_FILE", "private-application.env")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "must-not-reach-child")
+    environment = PersistentMCPClient(
+        Settings(storage_backend="memory", rag_qdrant_path=":memory:")
+    )._server_environment()
+
+    assert environment["OFFERPILOT_ENV_FILE"] == os.devnull
+    assert environment["OFFERPILOT_STORAGE_BACKEND"] == "memory"
+    assert environment["OFFERPILOT_RAG_QDRANT_PATH"] == ":memory:"
+    assert "FEISHU_APP_SECRET" not in environment

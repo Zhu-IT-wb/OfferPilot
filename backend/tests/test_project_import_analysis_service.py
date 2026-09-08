@@ -37,6 +37,7 @@ from app.services.project_import import (
 )
 from app.services.tool_calling_model import (
     DeepSeekToolCallingModel,
+    OpenAIToolCallingModel,
 )
 from app.core.config import Settings
 
@@ -644,6 +645,7 @@ def test_production_dependencies_use_repository_analysis_service() -> None:
     services = build_project_discovery_services(
         Settings(
             storage_backend="memory",
+            llm_provider="deepseek",
             llm_api_key="test-key",
             llm_model="deepseek-chat",
             project_analysis_llm_timeout_seconds=180,
@@ -704,3 +706,22 @@ def test_production_dependencies_use_repository_analysis_service() -> None:
         "clone_timeout_seconds": 120,
         "max_workspace_mb": 100,
     }
+
+
+def test_project_analysis_dependencies_select_openai_adapter() -> None:
+    services = build_project_discovery_services(
+        Settings(
+            storage_backend="memory",
+            llm_provider="openai",
+            llm_api_key="openai-key",
+            llm_base_url="https://api.openai.com/v1",
+            llm_model="gpt-4.1-mini",
+        ),
+        InMemoryProjectTrainingRepository(),
+    )
+
+    model = services.workflow.analysis_service._agent._model
+
+    assert isinstance(model, OpenAIToolCallingModel)
+    assert model.provider == "openai"
+    assert model.base_url == "https://api.openai.com/v1"

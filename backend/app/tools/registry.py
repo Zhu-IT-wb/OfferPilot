@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 from typing import Awaitable, Callable, Dict, List, Optional, Union
 
@@ -26,6 +27,8 @@ class ToolRegistry:
         handler: ToolHandler,
         description: str = "",
         mutating: bool = False,
+        effect: Optional[str] = None,
+        approval: Optional[str] = None,
         required_slots: Optional[List[str]] = None,
         optional_slots: Optional[List[str]] = None,
         examples: Optional[List[str]] = None,
@@ -35,6 +38,8 @@ class ToolRegistry:
             name=tool_name,
             description=description,
             mutating=mutating,
+            effect=effect,
+            approval=approval,
             required_slots=required_slots or [],
             optional_slots=optional_slots or [],
             examples=examples or [],
@@ -72,7 +77,9 @@ class ToolRegistry:
         handler = self._handlers.get(tool_name)
         if handler is None:
             raise ToolNotFoundError(f"Tool is not registered: {tool_name}")
-        result = handler(arguments)
+        if inspect.iscoroutinefunction(handler):
+            return await handler(arguments)
+        result = await asyncio.to_thread(handler, arguments)
         if inspect.isawaitable(result):
             return await result
         return result

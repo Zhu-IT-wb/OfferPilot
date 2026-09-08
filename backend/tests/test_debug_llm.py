@@ -2,8 +2,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routes import debug
-from app.main import app
+from app.core.config import Settings
+from app.main import create_app
 from app.services import llm_service
+
+
+def _debug_client() -> TestClient:
+    return TestClient(create_app(Settings(debug_routes_enabled=True)))
 
 
 def test_debug_llm_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -14,7 +19,7 @@ def test_debug_llm_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
             )
 
     monkeypatch.setattr(debug, "LLMService", FakeLLMService)
-    client = TestClient(app)
+    client = _debug_client()
 
     response = client.post("/api/debug/llm", json={"prompt": "hello"})
 
@@ -39,7 +44,7 @@ def test_debug_llm_returns_model_content(monkeypatch: pytest.MonkeyPatch) -> Non
         )
 
     monkeypatch.setattr(llm_service.LLMService, "generate_text", fake_generate_text)
-    client = TestClient(app)
+    client = _debug_client()
 
     response = client.post("/api/debug/llm", json={"prompt": "今日任务是什么？"})
 
