@@ -1,9 +1,11 @@
 import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from threading import Event
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routes import feishu
@@ -22,7 +24,12 @@ from app.schemas.agent import (
 )
 from app.services.feishu_service import FeishuBitableRecordResult
 from app.services.feishu_service import FeishuMessageResult, FeishuRequestError
-from app.services.agent_runtime_store import InMemoryAgentRuntimeStore
+from app.services.agent_runtime_store import (
+    InMemoryAgentRuntimeStore,
+    SQLiteAgentRuntimeStore,
+)
+from app.services.bitable_sync_service import remember_bitable_record_mapping
+from app.services.bitable_tenancy import save_owner_bitable_resource
 from app.services.leetcode_catalog import load_hot100_snapshot
 from app.services.leetcode_recommendation import LeetCodeRecommendationWorkflow
 
@@ -56,12 +63,15 @@ def _agent_run_response(
 
 
 class FakeAgentRuntime:
-    def __init__(self, response=None, state=None, replay_response=None) -> None:
+    def __init__(
+        self, response=None, state=None, replay_response=None, runtime_store=None
+    ) -> None:
         self.response = response or _agent_run_response()
         self.state = state
         self.replay_response = replay_response
         self.calls = []
         self.replay_calls = []
+        self.runtime_store = runtime_store or InMemoryAgentRuntimeStore()
 
     @staticmethod
     def thread_id_for(user_id, source, conversation_scope=None):
@@ -760,8 +770,11 @@ def test_feishu_project_candidates_are_rendered_from_artifact_data() -> None:
     assert actions[0]["url"].endswith("start_project_id=project%2Forder")
 
 
-def test_feishu_duplicate_initial_replays_original_receipt_during_and_after_confirmation(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "current_kind", ["executing", "completed", "replaced", "new_run", "missing"]
+)
+def test_feishu_old_waiting_receipt_never_redisplays_resolved_or_replaced_confirmation(
+    monkeypatch, current_kind,
 ) -> None:
     _disable_feishu_token(monkeypatch)
     interaction = AgentInteraction(
@@ -775,18 +788,33 @@ def test_feishu_duplicate_initial_replays_original_receipt_during_and_after_conf
         status=AgentRunStatus.WAITING_FOR_INPUT,
         interaction=interaction,
     )
-    runtime = FakeAgentRuntime(
-        state=_agent_run_response(
-            reply="确认正在执行。",
-            status=AgentRunStatus.PARTIAL,
-        ),
-        replay_response=original_response,
-    )
+    current = None
+    if current_kind == "executing":
+        current = _agent_run_response(
+            reply="确认正在执行。", status=AgentRunStatus.PARTIAL
+        )
+    elif current_kind == "completed":
+        current = _agent_run_response(reply="投递记录已创建。")
+    elif current_kind == "replaced":
+        current = _agent_run_response(
+            reply="请确认更新后的工作地点。",
+            status=AgentRunStatus.WAITING_FOR_INPUT,
+            interaction=interaction.model_copy(update={"id": "interaction-new"}),
+        )
+    elif current_kind == "new_run":
+        current = original_response.model_copy(update={"run_id": "run_new"})
+    runtime = FakeAgentRuntime(state=current, replay_response=original_response)
     message_calls = []
 
     class FakeFeishuMessageService:
         def is_configured(self):
             return True
+
+        async def reply_text_message(self, **kwargs):
+            message_calls.append(("text", kwargs))
+            return FeishuMessageResult(
+                message_id="om-confirm-final", raw_response={"code": 0}
+            )
 
         async def reply_interactive_message(self, **kwargs):
             message_calls.append(("progress", kwargs))
@@ -818,45 +846,24 @@ def test_feishu_duplicate_initial_replays_original_receipt_during_and_after_conf
         },
     }
 
-    during_confirmation = client.post("/api/feishu/events", json=payload)
-    runtime.state = _agent_run_response(reply="投递记录已创建。")
-    after_confirmation = client.post("/api/feishu/events", json=payload)
+    first_retry = client.post("/api/feishu/events", json=payload)
+    later_retry = client.post("/api/feishu/events", json=payload)
 
-    assert during_confirmation.status_code == 200
-    assert after_confirmation.status_code == 200
-    assert during_confirmation.json()["agent_response"]["status"] == "waiting_for_input"
-    assert after_confirmation.json()["agent_response"] == during_confirmation.json()[
-        "agent_response"
-    ]
-    assert runtime.calls == []
+    assert first_retry.status_code == 200
+    assert later_retry.status_code == 200
+    assert first_retry.json()["reply_sent"] is False
+    assert later_retry.json()["reply_sent"] is False
+    assert not first_retry.json().get("agent_response", {}).get("interaction")
+    assert message_calls == []
+    assert all(kind == "get_state" for kind, _ in runtime.calls)
     assert runtime.replay_calls == [
         {
             "thread_id": "thread:feishu:tenant-a:chat-test:ou-test",
             "user_id": "ou-test",
             "source": "feishu",
             "request_id": "event-create-initial",
-        },
-        {
-            "thread_id": "thread:feishu:tenant-a:chat-test:ou-test",
-            "user_id": "ou-test",
-            "source": "feishu",
-            "request_id": "event-create-initial",
-        },
+        }
     ]
-    assert [kind for kind, _ in message_calls] == [
-        "progress",
-        "update",
-        "progress",
-        "update",
-    ]
-    progress_uuids = [
-        kwargs["idempotency_key"]
-        for kind, kwargs in message_calls
-        if kind == "progress"
-    ]
-    assert len(set(progress_uuids)) == 1
-    updated_cards = [kwargs["card"] for kind, kwargs in message_calls if kind == "update"]
-    assert all(interaction.prompt in str(card) for card in updated_cards)
 
 
 def test_feishu_duplicate_confirmation_replays_success_without_conflict_card(
@@ -878,6 +885,12 @@ def test_feishu_duplicate_confirmation_replays_success_without_conflict_card(
     class FakeFeishuMessageService:
         def is_configured(self):
             return True
+
+        async def reply_text_message(self, **kwargs):
+            message_calls.append(("text", kwargs))
+            return FeishuMessageResult(
+                message_id="om-confirm-final", raw_response={"code": 0}
+            )
 
         async def reply_interactive_message(self, **kwargs):
             message_calls.append(("progress", kwargs))
@@ -917,26 +930,441 @@ def test_feishu_duplicate_confirmation_replays_success_without_conflict_card(
     assert first_retry.json()["agent_response"]["status"] == "completed"
     assert later_retry.json()["agent_response"] == first_retry.json()["agent_response"]
     assert runtime.calls == []
-    assert len(runtime.replay_calls) == 2
-    assert [kind for kind, _ in message_calls] == [
-        "progress",
-        "update",
-        "progress",
-        "update",
-    ]
-    progress_uuids = [
-        kwargs["idempotency_key"]
-        for kind, kwargs in message_calls
-        if kind == "progress"
-    ]
-    assert len(set(progress_uuids)) == 1
-    updated_text = [
-        str(kwargs["card"])
-        for kind, kwargs in message_calls
-        if kind == "update"
-    ]
-    assert all("已记录并同步到多维表格" in text for text in updated_text)
-    assert all("确认已失效" not in text for text in updated_text)
+    assert len(runtime.replay_calls) == 1
+    assert [kind for kind, _ in message_calls] == ["text"]
+    assert message_calls[0][1]["idempotency_key"] == feishu._stable_reply_uuid(
+        "event-confirm", {}, "text"
+    )
+    assert "已记录并同步到多维表格" in message_calls[0][1]["text"]
+    assert "确认已失效" not in message_calls[0][1]["text"]
+
+
+def _text_delivery_payload(event_id="event-delivery"):
+    return {
+        "header": {
+            "event_type": "im.message.receive_v1",
+            "event_id": event_id,
+            "tenant_key": "tenant-a",
+        },
+        "event": {
+            "sender": {"sender_id": {"open_id": "ou-test"}},
+            "message": {
+                "chat_type": "p2p",
+                "chat_id": "chat-test",
+                "message_id": "om-source",
+                "message_type": "text",
+                "content": {"text": "记录我的投递"},
+            },
+        },
+    }
+
+
+def test_feishu_legacy_waiting_receipt_can_deliver_the_current_confirmation_once(
+    monkeypatch,
+) -> None:
+    _disable_feishu_token(monkeypatch)
+    interaction = AgentInteraction(
+        id="interaction-still-current",
+        type=AgentInteractionType.APPROVAL,
+        prompt="请确认新增投递记录。",
+        allowed_actions=[AgentResumeDecision.APPROVE, AgentResumeDecision.CANCEL],
+    )
+    pending = _agent_run_response(
+        reply=interaction.prompt,
+        status=AgentRunStatus.WAITING_FOR_INPUT,
+        interaction=interaction,
+    )
+    runtime = FakeAgentRuntime(state=pending, replay_response=pending)
+    sent = []
+
+    class FakeFeishuMessageService:
+        def is_configured(self):
+            return True
+
+        async def reply_text_message(self, **kwargs):
+            sent.append(kwargs)
+            return FeishuMessageResult(message_id="om-confirm", raw_response={"code": 0})
+
+    monkeypatch.setattr(feishu, "FeishuMessageService", FakeFeishuMessageService)
+    client = TestClient(_app_with_runtime(runtime))
+    payload = _text_delivery_payload("event-legacy-current")
+    first = client.post("/api/feishu/events", json=payload)
+    duplicate = client.post("/api/feishu/events", json=payload)
+
+    assert first.status_code == 200
+    assert first.json()["agent_response"]["interaction"]["id"] == interaction.id
+    assert first.json()["reply_sent"] is True
+    assert duplicate.json() == first.json()
+    assert len(sent) == 1
+    assert sent[0]["text"] == interaction.prompt
+    assert all(kind == "get_state" for kind, _ in runtime.calls)
+    assert len(runtime.replay_calls) == 1
+
+
+def test_feishu_delivered_approval_stays_deduplicated_after_restart(
+    monkeypatch, tmp_path,
+) -> None:
+    _disable_feishu_token(monkeypatch)
+    database_path = str(tmp_path / "delivery.db")
+    interaction = AgentInteraction(
+        id="interaction-delivered",
+        type=AgentInteractionType.APPROVAL,
+        prompt="请确认新增联想投递记录。",
+        allowed_actions=[AgentResumeDecision.APPROVE, AgentResumeDecision.CANCEL],
+    )
+    pending_response = _agent_run_response(
+        reply=interaction.prompt,
+        status=AgentRunStatus.WAITING_FOR_INPUT,
+        interaction=interaction,
+    )
+    runtime = FakeAgentRuntime(
+        response=pending_response,
+        runtime_store=SQLiteAgentRuntimeStore(database_path),
+    )
+    message_calls = []
+
+    class FakeFeishuMessageService:
+        def is_configured(self):
+            return True
+
+        async def reply_interactive_message(self, **kwargs):
+            message_calls.append(("progress", kwargs))
+            return FeishuMessageResult(message_id="om-progress", raw_response={"code": 0})
+
+        async def update_interactive_message(self, **kwargs):
+            message_calls.append(("update", kwargs))
+            return FeishuMessageResult(message_id="om-progress", raw_response={"code": 0})
+
+    monkeypatch.setattr(feishu, "FeishuMessageService", FakeFeishuMessageService)
+    payload = _text_delivery_payload("event-approved-before-restart")
+    first = TestClient(_app_with_runtime(runtime)).post("/api/feishu/events", json=payload)
+    assert first.status_code == 200
+    assert first.json()["agent_response"]["status"] == "waiting_for_input"
+
+    restarted_runtime = FakeAgentRuntime(
+        state=_agent_run_response(reply="联想投递已保存。"),
+        replay_response=pending_response,
+        runtime_store=SQLiteAgentRuntimeStore(database_path),
+    )
+    duplicate = TestClient(_app_with_runtime(restarted_runtime)).post(
+        "/api/feishu/events", json=payload,
+    )
+
+    assert duplicate.status_code == 200
+    assert duplicate.json() == first.json()
+    assert [kind for kind, _ in message_calls] == ["progress", "update"]
+    assert restarted_runtime.calls == []
+    assert restarted_runtime.replay_calls == []
+
+
+def test_feishu_recovered_confirmation_is_rechecked_immediately_before_delivery(
+    monkeypatch,
+) -> None:
+    _disable_feishu_token(monkeypatch)
+    interaction = AgentInteraction(
+        id="interaction-racing-confirmation",
+        type=AgentInteractionType.APPROVAL,
+        prompt="请确认新增投递记录。",
+        allowed_actions=[AgentResumeDecision.APPROVE, AgentResumeDecision.CANCEL],
+    )
+    pending = _agent_run_response(
+        reply=interaction.prompt,
+        status=AgentRunStatus.WAITING_FOR_INPUT,
+        interaction=interaction,
+    )
+
+    class AdvancingRuntime(FakeAgentRuntime):
+        async def get_state(self, **kwargs):
+            self.calls.append(("get_state", kwargs))
+            if len(self.calls) == 1:
+                return pending
+            return _agent_run_response(reply="投递记录已保存。")
+
+    runtime = AdvancingRuntime(replay_response=pending)
+    message_calls = []
+
+    class FakeFeishuMessageService:
+        def is_configured(self):
+            return True
+
+        async def reply_interactive_message(self, **kwargs):
+            message_calls.append(("progress", kwargs))
+            return FeishuMessageResult(message_id="om-progress", raw_response={"code": 0})
+
+        async def reply_text_message(self, **kwargs):
+            message_calls.append(("text", kwargs))
+            return FeishuMessageResult(message_id="om-reply", raw_response={"code": 0})
+
+        async def update_interactive_message(self, **kwargs):
+            message_calls.append(("update", kwargs))
+            return FeishuMessageResult(message_id="om-progress", raw_response={"code": 0})
+
+    monkeypatch.setattr(feishu, "FeishuMessageService", FakeFeishuMessageService)
+    client = TestClient(_app_with_runtime(runtime))
+    payload = _text_delivery_payload("event-confirmed-between-checks")
+    first = client.post("/api/feishu/events", json=payload)
+    duplicate = client.post("/api/feishu/events", json=payload)
+
+    assert first.status_code == 200
+    assert first.json()["reply_sent"] is False
+    assert not first.json().get("agent_response", {}).get("interaction")
+    assert duplicate.json() == first.json()
+    assert message_calls == []
+    assert [kind for kind, _ in runtime.calls] == ["get_state", "get_state"]
+    assert len(runtime.replay_calls) == 1
+
+
+def test_feishu_confirmation_state_read_failure_can_retry_without_sending_stale_card(
+    monkeypatch,
+) -> None:
+    _disable_feishu_token(monkeypatch)
+    interaction = AgentInteraction(
+        id="interaction-checkpoint-unavailable",
+        type=AgentInteractionType.APPROVAL,
+        prompt="请确认新增投递记录。",
+        allowed_actions=[AgentResumeDecision.APPROVE, AgentResumeDecision.CANCEL],
+    )
+    pending = _agent_run_response(
+        reply=interaction.prompt,
+        status=AgentRunStatus.WAITING_FOR_INPUT,
+        interaction=interaction,
+    )
+
+    class TemporarilyUnavailableStateRuntime(FakeAgentRuntime):
+        async def get_state(self, **kwargs):
+            self.calls.append(("get_state", kwargs))
+            if len(self.calls) == 1:
+                raise RuntimeError("checkpoint temporarily unavailable")
+            return pending
+
+    runtime = TemporarilyUnavailableStateRuntime(replay_response=pending)
+    message_calls = []
+
+    class FakeFeishuMessageService:
+        def is_configured(self):
+            return True
+
+        async def reply_interactive_message(self, **kwargs):
+            message_calls.append(("progress", kwargs))
+            return FeishuMessageResult(message_id="om-progress", raw_response={"code": 0})
+
+        async def reply_text_message(self, **kwargs):
+            message_calls.append(("text", kwargs))
+            return FeishuMessageResult(message_id="om-reply", raw_response={"code": 0})
+
+    monkeypatch.setattr(feishu, "FeishuMessageService", FakeFeishuMessageService)
+    client = TestClient(_app_with_runtime(runtime))
+    payload = _text_delivery_payload("event-temporary-state-read-failure")
+    first = client.post("/api/feishu/events", json=payload)
+
+    assert first.status_code == 503
+    assert message_calls == []
+
+    retry = client.post("/api/feishu/events", json=payload)
+    duplicate = client.post("/api/feishu/events", json=payload)
+
+    assert retry.status_code == 200
+    assert retry.json()["agent_response"]["interaction"]["id"] == interaction.id
+    assert duplicate.json() == retry.json()
+    assert [kind for kind, _ in message_calls] == ["text"]
+    assert message_calls[0][1]["text"] == interaction.prompt
+    assert all(kind == "get_state" for kind, _ in runtime.calls)
+
+
+def test_feishu_failed_confirmation_delivery_does_not_resurrect_resolved_interaction(
+    monkeypatch,
+) -> None:
+    _disable_feishu_token(monkeypatch)
+    interaction = AgentInteraction(
+        id="interaction-before-delivery-failure",
+        type=AgentInteractionType.APPROVAL,
+        prompt="请确认关闭每日刷题提醒。",
+        allowed_actions=[AgentResumeDecision.APPROVE, AgentResumeDecision.CANCEL],
+    )
+    runtime = FakeAgentRuntime(
+        response=_agent_run_response(
+            reply=interaction.prompt,
+            status=AgentRunStatus.WAITING_FOR_INPUT,
+            interaction=interaction,
+        )
+    )
+    message_calls = []
+
+    class FakeFeishuMessageService:
+        def is_configured(self):
+            return True
+
+        async def reply_interactive_message(self, **kwargs):
+            if not message_calls:
+                message_calls.append(("progress", kwargs))
+                return FeishuMessageResult(message_id="om-progress", raw_response={"code": 0})
+            message_calls.append(("fallback", kwargs))
+            raise FeishuRequestError("temporary final delivery failure")
+
+        async def update_interactive_message(self, **kwargs):
+            message_calls.append(("update", kwargs))
+            raise FeishuRequestError("temporary update failure")
+
+    monkeypatch.setattr(feishu, "FeishuMessageService", FakeFeishuMessageService)
+    client = TestClient(_app_with_runtime(runtime))
+    payload = _text_delivery_payload("event-staged-obsolete-confirmation")
+    first = client.post("/api/feishu/events", json=payload)
+    assert first.status_code == 502
+    assert [kind for kind, _ in message_calls] == ["progress", "update", "fallback"]
+    runtime.state = _agent_run_response(reply="已关闭每日刷题提醒。")
+
+    retry = client.post("/api/feishu/events", json=payload)
+
+    assert retry.status_code == 200
+    assert retry.json()["reply_sent"] is False
+    assert not retry.json().get("agent_response", {}).get("interaction")
+    assert [kind for kind, _ in message_calls] == ["progress", "update", "fallback", "update"]
+    assert message_calls[-1][1]["message_id"] == "om-progress"
+    assert "无需再次回复" in str(message_calls[-1][1]["card"])
+    assert interaction.prompt not in str(message_calls[-1][1]["card"])
+    assert len([call for call in runtime.calls if call[0] == "start"]) == 1
+
+
+def test_feishu_active_duplicate_is_acknowledged_without_repeating_progress_or_work(
+    monkeypatch,
+) -> None:
+    _disable_feishu_token(monkeypatch)
+    runtime_started = Event()
+    release_runtime = Event()
+    message_calls = []
+
+    class BlockingRuntime(FakeAgentRuntime):
+        async def start(self, **kwargs):
+            self.calls.append(("start", kwargs))
+            runtime_started.set()
+            await asyncio.to_thread(release_runtime.wait, 5)
+            return _agent_run_response(reply="操作已完成。")
+
+    class FakeFeishuMessageService:
+        def is_configured(self):
+            return True
+
+        async def reply_interactive_message(self, **kwargs):
+            message_calls.append(("progress", kwargs))
+            return FeishuMessageResult(message_id="om-progress", raw_response={"code": 0})
+
+        async def update_interactive_message(self, **kwargs):
+            message_calls.append(("update", kwargs))
+            return FeishuMessageResult(message_id="om-progress", raw_response={"code": 0})
+
+    monkeypatch.setattr(feishu, "FeishuMessageService", FakeFeishuMessageService)
+    runtime = BlockingRuntime()
+    client = TestClient(_app_with_runtime(runtime))
+    payload = _text_delivery_payload("event-concurrent-delivery")
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            original = pool.submit(client.post, "/api/feishu/events", json=payload)
+            assert runtime_started.wait(5)
+            retry = pool.submit(client.post, "/api/feishu/events", json=payload)
+            try:
+                duplicate = retry.result(timeout=2)
+                assert duplicate.status_code == 200
+                assert duplicate.json()["handled"] is True
+                assert duplicate.json()["reply_sent"] is False
+                assert [kind for kind, _ in message_calls] == ["progress"]
+                assert len([call for call in runtime.calls if call[0] == "start"]) == 1
+            finally:
+                release_runtime.set()
+            first = original.result(timeout=5)
+    finally:
+        release_runtime.set()
+
+    assert first.status_code == 200
+    assert [kind for kind, _ in message_calls] == ["progress", "update"]
+    assert client.post("/api/feishu/events", json=payload).json() == first.json()
+    assert len(message_calls) == 2
+
+
+def test_feishu_delivery_retry_after_restart_reuses_progress_and_saved_result(
+    monkeypatch, tmp_path,
+) -> None:
+    _disable_feishu_token(monkeypatch)
+    database_path = str(tmp_path / "delivery-retry.db")
+    runtime = FakeAgentRuntime(
+        response=_agent_run_response(reply="投递已保存并同步。"),
+        runtime_store=SQLiteAgentRuntimeStore(database_path),
+    )
+    message_calls = []
+    update_attempts = []
+
+    class FakeFeishuMessageService:
+        def is_configured(self):
+            return True
+
+        async def reply_interactive_message(self, **kwargs):
+            if kwargs["idempotency_key"] == feishu._stable_reply_uuid(
+                "event-restart-retry", {}, "progress"
+            ):
+                message_calls.append(("progress", kwargs))
+                return FeishuMessageResult(message_id="om-progress", raw_response={"code": 0})
+            message_calls.append(("fallback", kwargs))
+            raise FeishuRequestError("temporary final delivery failure")
+
+        async def update_interactive_message(self, **kwargs):
+            message_calls.append(("update", kwargs))
+            update_attempts.append(kwargs)
+            if len(update_attempts) == 1:
+                raise FeishuRequestError("temporary update failure")
+            return FeishuMessageResult(message_id="om-progress", raw_response={"code": 0})
+
+    monkeypatch.setattr(feishu, "FeishuMessageService", FakeFeishuMessageService)
+    payload = _text_delivery_payload("event-restart-retry")
+    first = TestClient(_app_with_runtime(runtime)).post("/api/feishu/events", json=payload)
+    assert first.status_code == 502
+
+    restarted_runtime = FakeAgentRuntime(runtime_store=SQLiteAgentRuntimeStore(database_path))
+    restarted_client = TestClient(_app_with_runtime(restarted_runtime))
+    retried = restarted_client.post("/api/feishu/events", json=payload)
+    duplicate = restarted_client.post("/api/feishu/events", json=payload)
+
+    assert retried.status_code == 200
+    assert retried.json()["reply_message_id"] == "om-progress"
+    assert retried.json()["agent_response"]["reply"] == "投递已保存并同步。"
+    assert duplicate.json() == retried.json()
+    assert [kind for kind, _ in message_calls] == ["progress", "update", "fallback", "update"]
+    assert all(call["message_id"] == "om-progress" for call in update_attempts)
+    assert all("投递已保存并同步" in str(call["card"]) for call in update_attempts)
+    assert len([call for call in runtime.calls if call[0] == "start"]) == 1
+    assert restarted_runtime.calls == []
+    assert restarted_runtime.replay_calls == []
+
+
+@pytest.mark.parametrize("changed_field", ["text", "owner"])
+def test_feishu_duplicate_event_id_with_changed_payload_is_rejected(
+    monkeypatch, changed_field,
+) -> None:
+    _disable_feishu_token(monkeypatch)
+    runtime = FakeAgentRuntime()
+    sent = []
+
+    class FakeFeishuMessageService:
+        def is_configured(self):
+            return True
+
+        async def reply_text_message(self, **kwargs):
+            sent.append(kwargs)
+            return FeishuMessageResult(message_id="om-final", raw_response={"code": 0})
+
+    monkeypatch.setattr(feishu, "FeishuMessageService", FakeFeishuMessageService)
+    client = TestClient(_app_with_runtime(runtime))
+    payload = _text_delivery_payload("event-delivery-conflict")
+    assert client.post("/api/feishu/events", json=payload).status_code == 200
+    if changed_field == "text":
+        payload["event"]["message"]["content"]["text"] = "改成另一条任务"
+    else:
+        payload["event"]["sender"]["sender_id"]["open_id"] = "ou-other"
+
+    conflict = client.post("/api/feishu/events", json=payload)
+
+    assert conflict.status_code == 409
+    assert len(sent) == 1
+    assert len([call for call in runtime.calls if call[0] == "start"]) == 1
 
 
 def test_feishu_pending_plain_confirmation_is_forwarded_to_resume_message(
@@ -1432,7 +1860,6 @@ def test_feishu_retry_after_send_failure_reuses_request_id_and_reply_uuid(monkey
     start_calls = [call for call in runtime.calls if call[0] == "start"]
     assert [call[1]["request_id"] for call in start_calls] == [
         "event_test_1",
-        "event_test_1",
     ]
     assert len(reply_uuids) == 2
     assert reply_uuids[0] == reply_uuids[1]
@@ -1583,6 +2010,217 @@ def test_feishu_bitable_event_receipt_prevents_duplicate_sync(monkeypatch) -> No
     assert first.status_code == 200
     assert duplicate.json() == first.json()
     assert len(calls) == 1
+
+
+@pytest.fixture
+def bitable_deletion_context(monkeypatch, tmp_path):
+    _disable_feishu_token(monkeypatch)
+    audit_path = tmp_path / "feishu_events.log"
+    monkeypatch.setattr(feishu, "_feishu_event_audit_path", lambda: audit_path)
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(
+        company="Example", role="Backend", owner_id="feishu:ou_test"
+    )
+    save_owner_bitable_resource(
+        repository,
+        owner_id="feishu:ou_test",
+        app_token="bascn_offerpilot",
+        table_id="tbl_applications",
+    )
+    remember_bitable_record_mapping(
+        repository,
+        app_token="bascn_offerpilot",
+        table_id="tbl_applications",
+        record_id="rec_application_1",
+        application_id=application.id,
+        owner_id="feishu:ou_test",
+    )
+
+    class FakeBitableService:
+        app_token = ""
+        table_id = ""
+
+        def __init__(self):
+            self.records = {}
+            self.get_record_calls = []
+            self.error = FeishuRequestError("RecordIdNotFound", code=1254043)
+
+        def get_record(self, app_token, table_id, record_id):
+            self.get_record_calls.append((app_token, table_id, record_id))
+            if record_id not in self.records:
+                raise self.error
+            return FeishuBitableRecordResult(
+                record_id=record_id,
+                raw_response={"code": 0},
+                fields=self.records[record_id],
+            )
+
+    service = FakeBitableService()
+    runtime = FakeAgentRuntime()
+    runtime.runtime_store = InMemoryAgentRuntimeStore()
+    runtime.offerpilot_repository = repository
+    runtime.feishu_bitable_service = service
+    return TestClient(_app_with_runtime(runtime)), repository, service, application, audit_path
+
+
+def _bitable_action_event(
+    *actions,
+    event_id="bitable_delete",
+    table_id="tbl_applications",
+    operator_open_id="ou_test",
+):
+    return {
+        "schema": "2.0",
+        "header": {
+            "event_type": "drive.file.bitable_record_changed_v1",
+            "event_id": event_id,
+        },
+        "event": {
+            "file_token": "bascn_offerpilot",
+            "file_type": "bitable",
+            "operator_id": {"open_id": operator_open_id},
+            "table_id": table_id,
+            "action_list": [
+                {"action": action, "record_id": record_id}
+                for action, record_id in actions
+            ],
+        },
+    }
+
+
+def test_feishu_deleted_record_event_soft_deletes_once(bitable_deletion_context) -> None:
+    client, repository, service, application, audit_path = bitable_deletion_context
+    payload = _bitable_action_event(("record_deleted", "rec_application_1"))
+
+    first = client.post("/api/feishu/events", json=payload)
+    duplicate = client.post("/api/feishu/events", json=payload)
+
+    assert first.status_code == 200
+    assert first.json() == {
+        "handled": True,
+        "event_type": "drive.file.bitable_record_changed_v1",
+        "message": f"多维表格记录已同步删除：{application.id}",
+    }
+    assert duplicate.json() == first.json()
+    assert repository.list_applications(owner_id="feishu:ou_test") == []
+    assert repository.is_application_deleted(application.id, "feishu:ou_test")
+    assert len(service.get_record_calls) == 1
+    audit_rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+    sync_rows = [row for row in audit_rows if row.get("phase") == "bitable_sync_result"]
+    assert len(sync_rows) == 1
+    assert sync_rows[0]["results"][0]["status"] == "deleted"
+    assert sync_rows[0]["results"][0]["application_id"] == application.id
+
+
+def test_feishu_bitable_mixed_edit_delete_batch(bitable_deletion_context) -> None:
+    client, repository, service, deleted_application, _ = bitable_deletion_context
+    updated_application = repository.create_application(
+        company="Second", role="Backend", owner_id="feishu:ou_test"
+    )
+    remember_bitable_record_mapping(
+        repository,
+        app_token="bascn_offerpilot",
+        table_id="tbl_applications",
+        record_id="rec_application_2",
+        application_id=updated_application.id,
+        owner_id="feishu:ou_test",
+    )
+    service.records["rec_application_2"] = {
+        "OfferPilot记录ID": updated_application.id,
+        "OfferPilot用户ID": "feishu:ou_test",
+        "公司": "Second",
+        "岗位": "AI Engineer",
+        "投递状态": "已投递",
+    }
+    payload = _bitable_action_event(
+        ("record_edited", "rec_application_2"),
+        ("record_deleted", "rec_application_1"),
+        ("record_deleted", "rec_application_1"),
+    )
+
+    response = client.post("/api/feishu/events", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["message"] == (
+        f"多维表格记录已回写数据库：{updated_application.id}；"
+        f"已同步删除：{deleted_application.id}"
+    )
+    applications = repository.list_applications(owner_id="feishu:ou_test")
+    assert [application.id for application in applications] == [updated_application.id]
+    assert applications[0].role == "AI Engineer"
+    assert applications[0].status.value == "submitted"
+    assert repository.is_application_deleted(deleted_application.id, "feishu:ou_test")
+    assert {call[2] for call in service.get_record_calls} == {
+        "rec_application_1", "rec_application_2"
+    }
+    assert len(service.get_record_calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("event_overrides", "expected_status"),
+    [
+        ({"table_id": "tbl_foreign"}, "ignored_foreign_table"),
+        ({"operator_open_id": "ou_foreign"}, "owner_conflict"),
+    ],
+)
+def test_feishu_deleted_record_event_rejects_foreign_scope(
+    bitable_deletion_context, event_overrides, expected_status
+) -> None:
+    client, repository, service, application, _ = bitable_deletion_context
+
+    response = client.post(
+        "/api/feishu/events",
+        json=_bitable_action_event(
+            ("record_deleted", "rec_application_1"), **event_overrides
+        ),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["handled"] is False
+    assert expected_status in response.json()["message"]
+    assert not repository.is_application_deleted(application.id, "feishu:ou_test")
+    assert len(repository.list_applications(owner_id="feishu:ou_test")) == 1
+    assert service.get_record_calls == []
+
+
+def test_feishu_delayed_delete_event_keeps_current_live_record(bitable_deletion_context) -> None:
+    client, repository, service, application, _ = bitable_deletion_context
+    service.records["rec_application_1"] = {
+        "OfferPilot记录ID": application.id,
+        "OfferPilot用户ID": "feishu:ou_test",
+        "公司": "Example",
+        "岗位": "Current Role",
+        "投递状态": "已投递",
+    }
+
+    response = client.post(
+        "/api/feishu/events",
+        json=_bitable_action_event(("record_deleted", "rec_application_1")),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == f"多维表格记录已回写数据库：{application.id}"
+    assert not repository.is_application_deleted(application.id, "feishu:ou_test")
+    assert repository.list_applications(owner_id="feishu:ou_test")[0].role == "Current Role"
+    assert len(service.get_record_calls) == 1
+
+
+@pytest.mark.parametrize("error_code", [None, 99991672])
+def test_feishu_delete_event_read_failure_keeps_local_record(
+    bitable_deletion_context, error_code
+) -> None:
+    client, repository, service, application, _ = bitable_deletion_context
+    service.error = FeishuRequestError("request failed", code=error_code)
+
+    response = client.post(
+        "/api/feishu/events",
+        json=_bitable_action_event(("record_deleted", "rec_application_1")),
+    )
+
+    assert response.status_code == 200
+    assert "同步失败" in response.json()["message"]
+    assert not repository.is_application_deleted(application.id, "feishu:ou_test")
+    assert len(repository.list_applications(owner_id="feishu:ou_test")) == 1
 
 
 def test_feishu_bitable_event_without_event_id_is_rejected_before_write(

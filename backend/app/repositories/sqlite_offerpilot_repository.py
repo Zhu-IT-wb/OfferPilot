@@ -148,7 +148,7 @@ class SQLiteOfferPilotRepository:
             """
             SELECT id, owner_id, company, role, base_location, status, interview_time, round, jd_keywords
             FROM applications
-            WHERE owner_id = ?
+            WHERE owner_id = ? AND deleted_at IS NULL
             ORDER BY id
             """,
             (owner_id,),
@@ -163,6 +163,38 @@ class SQLiteOfferPilotRepository:
             for application in applications
             if normalized_company in self._normalize(application.company)
         ]
+
+    def delete_application(
+        self,
+        application_id: str,
+        owner_id: str = "local_user",
+    ) -> bool:
+        owner_id = self._normalize_owner_id(owner_id)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE applications
+                SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP)
+                WHERE id = ? AND owner_id = ?
+                """,
+                (application_id, owner_id),
+            )
+            return cursor.rowcount > 0
+
+    def is_application_deleted(
+        self,
+        application_id: str,
+        owner_id: str = "local_user",
+    ) -> bool:
+        return bool(
+            self._fetch_value(
+                """
+                SELECT 1 FROM applications
+                WHERE id = ? AND owner_id = ? AND deleted_at IS NOT NULL
+                """,
+                (application_id, self._normalize_owner_id(owner_id)),
+            )
+        )
 
     # 更新投递进度，并按需同步日历和多维表格。
     def update_application(
@@ -195,7 +227,7 @@ class SQLiteOfferPilotRepository:
             """
             UPDATE applications
             SET role = ?, base_location = ?, status = ?, interview_time = ?, round = ?
-            WHERE id = ? AND owner_id = ?
+            WHERE id = ? AND owner_id = ? AND deleted_at IS NULL
             """,
             (
                 application.role,
@@ -250,7 +282,7 @@ class SQLiteOfferPilotRepository:
             """
             UPDATE applications
             SET company = ?, role = ?, base_location = ?, status = ?, interview_time = ?, round = ?, jd_keywords = ?
-            WHERE id = ? AND owner_id = ?
+            WHERE id = ? AND owner_id = ? AND deleted_at IS NULL
             """,
             (
                 application.company,
@@ -282,7 +314,7 @@ class SQLiteOfferPilotRepository:
         if application is None:
             return False
         self._execute(
-            "UPDATE applications SET owner_id = ? WHERE id = ? AND owner_id = ?",
+            "UPDATE applications SET owner_id = ? WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
             (to_owner_id, application_id, from_owner_id),
         )
         self._execute(
@@ -312,21 +344,19 @@ class SQLiteOfferPilotRepository:
         setting_prefix = f"feishu.offerpilot_bitable_record_id.{table_id}."
         rows = self._fetch_all(
             """
-            SELECT key
+            SELECT applications.id, applications.owner_id
             FROM runtime_settings
-            WHERE key LIKE ? AND value = ?
-            ORDER BY key
+            JOIN applications ON applications.id = substr(runtime_settings.key, ?)
+            WHERE substr(runtime_settings.key, 1, ?) = ? AND runtime_settings.value = ?
+              AND applications.deleted_at IS NULL
+            ORDER BY runtime_settings.key
             LIMIT 1
             """,
-            (f"{setting_prefix}%", record_id),
+            (len(setting_prefix) + 1, len(setting_prefix), setting_prefix, record_id),
         )
         if not rows:
             return None
-        application_id = str(rows[0]["key"])[len(setting_prefix) :]
-        owner_id = self.find_application_owner_id(application_id)
-        if not owner_id:
-            return None
-        return application_id, owner_id
+        return str(rows[0]["id"]), str(rows[0]["owner_id"])
 
     # 创建 interview schedule。
     def create_interview_schedule(
@@ -399,6 +429,11 @@ class SQLiteOfferPilotRepository:
                    reminder_minutes, status, calendar_event_id, raw_message
             FROM interview_schedules
             WHERE owner_id = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM applications
+                  WHERE applications.id = interview_schedules.application_id
+                    AND applications.deleted_at IS NOT NULL
+              )
             ORDER BY id
             """,
             (owner_id,),
@@ -422,15 +457,19 @@ class SQLiteOfferPilotRepository:
         owner_id: str = "local_user",
     ) -> Optional[InterviewSchedule]:
         owner_id = self._normalize_owner_id(owner_id)
-        schedules = [
-            schedule
-            for schedule in self.list_interview_schedules(owner_id=owner_id)
-            if schedule.id == schedule_id
-        ]
-        if not schedules:
+        rows = self._fetch_all(
+            """
+            SELECT id, owner_id, application_id, company, role, round, start_time, start_at,
+                   reminder_minutes, status, calendar_event_id, raw_message
+            FROM interview_schedules
+            WHERE id = ? AND owner_id = ?
+            """,
+            (schedule_id, owner_id),
+        )
+        if not rows:
             return None
 
-        schedule = schedules[0]
+        schedule = self._interview_schedule_from_row(rows[0])
         schedule.calendar_event_id = calendar_event_id
         self._execute(
             """
@@ -917,7 +956,8 @@ class SQLiteOfferPilotRepository:
                     status TEXT NOT NULL,
                     interview_time TEXT,
                     round TEXT,
-                    jd_keywords TEXT NOT NULL DEFAULT '[]'
+                    jd_keywords TEXT NOT NULL DEFAULT '[]',
+                    deleted_at TEXT
                 )
                 """
             )
@@ -1016,6 +1056,7 @@ class SQLiteOfferPilotRepository:
         self._ensure_column("tasks", "owner_id", "TEXT NOT NULL DEFAULT 'local_user'")
         self._ensure_column("applications", "owner_id", "TEXT NOT NULL DEFAULT 'local_user'")
         self._ensure_column("applications", "base_location", "TEXT")
+        self._ensure_column("applications", "deleted_at", "TEXT")
         self._ensure_column("interview_reviews", "owner_id", "TEXT NOT NULL DEFAULT 'local_user'")
         self._ensure_column("interview_schedules", "owner_id", "TEXT NOT NULL DEFAULT 'local_user'")
         self._ensure_column("interview_schedules", "start_at", "TEXT")
@@ -1043,7 +1084,7 @@ class SQLiteOfferPilotRepository:
         if self.get_runtime_setting(_PLANNED_APPLICATION_MIGRATION_SETTING) == "complete":
             return
         self._execute(
-            "UPDATE applications SET status = ? WHERE status = ?",
+            "UPDATE applications SET status = ? WHERE status = ? AND deleted_at IS NULL",
             (ApplicationStatus.SUBMITTED.value, ApplicationStatus.PLANNED.value),
         )
         self.set_runtime_setting(_PLANNED_APPLICATION_MIGRATION_SETTING, "complete")
@@ -1191,7 +1232,7 @@ class SQLiteOfferPilotRepository:
             """
             SELECT id, owner_id, company, role, base_location, status, interview_time, round, jd_keywords
             FROM applications
-            WHERE id = ? AND owner_id = ?
+            WHERE id = ? AND owner_id = ? AND deleted_at IS NULL
             """,
             (application_id, owner_id),
         )
@@ -1201,6 +1242,15 @@ class SQLiteOfferPilotRepository:
 
     # 处理 next_id 相关逻辑。
     def _next_id(self, table: str, prefix: str) -> str:
+        if table == "applications":
+            highest_id = self._fetch_value(
+                """
+                SELECT COALESCE(MAX(CAST(substr(id, 5) AS INTEGER)), 0)
+                FROM applications
+                WHERE substr(id, 1, 4) = 'app_'
+                """
+            )
+            return f"{prefix}_{highest_id + 1}"
         count = self._fetch_value(f"SELECT COUNT(*) FROM {table}")
         return f"{prefix}_{count + 1}"
 

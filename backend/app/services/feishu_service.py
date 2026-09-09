@@ -1,10 +1,11 @@
 import asyncio
 import hashlib
 import json
+import re
 import secrets
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -22,6 +23,22 @@ class FeishuConfigurationError(RuntimeError):
 # 表示当前模块抛出的业务异常。
 class FeishuRequestError(RuntimeError):
     """Raised when Feishu OpenAPI returns or causes an error."""
+
+    def __init__(self, message: str, code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _feishu_http_request_error(exc: httpx.HTTPStatusError) -> FeishuRequestError:
+    try:
+        payload = exc.response.json()
+    except ValueError:
+        payload = None
+    code = payload.get("code") if isinstance(payload, dict) else None
+    return FeishuRequestError(
+        f"Feishu OpenAPI returned HTTP {exc.response.status_code}: {exc.response.text}",
+        code=code if isinstance(code, int) and not isinstance(code, bool) else None,
+    )
 
 
 # 承载外部服务调用后的结构化结果。
@@ -507,9 +524,7 @@ class FeishuMessageService:
                 response.raise_for_status()
                 response_data = response.json()
         except httpx.HTTPStatusError as exc:
-            raise FeishuRequestError(
-                f"Feishu OpenAPI returned HTTP {exc.response.status_code}: {exc.response.text}"
-            ) from exc
+            raise _feishu_http_request_error(exc) from exc
         except httpx.HTTPError as exc:
             raise FeishuRequestError(f"Feishu OpenAPI request failed: {exc}") from exc
         except ValueError as exc:
@@ -610,9 +625,7 @@ class FeishuMessageService:
                 response.raise_for_status()
                 response_data = response.json()
         except httpx.HTTPStatusError as exc:
-            raise FeishuRequestError(
-                f"Feishu OpenAPI returned HTTP {exc.response.status_code}: {exc.response.text}"
-            ) from exc
+            raise _feishu_http_request_error(exc) from exc
         except httpx.HTTPError as exc:
             raise FeishuRequestError(f"Feishu OpenAPI request failed: {exc}") from exc
         except ValueError as exc:
@@ -629,7 +642,10 @@ class FeishuMessageService:
         code = response_data.get("code", 0)
         if code not in (0, None):
             message = response_data.get("msg") or response_data.get("message") or "Unknown Feishu OpenAPI error."
-            raise FeishuRequestError(f"Feishu OpenAPI returned code {code}: {message}")
+            raise FeishuRequestError(
+                f"Feishu OpenAPI returned code {code}: {message}",
+                code=code if isinstance(code, int) and not isinstance(code, bool) else None,
+            )
 
 
 # 封装飞书日历创建、日程创建和参与人同步。
@@ -1160,10 +1176,33 @@ def parse_chinese_datetime(
 
     tz = ZoneInfo(timezone)
     current = now.astimezone(tz) if now else datetime.now(tz)
+    stripped = text.strip()
+    if re.match(r"^\d{4}-\d{1,2}-\d{1,2}[Tt ]", stripped):
+        try:
+            parsed = datetime.fromisoformat(stripped.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed.replace(tzinfo=tz) if parsed.tzinfo is None else parsed.astimezone(tz)
+
     compact = text.replace(" ", "")
 
     target_date = current.date()
-    if "大后天" in compact:
+    absolute_date = re.search(
+        r"(?<!\d)(?:(\d{4})年)?(\d{1,2})月(\d{1,2})(?:日|号)?(?!\d)",
+        compact,
+    ) or re.search(r"(?<!\d)(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?!\d)", compact)
+    if absolute_date:
+        try:
+            target_date = date(
+                int(absolute_date.group(1) or current.year),
+                int(absolute_date.group(2)),
+                int(absolute_date.group(3)),
+            )
+        except ValueError:
+            return None
+    elif re.search(r"\d+年|\d+月|\d{4}[-/]\d", compact):
+        return None
+    elif "大后天" in compact:
         target_date = (current + timedelta(days=3)).date()
     elif "后天" in compact:
         target_date = (current + timedelta(days=2)).date()
@@ -1230,7 +1269,12 @@ def _extract_weekday_index(text: str) -> Optional[int]:
 
 # 解析 clock time。
 def _parse_clock_time(text: str) -> tuple[Optional[int], int]:
-    import re
+    clock = re.search(r"(?<![\d:])(\d{1,3}):(\d{1,3})(?::(\d{1,3}))?(?![\d:])", text)
+    if clock:
+        hour, minute = int(clock.group(1)), int(clock.group(2))
+        if hour > 23 or minute > 59 or clock.group(3) not in (None, "00"):
+            return None, 0
+        return hour, minute
 
     match = re.search(r"([零一二三四五六七八九十两\d]{1,3})点(?:(半)|([零一二三四五六七八九十\d]{1,2})分?)?", text)
     if not match:
@@ -1244,12 +1288,14 @@ def _parse_clock_time(text: str) -> tuple[Optional[int], int]:
         minute = 30
     elif match.group(3):
         parsed_minute = _parse_chinese_number(match.group(3))
-        minute = parsed_minute if parsed_minute is not None else 0
+        if parsed_minute is None:
+            return None, 0
+        minute = parsed_minute
     else:
         minute = 0
 
     if minute < 0 or minute > 59:
-        minute = 0
+        return None, 0
     return hour, minute
 
 

@@ -7,7 +7,9 @@ from app.core.config import settings
 from app.repositories.offerpilot_repository import OfferPilotRepository
 from app.services.bitable_sync_service import (
     get_bitable_table_owner,
+    list_bitable_record_mappings,
     sync_bitable_record_fields_to_repository,
+    sync_bitable_record_to_repository,
 )
 from app.services.bitable_tenancy import (
     OwnerBitableResource,
@@ -32,6 +34,7 @@ class BitablePullSyncSummary:
     failed_count: int
     skipped: bool = False
     reason: Optional[str] = None
+    deleted_count: int = 0
 
 
 # 定时从飞书多维表格拉取变更并同步到本地。
@@ -103,9 +106,10 @@ class BitablePullSyncService:
                     logger.info("Feishu bitable pull sync skipped: reason=%s", summary.reason)
                 else:
                     logger.info(
-                        "Feishu bitable pull sync finished: synced=%s failed=%s",
+                        "Feishu bitable pull sync finished: synced=%s failed=%s deleted=%s",
                         summary.synced_count,
                         summary.failed_count,
+                        summary.deleted_count,
                     )
             except Exception as exc:
                 logger.warning("Feishu bitable pull sync failed: %s", exc)
@@ -126,23 +130,31 @@ class BitablePullSyncService:
 
         synced_count = 0
         failed_count = 0
+        deleted_count = 0
         first_error: Optional[str] = None
         for resource in resources:
             summary = self._sync_resource(resource)
             synced_count += summary.synced_count
             failed_count += summary.failed_count
+            deleted_count += summary.deleted_count
             if summary.reason and first_error is None:
                 first_error = summary.reason
         return BitablePullSyncSummary(
             synced_count=synced_count,
             failed_count=failed_count,
             reason=first_error,
+            deleted_count=deleted_count,
         )
 
     def _sync_resource(self, resource: OwnerBitableResource) -> BitablePullSyncSummary:
         synced_count = 0
         failed_count = 0
         page_token: Optional[str] = None
+        seen_record_ids: set[str] = set()
+        seen_page_tokens: set[str] = set()
+        existing_mappings = list_bitable_record_mappings(
+            self.repository, resource.app_token, resource.table_id, resource.owner_id
+        )
         while True:
             try:
                 page = self.bitable_service.list_records(
@@ -167,6 +179,11 @@ class BitablePullSyncService:
             )
 
             for record in page.records:
+                if not record.record_id:
+                    return BitablePullSyncSummary(
+                        synced_count, failed_count + 1, reason="missing_record_id"
+                    )
+                seen_record_ids.add(record.record_id)
                 result = sync_bitable_record_fields_to_repository(
                     repository=self.repository,
                     record_id=record.record_id or "",
@@ -185,12 +202,37 @@ class BitablePullSyncService:
             if not page.has_more:
                 break
             page_token = page.page_token
-            if not page_token:
-                break
+            if not page_token or page_token in seen_page_tokens:
+                return BitablePullSyncSummary(
+                    synced_count, failed_count + 1, reason="incomplete_pagination"
+                )
+            seen_page_tokens.add(page_token)
+
+        deleted_count = 0
+        # Absence from a page is not proof of deletion: confirm each old mapping
+        # against the record API after a complete scan. Permission/network errors
+        # must leave local data intact, as must mappings created during the scan.
+        for record_id in sorted(existing_mappings.keys() - seen_record_ids):
+            result = sync_bitable_record_to_repository(
+                repository=self.repository,
+                bitable_service=self.bitable_service,
+                record_id=record_id,
+                app_token=resource.app_token,
+                table_id=resource.table_id,
+                fallback_owner_id=resource.owner_id,
+                allow_default_local_owner=False,
+            )
+            if result.status == "deleted":
+                deleted_count += 1
+            if result.synced:
+                synced_count += 1
+            else:
+                failed_count += 1
 
         return BitablePullSyncSummary(
             synced_count=synced_count,
             failed_count=failed_count,
+            deleted_count=deleted_count,
         )
 
     def _resolve_resources(self) -> list[OwnerBitableResource]:

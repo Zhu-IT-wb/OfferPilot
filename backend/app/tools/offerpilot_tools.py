@@ -26,9 +26,11 @@ from app.repositories.project_training_repository import ProjectTrainingReposito
 from app.schemas.tool import ToolResult
 from app.services.bitable_event_subscription_service import ensure_bitable_event_subscription
 from app.services.bitable_sync_service import (
+    bitable_table_sync_lock,
     get_bitable_table_owner,
     remember_bitable_record_mapping,
     remember_bitable_table_owner,
+    sync_deleted_bitable_record_to_repository,
 )
 from app.services.bitable_tenancy import (
     BitableResourceConflictError,
@@ -68,6 +70,9 @@ _CURRENT_BITABLE_SCHEMA_VERSION = "v4"
 _SYNC_MAX_ATTEMPTS = 3
 _DEFAULT_EXTERNAL_SERVICE = object()
 _DEFAULT_OWNER_ID = "local_user"
+_DELETED_BITABLE_RECORD_MESSAGE = (
+    "该投递记录已在飞书多维表格中删除，OfferPilot 已同步删除；如需重新投递，请新建一条记录。"
+)
 
 
 # 根据配置创建默认的 OfferPilot 数据仓库。
@@ -532,7 +537,7 @@ def create_application(
     application_data = application.to_dict()
     return ToolResult(
         tool_name=AgentActionName.CREATE_APPLICATION.value,
-        success=True,
+        success=operation_status != "deleted",
         message=_format_application_created_message(
             application,
             schedule,
@@ -540,7 +545,7 @@ def create_application(
             bitable_sync,
         ),
         data={
-            "application": application_data,
+            "application": application_data if operation_status != "deleted" else None,
             "interview_schedule": schedule.to_dict() if schedule else None,
             "calendar_sync": calendar_sync,
             "bitable_sync": bitable_sync,
@@ -774,16 +779,26 @@ def update_application(
                 )
             )
 
+        deleted_application_ids = {
+            application.id
+            for application, sync in zip(updated_applications, bitable_sync_results)
+            if sync.get("status") == "deleted"
+        }
         return ToolResult(
             tool_name=AgentActionName.UPDATE_APPLICATION.value,
-            success=True,
+            success=not deleted_application_ids,
             message=_format_applications_bulk_updated_message(
                 company=company,
                 applications=updated_applications,
                 bitable_sync_results=bitable_sync_results,
             ),
             data={
-                "applications": [application.to_dict() for application in updated_applications],
+                "applications": [
+                    application.to_dict()
+                    for application in updated_applications
+                    if application.id not in deleted_application_ids
+                ],
+                "deleted_application_ids": sorted(deleted_application_ids),
                 "bitable_sync_results": bitable_sync_results,
             },
         )
@@ -902,7 +917,7 @@ def update_application(
 
     return ToolResult(
         tool_name=AgentActionName.UPDATE_APPLICATION.value,
-        success=True,
+        success=operation_status != "deleted",
         message=_format_application_updated_message(
             application,
             schedule,
@@ -910,7 +925,7 @@ def update_application(
             bitable_sync,
         ),
         data={
-            "application": application.to_dict(),
+            "application": application.to_dict() if operation_status != "deleted" else None,
             "interview_schedule": schedule.to_dict() if schedule else None,
             "calendar_sync": calendar_sync,
             "bitable_sync": bitable_sync,
@@ -1033,13 +1048,16 @@ def reschedule_interview(
 
     return ToolResult(
         tool_name=AgentActionName.RESCHEDULE_INTERVIEW.value,
-        success=True,
+        success=operation_status != "deleted",
         message=(
-            f"已将 {updated_schedule.company} {updated_schedule.round} 改期到 {updated_schedule.start_time}。"
+            (
+                f"已将 {updated_schedule.company} {updated_schedule.round} 改期到 {updated_schedule.start_time}。"
+                if operation_status != "deleted" else ""
+            )
             + _external_write_summary(operation_status)
         ),
         data={
-            "application": application.to_dict() if application else None,
+            "application": application.to_dict() if application and operation_status != "deleted" else None,
             "interview_schedule": updated_schedule.to_dict(),
             "calendar_sync": calendar_sync,
             "bitable_sync": bitable_sync,
@@ -1152,13 +1170,16 @@ def cancel_interview(
     operation_status = _external_write_status(calendar_sync, bitable_sync)
     return ToolResult(
         tool_name=AgentActionName.CANCEL_INTERVIEW.value,
-        success=True,
+        success=operation_status != "deleted",
         message=(
-            f"已取消 {schedule.company} {schedule.round}（原时间：{schedule.start_time or '未记录'}）。"
+            (
+                f"已取消 {schedule.company} {schedule.round}（原时间：{schedule.start_time or '未记录'}）。"
+                if operation_status != "deleted" else ""
+            )
             + _external_write_summary(operation_status)
         ),
         data={
-            "application": application.to_dict() if application else None,
+            "application": application.to_dict() if application and operation_status != "deleted" else None,
             "interview_schedule": schedule.to_dict(),
             "calendar_sync": calendar_sync,
             "bitable_sync": bitable_sync,
@@ -1544,6 +1565,8 @@ def _format_application_created_message(
     calendar_sync: Optional[Dict[str, Any]] = None,
     bitable_sync: Optional[Dict[str, Any]] = None,
 ) -> str:
+    if bitable_sync and bitable_sync.get("status") == "deleted":
+        return "\n".join(_format_bitable_sync_lines(bitable_sync))
     lines = [
         "已记录投递：",
         f"公司：{application.company}",
@@ -1739,6 +1762,8 @@ def _sync_interview_schedule_to_calendar(
 ) -> Dict[str, Any]:
     if schedule is None:
         return {"synced": False, "status": "not_applicable"}
+    if schedule.application_id and repository.is_application_deleted(schedule.application_id, schedule.owner_id):
+        return _deleted_application_calendar_sync_result(schedule)
     if calendar_service is None:
         return {"synced": False, "status": "disabled"}
     if not calendar_service.is_calendar_sync_enabled():
@@ -1820,6 +1845,8 @@ def _sync_rescheduled_interview_to_calendar(
     owner_id: str,
     idempotency_key: str,
 ) -> Dict[str, Any]:
+    if schedule.application_id and repository.is_application_deleted(schedule.application_id, schedule.owner_id):
+        return _deleted_application_calendar_sync_result(schedule)
     if calendar_service is None or not calendar_service.is_calendar_sync_enabled():
         return {"synced": False, "status": "disabled", "attempts": 0}
 
@@ -1889,6 +1916,8 @@ def _sync_cancelled_interview_to_calendar(
     owner_id: str,
     idempotency_key: str,
 ) -> Dict[str, Any]:
+    if schedule.application_id and repository.is_application_deleted(schedule.application_id, schedule.owner_id):
+        return _deleted_application_calendar_sync_result(schedule)
     if calendar_service is None or not calendar_service.is_calendar_sync_enabled():
         return {"synced": False, "status": "disabled", "attempts": 0}
     cached = _load_sync_result(repository, idempotency_key)
@@ -1931,6 +1960,17 @@ def _sync_cancelled_interview_to_calendar(
     )
 
 
+def _deleted_application_calendar_sync_result(schedule: InterviewSchedule) -> Dict[str, Any]:
+    return {
+        "synced": False,
+        "status": "deleted",
+        "retry_safe": False,
+        "attempts": 0,
+        "application_id": schedule.application_id,
+        "message": "该投递记录已删除，已停止关联面试的日历同步。",
+    }
+
+
 # 标准化 interview start at。
 def _normalize_interview_start_at(interview_time: Optional[str]) -> Optional[str]:
     parsed = parse_chinese_datetime(interview_time)
@@ -1944,6 +1984,8 @@ def _format_application_updated_message(
     calendar_sync: Optional[Dict[str, Any]] = None,
     bitable_sync: Optional[Dict[str, Any]] = None,
 ) -> str:
+    if bitable_sync and bitable_sync.get("status") == "deleted":
+        return "\n".join(_format_bitable_sync_lines(bitable_sync))
     lines = [
         "已更新投递记录：",
         f"公司：{application.company}",
@@ -1972,11 +2014,19 @@ def _format_applications_bulk_updated_message(
     applications: List[Application],
     bitable_sync_results: List[Dict[str, Any]],
 ) -> str:
-    lines = [f"已更新 {len(applications)} 条 {company} 投递记录："]
-    for index, application in enumerate(applications, start=1):
+    active_applications = [
+        application
+        for application, sync in zip(applications, bitable_sync_results)
+        if sync.get("status") != "deleted"
+    ]
+    deleted_count = len(applications) - len(active_applications)
+    lines = [f"已更新 {len(active_applications)} 条 {company} 投递记录："]
+    for index, application in enumerate(active_applications, start=1):
         lines.append(
             f"{index}. {application.role}：{application_status_label(application.status)}"
         )
+    if deleted_count:
+        lines.append(f"另有 {deleted_count} 条记录已在飞书多维表格中删除，OfferPilot 已同步删除。")
 
     failed_syncs = [
         sync
@@ -2000,6 +2050,8 @@ def _format_applications_bulk_updated_message(
 def _format_calendar_sync_lines(calendar_sync: Optional[Dict[str, Any]]) -> List[str]:
     if not calendar_sync:
         return []
+    if calendar_sync.get("status") == "deleted":
+        return [calendar_sync.get("message") or "该投递记录已删除，已停止关联面试的日历同步。"]
     if calendar_sync.get("synced"):
         lines = []
         if calendar_sync.get("calendar_auto_created"):
@@ -2043,6 +2095,8 @@ def _sync_application_to_bitable(
     idempotency_key: Optional[str] = None,
     clear_interview_fields: bool = False,
 ) -> Dict[str, Any]:
+    if repository.is_application_deleted(application.id, owner_id=application.owner_id):
+        return {**_deleted_bitable_sync_result(application), "attempts": 0}
     if bitable_service is None or not _is_bitable_sync_available_for_owner(
         repository,
         bitable_service,
@@ -2112,6 +2166,8 @@ def _sync_application_to_bitable_once(
     collaborator_user_id_type: str = "open_id",
     clear_interview_fields: bool = False,
 ) -> Dict[str, Any]:
+    if repository.is_application_deleted(application.id, owner_id=application.owner_id):
+        return _deleted_bitable_sync_result(application)
     if bitable_service is None:
         return {"synced": False, "status": "disabled"}
 
@@ -2122,53 +2178,21 @@ def _sync_application_to_bitable_once(
             bitable_service,
             owner_id=application.owner_id,
         )
-        fields = _build_application_bitable_fields(
-            application=application,
-            schedule=schedule,
-            calendar_sync=calendar_sync,
-            clear_interview_fields=clear_interview_fields,
-        )
-        remember_bitable_table_owner(
-            repository=repository,
-            app_token=bitable_context["app_token"],
-            table_id=bitable_context["table_id"],
-            owner_id=application.owner_id,
-        )
-        record_setting_key = _bitable_record_setting_key(
-            table_id=bitable_context["table_id"],
-            application_id=application.id,
-        )
-        existing_record_id = repository.get_runtime_setting(record_setting_key)
-        retry_safe = bool(existing_record_id)
-
-        event_subscription = None
-        if existing_record_id:
-            result = bitable_service.update_record(
-                app_token=bitable_context["app_token"],
-                table_id=bitable_context["table_id"],
-                record_id=existing_record_id,
-                fields=fields,
+        with bitable_table_sync_lock(bitable_context["app_token"], bitable_context["table_id"]):
+            record_sync = _sync_application_bitable_record_locked(
+                repository=repository,
+                application=application,
+                schedule=schedule,
+                calendar_sync=calendar_sync,
+                bitable_service=bitable_service,
+                bitable_context=bitable_context,
+                clear_interview_fields=clear_interview_fields,
             )
-            record_id = result.record_id or existing_record_id
-            operation = "updated"
-        else:
-            result = bitable_service.create_record(
-                app_token=bitable_context["app_token"],
-                table_id=bitable_context["table_id"],
-                fields=fields,
-            )
-            if not result.record_id:
-                raise FeishuRequestError("Feishu bitable record response does not contain record_id.")
-            record_id = result.record_id
-            operation = "created"
-        remember_bitable_record_mapping(
-            repository=repository,
-            app_token=bitable_context["app_token"],
-            table_id=bitable_context["table_id"],
-            record_id=record_id,
-            application_id=application.id,
-            owner_id=application.owner_id,
-        )
+        if not record_sync.get("synced"):
+            return record_sync
+        retry_safe = record_sync["retry_safe"]
+        record_id = record_sync["record_id"]
+        operation = record_sync["operation"]
         event_subscription = ensure_bitable_event_subscription(
             repository=repository,
             bitable_service=bitable_service,
@@ -2201,6 +2225,120 @@ def _sync_application_to_bitable_once(
             table_id=bitable_context["table_id"],
         ),
         **bitable_context,
+    }
+
+
+def _sync_application_bitable_record_locked(
+    repository: OfferPilotRepository,
+    application: Application,
+    schedule: Optional[InterviewSchedule],
+    calendar_sync: Optional[Dict[str, Any]],
+    bitable_service: FeishuBitableService,
+    bitable_context: Dict[str, Any],
+    clear_interview_fields: bool,
+) -> Dict[str, Any]:
+    if repository.is_application_deleted(application.id, owner_id=application.owner_id):
+        return _deleted_bitable_sync_result(application)
+    retry_safe = False
+    try:
+        fields = _build_application_bitable_fields(
+            application=application,
+            schedule=schedule,
+            calendar_sync=calendar_sync,
+            clear_interview_fields=clear_interview_fields,
+        )
+        remember_bitable_table_owner(
+            repository=repository,
+            app_token=bitable_context["app_token"],
+            table_id=bitable_context["table_id"],
+            owner_id=application.owner_id,
+        )
+        record_setting_key = _bitable_record_setting_key(
+            table_id=bitable_context["table_id"],
+            application_id=application.id,
+        )
+        existing_record_id = repository.get_runtime_setting(record_setting_key)
+        retry_safe = bool(existing_record_id)
+
+        if existing_record_id:
+            try:
+                result = bitable_service.update_record(
+                    app_token=bitable_context["app_token"],
+                    table_id=bitable_context["table_id"],
+                    record_id=existing_record_id,
+                    fields=fields,
+                )
+            except FeishuRequestError as exc:
+                if exc.code != 1254043:
+                    raise
+                deletion = sync_deleted_bitable_record_to_repository(
+                    repository=repository,
+                    record_id=existing_record_id,
+                    app_token=bitable_context["app_token"],
+                    table_id=bitable_context["table_id"],
+                    fallback_owner_id=application.owner_id,
+                )
+                if (
+                    deletion.synced
+                    and deletion.status in {"deleted", "already_deleted"}
+                    and repository.is_application_deleted(application.id, owner_id=application.owner_id)
+                ):
+                    return {
+                        **_deleted_bitable_sync_result(application),
+                        "record_id": existing_record_id,
+                    }
+                return {
+                    "synced": False,
+                    "status": "failed",
+                    "retry_safe": False,
+                    "record_id": existing_record_id,
+                    "deletion_sync_status": deletion.status,
+                    "error": "飞书多维表格中的原记录不存在，但未能确认其与当前投递的归属关系，请核对后再操作。",
+                }
+            record_id = result.record_id or existing_record_id
+            operation = "updated"
+        else:
+            result = bitable_service.create_record(
+                app_token=bitable_context["app_token"],
+                table_id=bitable_context["table_id"],
+                fields=fields,
+            )
+            if not result.record_id:
+                raise FeishuRequestError("Feishu bitable record response does not contain record_id.")
+            record_id = result.record_id
+            operation = "created"
+        remember_bitable_record_mapping(
+            repository=repository,
+            app_token=bitable_context["app_token"],
+            table_id=bitable_context["table_id"],
+            record_id=record_id,
+            application_id=application.id,
+            owner_id=application.owner_id,
+        )
+    except (FeishuConfigurationError, FeishuRequestError) as exc:
+        return {
+            "synced": False,
+            "status": "failed",
+            "retry_safe": retry_safe,
+            "error": _summarize_bitable_collaborator_error(str(exc)),
+        }
+
+    return {
+        "synced": True,
+        "status": "synced",
+        "operation": operation,
+        "record_id": record_id,
+        "retry_safe": retry_safe,
+    }
+
+
+def _deleted_bitable_sync_result(application: Application) -> Dict[str, Any]:
+    return {
+        "synced": False,
+        "status": "deleted",
+        "retry_safe": False,
+        "application_id": application.id,
+        "message": _DELETED_BITABLE_RECORD_MESSAGE,
     }
 
 
@@ -2427,6 +2565,8 @@ def _owner_id_from_arguments(arguments: Dict[str, Any]) -> str:
 def _format_bitable_sync_lines(bitable_sync: Optional[Dict[str, Any]]) -> List[str]:
     if not bitable_sync:
         return []
+    if bitable_sync.get("status") == "deleted":
+        return [bitable_sync.get("message") or _DELETED_BITABLE_RECORD_MESSAGE]
     if bitable_sync.get("synced"):
         lines = []
         if bitable_sync.get("bitable_auto_created"):
@@ -2576,6 +2716,8 @@ def _sync_idempotency_setting_key(idempotency_key: str) -> str:
 
 # 汇总本地写入之后的外部同步结果。
 def _external_write_status(*sync_results: Dict[str, Any]) -> str:
+    if any(result.get("status") == "deleted" for result in sync_results):
+        return "deleted"
     if any(result.get("reconciliation_required") for result in sync_results):
         return "reconciliation_required"
     if any(result.get("status") == "failed" for result in sync_results):
@@ -2590,6 +2732,8 @@ def _external_write_status(*sync_results: Dict[str, Any]) -> str:
 
 # 生成用户可理解的外部同步摘要。
 def _external_write_summary(operation_status: str) -> str:
+    if operation_status == "deleted":
+        return _DELETED_BITABLE_RECORD_MESSAGE
     if operation_status == "reconciliation_required":
         return "本地状态已更新，但远端写入结果未知；为避免重复记录，需先核对飞书状态。"
     if operation_status == "partial_success":

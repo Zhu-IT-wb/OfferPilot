@@ -4,6 +4,144 @@ from app.models.application import ApplicationStatus
 from app.models.interview_schedule import InterviewScheduleStatus
 from app.models.task import TaskStatus
 from app.repositories.offerpilot_repository import InMemoryOfferPilotRepository
+from app.repositories.sqlite_offerpilot_repository import SQLiteOfferPilotRepository
+
+
+@pytest.fixture(params=["memory", "sqlite"])
+def application_repository(request, tmp_path):
+    if request.param == "sqlite":
+        return SQLiteOfferPilotRepository(str(tmp_path / "offerpilot.db"))
+    return InMemoryOfferPilotRepository()
+
+
+def test_application_soft_deletion_is_owner_scoped_and_idempotent(application_repository) -> None:
+    repository = application_repository
+    application = repository.create_application("Acme", "Engineer", owner_id="owner_a")
+    other_application = repository.create_application("Acme", "Engineer", owner_id="owner_b")
+    mapping_key = f"feishu.offerpilot_bitable_record_id.table_1.{application.id}"
+    repository.set_runtime_setting(mapping_key, "record_1")
+
+    assert repository.delete_application("missing", owner_id="owner_a") is False
+    assert repository.is_application_deleted("missing", owner_id="owner_a") is False
+    assert repository.delete_application(application.id, owner_id="owner_b") is False
+    assert repository.is_application_deleted(application.id, owner_id="owner_a") is False
+    assert [item.id for item in repository.list_applications(owner_id="owner_a")] == [
+        application.id
+    ]
+    assert repository.find_application_by_bitable_record_id("table_1", "record_1") == (
+        application.id,
+        "owner_a",
+    )
+
+    assert repository.delete_application(application.id, owner_id="owner_a") is True
+    assert repository.delete_application(application.id, owner_id="owner_a") is True
+    assert repository.delete_application(application.id, owner_id="owner_b") is False
+    assert repository.is_application_deleted(application.id, owner_id="owner_a") is True
+    assert repository.is_application_deleted(application.id, owner_id="owner_b") is False
+    assert repository.find_application_owner_id(application.id) == "owner_a"
+    assert repository.list_applications(owner_id="owner_a") == []
+    assert repository.list_applications(company="Acme", owner_id="owner_a") == []
+    assert [item.id for item in repository.list_applications(owner_id="owner_b")] == [
+        other_application.id
+    ]
+    assert repository.find_application_by_bitable_record_id("table_1", "record_1") is None
+    assert repository.get_runtime_setting(mapping_key) == "record_1"
+
+    replacement = repository.create_application("Acme", "Engineer", owner_id="owner_a")
+    repository.set_runtime_setting(
+        f"feishu.offerpilot_bitable_record_id.table_1.{replacement.id}", "record_1"
+    )
+    assert repository.find_application_by_bitable_record_id("table_1", "record_1") == (
+        replacement.id,
+        "owner_a",
+    )
+
+
+def test_deleted_applications_cannot_be_updated_or_reassigned(application_repository) -> None:
+    repository = application_repository
+    application = repository.create_application("Acme", "Engineer")
+    assert repository.delete_application(application.id) is True
+
+    assert repository.update_application("Acme", status=ApplicationStatus.OFFER) is None
+    assert repository.update_application_by_id(application.id, company="Changed") is None
+    assert repository.reassign_application_owner(application.id, "local_user", "owner_b") is False
+    assert repository.is_application_deleted(application.id) is True
+    assert repository.find_application_owner_id(application.id) == "local_user"
+    assert repository.list_applications() == []
+    assert repository.list_applications(owner_id="owner_b") == []
+
+
+def test_application_ids_never_reuse_soft_deleted_records(application_repository) -> None:
+    repository = application_repository
+    first = repository.create_application("Acme", "Engineer")
+    second = repository.create_application("Acme", "Engineer")
+    assert repository.delete_application(first.id) is True
+    third = repository.create_application("Acme", "Engineer")
+    assert repository.delete_application(second.id) is True
+    assert repository.delete_application(third.id) is True
+    fourth = repository.create_application("Acme", "Engineer")
+
+    assert [first.id, second.id, third.id, fourth.id] == ["app_1", "app_2", "app_3", "app_4"]
+    assert [item.id for item in repository.list_applications()] == [fourth.id]
+    assert repository.find_application_owner_id(first.id) == "local_user"
+
+
+def test_application_soft_deletion_hides_schedules_and_preserves_receipts(application_repository) -> None:
+    repository = application_repository
+    application = repository.create_application("Acme", "Engineer", owner_id="owner_a")
+    linked = repository.create_interview_schedule(
+        "Acme", "First", application_id=application.id, owner_id="owner_a"
+    )
+    standalone = repository.create_interview_schedule("Acme", "First", owner_id="owner_a")
+    other_owner = repository.create_interview_schedule("Acme", "First", owner_id="owner_b")
+    repository.update_interview_schedule_calendar_event(linked.id, "event_1", owner_id="owner_a")
+    assert repository.delete_application(application.id, owner_id="owner_a") is True
+
+    for company in (None, "Acme"):
+        assert [
+            item.id for item in repository.list_interview_schedules(company, owner_id="owner_a")
+        ] == [standalone.id]
+    assert [item.id for item in repository.list_interview_schedules(owner_id="owner_b")] == [
+        other_owner.id
+    ]
+    assert repository.update_interview_schedule(linked.id, round_name="Second", owner_id="owner_a") is None
+    assert repository.update_interview_schedule_calendar_event(linked.id, "wrong_owner", owner_id="owner_b") is None
+    receipt = repository.update_interview_schedule_calendar_event(
+        linked.id, "event_after_deletion", owner_id="owner_a"
+    )
+    assert receipt is not None
+    assert receipt.calendar_event_id == "event_after_deletion"
+    assert [item.id for item in repository.list_interview_schedules(owner_id="owner_a")] == [
+        standalone.id
+    ]
+    assert repository.cancel_interview_schedule(linked.id, owner_id="owner_a") is None
+    with pytest.raises(ValueError, match="current owner"):
+        repository.create_interview_schedule(
+            "Acme", "Second", application_id=application.id, owner_id="owner_a"
+        )
+    if isinstance(repository, InMemoryOfferPilotRepository):
+        stored = next(item for item in repository.interview_schedules if item.id == linked.id)
+        assert stored.calendar_event_id == "event_after_deletion"
+        assert stored.status == InterviewScheduleStatus.SCHEDULED
+        assert stored.round == "First"
+    else:
+        with repository._connect() as connection:
+            stored = connection.execute(
+                "SELECT calendar_event_id, status, round FROM interview_schedules WHERE id = ?",
+                (linked.id,),
+            ).fetchone()
+        assert tuple(stored) == ("event_after_deletion", InterviewScheduleStatus.SCHEDULED.value, "First")
+
+
+def test_memory_application_ids_advance_past_sparse_seed_ids() -> None:
+    repository = InMemoryOfferPilotRepository()
+    seeded = repository.create_application("Acme", "Engineer")
+    seeded.id = "app_2"
+    assert repository.delete_application(seeded.id) is True
+
+    created = repository.create_application("Acme", "Engineer")
+
+    assert created.id == "app_3"
 
 
 def test_repository_lists_default_today_tasks() -> None:

@@ -1,6 +1,6 @@
 import json
 from dataclasses import dataclass, field, replace
-from threading import Lock
+from threading import Lock, RLock
 from typing import Any, Dict, List, Optional
 
 from app.models.application import (
@@ -26,9 +26,10 @@ _OFFERPILOT_BITABLE_APP_TOKEN_SETTING = "feishu.offerpilot_bitable_app_token"
 _OFFERPILOT_BITABLE_TABLE_ID_SETTING = "feishu.offerpilot_bitable_table_id"
 _OFFERPILOT_BITABLE_RECORD_ID_PREFIX = "feishu.offerpilot_bitable_record_id."
 _OFFERPILOT_BITABLE_APPLICATION_ID_PREFIX = "feishu.offerpilot_bitable_application_id."
+_DELETED_BITABLE_RECORD_PREFIX = "feishu.offerpilot_bitable_deleted_record."
 _DEFAULT_OWNER_ID = "local_user"
-_RECORD_LOCKS_GUARD = Lock()
-_RECORD_LOCKS: Dict[tuple[str, str, str], Lock] = {}
+_TABLE_LOCKS_GUARD = Lock()
+_TABLE_LOCKS: Dict[tuple[str, str], Any] = {}
 
 
 # 承载外部服务调用后的结构化结果。
@@ -136,6 +137,14 @@ def sync_bitable_record_to_repository(
             record_id=record_id,
         )
     except (FeishuConfigurationError, FeishuRequestError) as exc:
+        if isinstance(exc, FeishuRequestError) and getattr(exc, "code", None) == 1254043:
+            return sync_deleted_bitable_record_to_repository(
+                repository=repository,
+                record_id=record_id,
+                app_token=resolved_app_token,
+                table_id=resolved_table_id,
+                fallback_owner_id=fallback_owner_id,
+            )
         return BitableRecordSyncResult(
             synced=False,
             status="failed",
@@ -169,8 +178,7 @@ def sync_bitable_record_fields_to_repository(
     allow_default_local_owner: bool = True,
     bitable_service: Optional[FeishuBitableService] = None,
 ) -> BitableRecordSyncResult:
-    record_lock = _record_sync_lock(app_token, table_id, record_id)
-    with record_lock:
+    with bitable_table_sync_lock(app_token, table_id):
         return _sync_bitable_record_fields_locked(
             repository=repository,
             record_id=record_id,
@@ -193,6 +201,16 @@ def _sync_bitable_record_fields_locked(
     allow_default_local_owner: bool,
     bitable_service: Optional[FeishuBitableService],
 ) -> BitableRecordSyncResult:
+    if repository.get_runtime_setting(
+        _deleted_record_setting_key(app_token, table_id, record_id)
+    ):
+        return BitableRecordSyncResult(
+            synced=True,
+            status="already_deleted",
+            app_token=app_token,
+            table_id=table_id,
+            record_id=record_id,
+        )
     field_application_id = _field_to_text(fields.get("OfferPilot记录ID")).strip() or None
     explicit_owner_id = extract_bitable_owner_id(fields)
     mapped_application_id, mapped_owner_id = _load_record_mapping(
@@ -287,6 +305,16 @@ def _sync_bitable_record_fields_locked(
         field_application_id
         or mapped_application_id
     )
+    if application_id and repository.is_application_deleted(application_id, owner_id):
+        return BitableRecordSyncResult(
+            synced=True,
+            status="already_deleted",
+            app_token=app_token,
+            table_id=table_id,
+            record_id=record_id,
+            application_id=application_id,
+            owner_id=owner_id,
+        )
     if (
         application_id
         and mapped_owner_id
@@ -365,6 +393,107 @@ def _sync_bitable_record_fields_locked(
         fields=fields,
         bitable_service=bitable_service,
     )
+
+
+def sync_deleted_bitable_record_to_repository(
+    repository: OfferPilotRepository,
+    record_id: str,
+    app_token: str,
+    table_id: str,
+    fallback_owner_id: Optional[str] = None,
+) -> BitableRecordSyncResult:
+    """Apply a confirmed remote deletion only to a trusted, matching mapping."""
+    with bitable_table_sync_lock(app_token, table_id):
+        context = dict(app_token=app_token, table_id=table_id, record_id=record_id)
+        table_owner = get_bitable_resource_owner(repository, app_token, table_id)
+        if not table_owner:
+            return BitableRecordSyncResult(
+                synced=False, status="ignored_foreign_table", **context
+            )
+        if fallback_owner_id and fallback_owner_id.strip() != table_owner:
+            return BitableRecordSyncResult(
+                synced=False, status="owner_conflict", **context
+            )
+        application_id, owner_id = _load_record_mapping(
+            repository, app_token, table_id, record_id
+        )
+        if not application_id:
+            legacy = _find_legacy_record_mapping(repository, table_id, record_id)
+            if legacy:
+                application_id, owner_id = legacy
+        if application_id and (
+            owner_id != table_owner
+            or _find_application_owner_id(repository, application_id) != table_owner
+        ):
+            return BitableRecordSyncResult(
+                synced=False, status="owner_conflict", **context
+            )
+        tombstone_key = _deleted_record_setting_key(app_token, table_id, record_id)
+        if not application_id:
+            # A delayed edit callback must not import a row deleted before its first sync.
+            repository.set_runtime_setting(tombstone_key, "deleted")
+            return BitableRecordSyncResult(
+                synced=True, status="unmapped_deleted", owner_id=table_owner, **context
+            )
+        forward_key = _bitable_record_setting_key(table_id, application_id)
+        current_record = repository.get_runtime_setting(forward_key)
+        if current_record and current_record != record_id:
+            repository.set_runtime_setting(tombstone_key, "deleted")
+            return BitableRecordSyncResult(
+                synced=True, status="ignored_replaced_record", **context
+            )
+        already_deleted = repository.is_application_deleted(application_id, table_owner)
+        # Persist a legacy row's identity before deleting it so a crash cannot
+        # make a delayed edit look like a new, unmapped application.
+        if not _load_record_mapping(repository, app_token, table_id, record_id)[0]:
+            remember_bitable_record_mapping(
+                repository, app_token, table_id, record_id, application_id, table_owner
+            )
+        if not repository.delete_application(application_id, table_owner):
+            return BitableRecordSyncResult(
+                synced=False, status="missing_application", **context
+            )
+        repository.set_runtime_setting(tombstone_key, "deleted")
+        # Retain the reverse mapping as a receipt, but invalidate the writable mapping.
+        repository.set_runtime_setting(forward_key, "")
+        return BitableRecordSyncResult(
+            synced=True,
+            status="already_deleted" if already_deleted else "deleted",
+            application_id=application_id,
+            owner_id=table_owner,
+            **context,
+        )
+
+
+def list_bitable_record_mappings(
+    repository: OfferPilotRepository,
+    app_token: str,
+    table_id: str,
+    owner_id: str,
+) -> dict[str, str]:
+    """Snapshot active mappings before a pull, excluding concurrent new writes."""
+    if get_bitable_resource_owner(repository, app_token, table_id) != owner_id:
+        return {}
+    prefix = f"{_OFFERPILOT_BITABLE_RECORD_ID_PREFIX}{table_id}."
+    mappings = {}
+    for key, record_id in repository.list_runtime_settings(prefix).items():
+        application_id = key[len(prefix):]
+        if (
+            record_id
+            and _find_application_owner_id(repository, application_id) == owner_id
+            and not repository.is_application_deleted(application_id, owner_id)
+        ):
+            mapped_id, mapped_owner = _load_record_mapping(
+                repository, app_token, table_id, record_id
+            )
+            if mapped_id and (mapped_id, mapped_owner) != (application_id, owner_id):
+                continue
+            mappings[record_id] = application_id
+    return mappings
+
+
+def _deleted_record_setting_key(app_token: str, table_id: str, record_id: str) -> str:
+    return f"{_DELETED_BITABLE_RECORD_PREFIX}{app_token}.{table_id}.{record_id}"
 
 
 # 创建 application from fields。
@@ -647,13 +776,14 @@ def _find_legacy_record_mapping(
     return application_id.strip(), owner_id.strip()
 
 
-def _record_sync_lock(app_token: str, table_id: str, record_id: str) -> Lock:
-    key = (app_token, table_id, record_id)
-    with _RECORD_LOCKS_GUARD:
-        lock = _RECORD_LOCKS.get(key)
+def bitable_table_sync_lock(app_token: str, table_id: str) -> Any:
+    """Serialize record writes and deletion reconciliation within one process."""
+    key = (app_token, table_id)
+    with _TABLE_LOCKS_GUARD:
+        lock = _TABLE_LOCKS.get(key)
         if lock is None:
-            lock = Lock()
-            _RECORD_LOCKS[key] = lock
+            lock = RLock()
+            _TABLE_LOCKS[key] = lock
         return lock
 
 

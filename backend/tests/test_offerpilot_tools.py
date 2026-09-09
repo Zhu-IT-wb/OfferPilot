@@ -1,5 +1,9 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from threading import Event
 from zoneinfo import ZoneInfo
+
+import pytest
 
 from app.core.config import Settings
 from app.tools.tool_names import AgentActionName
@@ -19,6 +23,390 @@ from app.repositories.offerpilot_repository import InMemoryOfferPilotRepository
 from app.tools import offerpilot_tools
 from app.tools.offerpilot_tools import build_offerpilot_tool_registry, update_application
 from app.tools.registry import ToolNotFoundError, ToolRegistry
+from app.services.bitable_sync_service import BitableRecordSyncResult
+
+
+class MissingRecordBitableService:
+    app_token = "bascn_missing_record_test"
+    table_id = "tbl_missing_record_test"
+
+    def __init__(self, error=None):
+        self.error = error
+        self.updated_records = []
+        self.created_records = []
+
+    def is_bitable_sync_enabled(self):
+        return True
+
+    def should_manage_offerpilot_bitable(self):
+        return False
+
+    def update_record(self, **kwargs):
+        self.updated_records.append(kwargs)
+        if self.error:
+            raise self.error
+        return FeishuBitableRecordResult(record_id=kwargs["record_id"], raw_response={"code": 0})
+
+    def create_record(self, **kwargs):
+        self.created_records.append(kwargs)
+        return FeishuBitableRecordResult(
+            record_id=f"rec_created_{len(self.created_records)}",
+            raw_response={"code": 0},
+        )
+
+
+def _remember_missing_record_test_mapping(repository, service, application):
+    offerpilot_tools.remember_bitable_table_owner(
+        repository, service.app_token, service.table_id, application.owner_id
+    )
+    offerpilot_tools.remember_bitable_record_mapping(
+        repository,
+        service.app_token,
+        service.table_id,
+        "rec_removed",
+        application.id,
+        application.owner_id,
+    )
+
+
+def test_bitable_missing_record_deletes_local_application_without_retry_or_recreation() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="Example", role="Engineer")
+    service = MissingRecordBitableService(FeishuRequestError("RecordIdNotFound", code=1254043))
+    _remember_missing_record_test_mapping(repository, service, application)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=service)
+
+    result = registry.run("update_application", {"application_id": application.id, "status": "offer"})
+
+    assert result.success is False
+    assert result.data["operation_status"] == "deleted"
+    assert result.data["retryable"] is False
+    assert result.data["application"] is None
+    assert result.data["bitable_sync"]["synced"] is False
+    assert result.data["bitable_sync"]["status"] == "deleted"
+    assert result.data["bitable_sync"]["retry_safe"] is False
+    assert result.data["bitable_sync"]["attempts"] == 1
+    assert "已在飞书多维表格中删除" in result.message
+    assert "已更新投递记录" not in result.message
+    assert repository.is_application_deleted(application.id, application.owner_id)
+    assert repository.list_applications() == []
+    assert len(service.updated_records) == 1
+    assert service.created_records == []
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        FeishuRequestError("Feishu OpenAPI returned HTTP 404: not found"),
+        FeishuRequestError("permission denied", code=99991672),
+        FeishuRequestError("network timeout"),
+        FeishuRequestError("RecordIdNotFound 1254043"),
+        FeishuRequestError("TableIdNotFound", code=1254004),
+    ],
+)
+def test_bitable_other_errors_do_not_delete_application_or_create_record(error) -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="Example", role="Engineer")
+    service = MissingRecordBitableService(error)
+    _remember_missing_record_test_mapping(repository, service, application)
+
+    result = offerpilot_tools._sync_application_to_bitable(
+        repository, application, None, None, service
+    )
+
+    assert result["status"] == "failed"
+    assert result["attempts"] == 3
+    assert repository.is_application_deleted(application.id, application.owner_id) is False
+    assert repository.list_applications() == [application]
+    assert len(service.updated_records) == 3
+    assert service.created_records == []
+
+
+def test_bitable_deleted_stale_application_cannot_replay_success_or_recreate_record() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="Example", role="Engineer")
+    service = MissingRecordBitableService()
+    repository.delete_application(application.id, application.owner_id)
+    offerpilot_tools._store_sync_result(
+        repository, "previous-sync", {"synced": True, "status": "synced", "record_id": "rec_removed"}
+    )
+
+    once = offerpilot_tools._sync_application_to_bitable_once(
+        repository, application, None, None, service
+    )
+    replay = offerpilot_tools._sync_application_to_bitable(
+        repository, application, None, None, service, idempotency_key="previous-sync"
+    )
+
+    assert once["status"] == "deleted"
+    assert replay["status"] == "deleted"
+    assert replay["synced"] is False
+    assert replay["attempts"] == 0
+    assert service.updated_records == []
+    assert service.created_records == []
+    assert repository.list_runtime_settings("feishu.offerpilot_bitable") == {}
+
+
+def test_bitable_new_application_after_remote_deletion_creates_distinct_record() -> None:
+    repository = InMemoryOfferPilotRepository()
+    previous = repository.create_application(company="Example", role="Engineer")
+    service = MissingRecordBitableService(FeishuRequestError("RecordIdNotFound", code=1254043))
+    _remember_missing_record_test_mapping(repository, service, previous)
+    deleted = offerpilot_tools._sync_application_to_bitable(repository, previous, None, None, service)
+    service.error = None
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=service)
+
+    created = registry.run("create_application", {"company": "Example", "role": "Engineer"})
+
+    assert deleted["status"] == "deleted"
+    assert created.success is True
+    assert created.data["application"]["id"] != previous.id
+    assert created.data["bitable_sync"]["record_id"] != "rec_removed"
+    assert len(service.created_records) == 1
+    assert len(service.updated_records) == 1
+    assert len(repository.list_applications()) == 1
+
+
+@pytest.mark.parametrize(
+    "deletion_status",
+    ["owner_conflict", "unmapped_deleted", "ignored_replaced_record", "ignored_foreign_table", "missing_application"],
+)
+def test_bitable_missing_record_requires_confirmed_application_deletion(monkeypatch, deletion_status) -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="Example", role="Engineer")
+    service = MissingRecordBitableService(FeishuRequestError("RecordIdNotFound", code=1254043))
+    _remember_missing_record_test_mapping(repository, service, application)
+    monkeypatch.setattr(
+        offerpilot_tools,
+        "sync_deleted_bitable_record_to_repository",
+        lambda **kwargs: BitableRecordSyncResult(synced=deletion_status != "owner_conflict", status=deletion_status),
+    )
+
+    result = offerpilot_tools._sync_application_to_bitable(repository, application, None, None, service)
+
+    assert result["status"] == "failed"
+    assert result["retry_safe"] is False
+    assert result["attempts"] == 1
+    assert result["deletion_sync_status"] == deletion_status
+    assert repository.is_application_deleted(application.id, application.owner_id) is False
+    assert len(service.updated_records) == 1
+    assert service.created_records == []
+
+
+def test_bitable_missing_record_with_foreign_mapping_does_not_delete_either_owner() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="Example", role="Engineer")
+    foreign_application = repository.create_application(
+        company="Other", role="Engineer", owner_id="other_owner"
+    )
+    service = MissingRecordBitableService(FeishuRequestError("RecordIdNotFound", code=1254043))
+    _remember_missing_record_test_mapping(repository, service, application)
+    offerpilot_tools.remember_bitable_record_mapping(
+        repository,
+        service.app_token,
+        service.table_id,
+        "rec_removed",
+        foreign_application.id,
+        foreign_application.owner_id,
+    )
+
+    result = offerpilot_tools._sync_application_to_bitable(repository, application, None, None, service)
+
+    assert result["status"] == "failed"
+    assert result["deletion_sync_status"] == "owner_conflict"
+    assert result["attempts"] == 1
+    assert repository.is_application_deleted(application.id, application.owner_id) is False
+    assert repository.is_application_deleted(foreign_application.id, foreign_application.owner_id) is False
+    assert service.created_records == []
+
+
+def test_bitable_missing_record_accepts_already_deleted_application() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="Example", role="Engineer")
+
+    class ConcurrentDeletionBitableService(MissingRecordBitableService):
+        def update_record(self, **kwargs):
+            repository.delete_application(application.id, application.owner_id)
+            return super().update_record(**kwargs)
+
+    service = ConcurrentDeletionBitableService(FeishuRequestError("RecordIdNotFound", code=1254043))
+    _remember_missing_record_test_mapping(repository, service, application)
+
+    result = offerpilot_tools._sync_application_to_bitable(repository, application, None, None, service)
+
+    assert result["status"] == "deleted"
+    assert result["synced"] is False
+    assert result["attempts"] == 1
+    assert service.created_records == []
+
+
+def test_bitable_deletion_during_table_setup_cannot_recreate_remote_record(monkeypatch) -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="Example", role="Engineer")
+    service = MissingRecordBitableService()
+    _remember_missing_record_test_mapping(repository, service, application)
+    ensure_bitable = offerpilot_tools._ensure_bitable_for_sync
+
+    def delete_during_setup(*args, **kwargs):
+        context = ensure_bitable(*args, **kwargs)
+        deletion = offerpilot_tools.sync_deleted_bitable_record_to_repository(
+            repository, "rec_removed", service.app_token, service.table_id, application.owner_id
+        )
+        assert deletion.status == "deleted"
+        return context
+
+    monkeypatch.setattr(offerpilot_tools, "_ensure_bitable_for_sync", delete_during_setup)
+
+    result = offerpilot_tools._sync_application_to_bitable(repository, application, None, None, service)
+
+    assert result["status"] == "deleted"
+    assert result["synced"] is False
+    assert service.updated_records == []
+    assert service.created_records == []
+
+
+def test_bitable_record_write_and_remote_deletion_share_table_lock() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="Example", role="Engineer")
+    update_started = Event()
+    release_update = Event()
+    deletion_started = Event()
+
+    class BlockingBitableService(MissingRecordBitableService):
+        def update_record(self, **kwargs):
+            update_started.set()
+            assert release_update.wait(timeout=5)
+            return super().update_record(**kwargs)
+
+    service = BlockingBitableService()
+    _remember_missing_record_test_mapping(repository, service, application)
+
+    def delete_remote_record():
+        deletion_started.set()
+        return offerpilot_tools.sync_deleted_bitable_record_to_repository(
+            repository, "rec_removed", service.app_token, service.table_id, application.owner_id
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        writer = executor.submit(
+            offerpilot_tools._sync_application_to_bitable, repository, application, None, None, service
+        )
+        try:
+            assert update_started.wait(timeout=5)
+            deletion = executor.submit(delete_remote_record)
+            assert deletion_started.wait(timeout=5)
+            assert deletion.done() is False
+            assert repository.is_application_deleted(application.id, application.owner_id) is False
+        finally:
+            release_update.set()
+        writer.result(timeout=5)
+        assert deletion.result(timeout=5).status == "deleted"
+
+    stale_write = offerpilot_tools._sync_application_to_bitable(repository, application, None, None, service)
+
+    assert stale_write["status"] == "deleted"
+    assert repository.get_runtime_setting(
+        offerpilot_tools._bitable_record_setting_key(service.table_id, application.id)
+    ) == ""
+    assert len(service.updated_records) == 1
+    assert service.created_records == []
+
+
+@pytest.mark.parametrize(
+    "sync_function",
+    [
+        offerpilot_tools._sync_interview_schedule_to_calendar,
+        offerpilot_tools._sync_rescheduled_interview_to_calendar,
+        offerpilot_tools._sync_cancelled_interview_to_calendar,
+    ],
+)
+@pytest.mark.parametrize("event_id", [None, "event_retained"])
+def test_deleted_application_stale_schedule_cannot_sync_calendar_or_replay_success(sync_function, event_id) -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="Example", role="Engineer", owner_id="calendar_owner")
+    schedule = repository.create_interview_schedule(
+        application_id=application.id,
+        company=application.company,
+        role=application.role,
+        round_name="一面",
+        start_time="明天下午三点",
+        start_at="2026-09-10T15:00:00+08:00",
+        owner_id=application.owner_id,
+    )
+    repository.update_interview_schedule_calendar_event(schedule.id, event_id, owner_id=application.owner_id)
+    repository.delete_application(application.id, application.owner_id)
+    offerpilot_tools._store_sync_result(
+        repository, "previous-calendar-sync", {"synced": True, "status": "synced", "calendar_event_id": event_id}
+    )
+
+    class UnexpectedCalendarService:
+        def is_calendar_sync_enabled(self):
+            raise AssertionError("Deleted applications must stop before accessing calendar service")
+
+    result = sync_function(
+        repository=repository,
+        schedule=schedule,
+        calendar_service=UnexpectedCalendarService(),
+        owner_id=application.owner_id,
+        idempotency_key="previous-calendar-sync",
+    )
+
+    assert result["status"] == "deleted"
+    assert result["synced"] is False
+    assert result["retry_safe"] is False
+    assert result["attempts"] == 0
+    assert "停止关联面试的日历同步" in result["message"]
+    assert offerpilot_tools._format_calendar_sync_lines(result) == [result["message"]]
+    assert schedule.calendar_event_id == event_id
+
+
+def test_bulk_update_reports_remote_deleted_application_without_success() -> None:
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="Example", role="Engineer")
+    service = MissingRecordBitableService(FeishuRequestError("RecordIdNotFound", code=1254043))
+    _remember_missing_record_test_mapping(repository, service, application)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=service)
+
+    result = registry.run("update_application", {"company": "Example", "apply_to_all": True, "status": "offer"})
+
+    assert result.success is False
+    assert result.data["applications"] == []
+    assert result.data["deleted_application_ids"] == [application.id]
+    assert "1 条记录已在飞书多维表格中删除" in result.message
+    assert "已更新 1 条" not in result.message
+
+
+@pytest.mark.parametrize("tool_name", ["reschedule_interview", "cancel_interview"])
+def test_schedule_update_reports_remote_deleted_application_without_success(monkeypatch, tool_name) -> None:
+    monkeypatch.setattr(
+        offerpilot_tools, "_normalize_interview_start_at", lambda value: "2026-09-11T16:00:00+08:00"
+    )
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application(company="Example", role="Engineer")
+    schedule = repository.create_interview_schedule(
+        application_id=application.id,
+        company=application.company,
+        role=application.role,
+        round_name="一面",
+        start_time="2026-09-10 15:00",
+        start_at="2026-09-10T15:00:00+08:00",
+    )
+    service = MissingRecordBitableService(FeishuRequestError("RecordIdNotFound", code=1254043))
+    _remember_missing_record_test_mapping(repository, service, application)
+    registry = build_offerpilot_tool_registry(repository, calendar_service=None, bitable_service=service)
+
+    result = registry.run(
+        tool_name,
+        {"schedule_id": schedule.id, "interview_time": "2026-09-11 16:00"},
+    )
+
+    assert result.success is False
+    assert result.data["application"] is None
+    assert result.data["operation_status"] == "deleted"
+    assert result.data["retryable"] is False
+    assert "已在飞书多维表格中删除" in result.message
+    assert len(service.updated_records) == 1
+    assert service.created_records == []
 
 
 def test_tool_registry_runs_registered_handler() -> None:

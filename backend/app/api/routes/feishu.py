@@ -27,6 +27,11 @@ from app.schemas.agent import (
 )
 from app.schemas.feishu import FeishuEventProcessResponse
 from app.services.bitable_sync_service import sync_bitable_record_to_repository
+from app.services.agent_runtime_store import InMemoryAgentRuntimeStore
+from app.services.feishu_delivery_service import (
+    FeishuDeliveryAttempt,
+    FeishuTextDeliveryCoordinator,
+)
 from app.services.feishu_service import (
     FeishuBitableService,
     FeishuConfigurationError,
@@ -145,26 +150,99 @@ async def handle_feishu_event(request: Request, payload: Dict[str, Any]):
         user_id=runtime_user_id,
         conversation_scope=conversation_scope,
     )
-    progress_status = await _send_progress_reply(
-        payload=payload,
-        user_id=user_id,
-        request_id=event_id,
-    )
-    if not progress_status.get("sent") and progress_status.get("error"):
-        logger.info(
-            "Feishu progress reply unavailable: event_type=%s error=%s",
-            event_type,
-            _summarize_reply_error(progress_status.get("error")),
+    coordinator = getattr(request.app.state, "feishu_text_delivery", None)
+    if coordinator is None:
+        coordinator = FeishuTextDeliveryCoordinator(
+            getattr(runtime, "runtime_store", None) or InMemoryAgentRuntimeStore()
         )
+        request.app.state.feishu_text_delivery = coordinator
+    # Transport retry metadata is not part of the user's message identity.
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {"event_type": event_type, "event": payload.get("event"),
+             "thread_id": thread_id, "user_id": user_id},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     try:
-        agent_response = await _dispatch_agent_message(
-            runtime=runtime,
-            message=message,
-            user_id=runtime_user_id,
-            conversation_scope=conversation_scope,
-            thread_id=thread_id,
-            request_id=event_id,
+        attempt = await asyncio.to_thread(
+            coordinator.claim, event_id, fingerprint, thread_id
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if attempt is None:
+        return _text_event_ack(event_type=event_type, user_id=user_id)
+    if attempt.completed:
+        return attempt.state["result"]
+    try:
+        return await _execute_text_message(
+            runtime=runtime, payload=payload, event_id=event_id,
+            event_type=event_type, message=message, user_id=user_id,
+            conversation_scope=conversation_scope, thread_id=thread_id,
+            coordinator=coordinator, attempt=attempt,
+        )
+    finally:
+        coordinator.release(event_id)
+
+
+def _text_event_ack(event_type: Optional[str], user_id: str) -> Dict[str, Any]:
+    return _response(
+        FeishuEventProcessResponse(
+            handled=True, event_type=event_type, user_id=user_id, reply_sent=False
+        )
+    )
+
+
+async def _execute_text_message(
+    *, runtime: Any, payload: Dict[str, Any], event_id: str,
+    event_type: Optional[str], message: str, user_id: str,
+    conversation_scope: Optional[str], thread_id: str,
+    coordinator: FeishuTextDeliveryCoordinator, attempt: FeishuDeliveryAttempt,
+) -> Dict[str, Any]:
+    progress_status: Dict[str, Any] = {}
+    recovered_reply = False
+    try:
+        agent_response = _coerce_agent_response(attempt.state.get("agent_response"))
+        if agent_response is None:
+            agent_response = await _replay_agent_message(
+                runtime=runtime, thread_id=thread_id, user_id=user_id,
+                request_id=event_id,
+            )
+        recovered_reply = agent_response is not None
+        # Older execution receipts predate delivery tracking. Do not redisplay
+        # an approval whose checkpoint has already advanced.
+        if agent_response is not None and await _is_stale_interaction_reply(
+            runtime=runtime, response=agent_response, thread_id=thread_id,
+            user_id=user_id,
+        ):
+            return await _finish_stale_interaction_delivery(
+                coordinator=coordinator, attempt=attempt,
+                event_type=event_type, user_id=user_id,
+            )
+
+        if recovered_reply or attempt.state.get("progress_attempted"):
+            progress_status = {"message_id": attempt.state.get("progress_message_id")}
+        else:
+            progress_status = await _send_progress_reply(
+                payload=payload, user_id=user_id, request_id=event_id,
+            )
+            await asyncio.to_thread(
+                coordinator.stage, attempt, progress_attempted=True,
+                progress_message_id=progress_status.get("message_id"),
+            )
+            if not progress_status.get("sent") and progress_status.get("error"):
+                logger.info(
+                    "Feishu progress reply unavailable: event_type=%s error=%s",
+                    event_type, _summarize_reply_error(progress_status.get("error")),
+                )
+        if agent_response is None:
+            agent_response = await _dispatch_agent_message(
+                runtime=runtime, message=message, user_id=user_id,
+                conversation_scope=conversation_scope, thread_id=thread_id,
+                request_id=event_id,
+            )
+    except HTTPException:
+        raise
     except (LLMConfigurationError, LLMRequestError) as exc:
         logger.warning(
             "Agent runtime unavailable for Feishu event: event_type=%s error_type=%s",
@@ -204,6 +282,17 @@ async def handle_feishu_event(request: Request, payload: Dict[str, Any]):
             reply="处理请求时遇到问题，这次任务没有执行完成，请稍后重试。",
         )
 
+    await asyncio.to_thread(
+        coordinator.stage, attempt,
+        agent_response=agent_response.model_dump(mode="json"),
+    )
+    if recovered_reply and await _is_stale_interaction_reply(
+        runtime=runtime, response=agent_response, thread_id=thread_id, user_id=user_id,
+    ):
+        return await _finish_stale_interaction_delivery(
+            coordinator=coordinator, attempt=attempt,
+            event_type=event_type, user_id=user_id,
+        )
     reply_status = await _send_agent_reply(
         payload=payload,
         user_id=user_id,
@@ -231,7 +320,7 @@ async def handle_feishu_event(request: Request, payload: Dict[str, Any]):
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Feishu reply delivery failed; the event can be retried.",
             )
-    return _response(
+    result = _response(
         FeishuEventProcessResponse(
             handled=True,
             event_type=event_type,
@@ -243,6 +332,35 @@ async def handle_feishu_event(request: Request, payload: Dict[str, Any]):
             reply_message_id=reply_status.get("message_id"),
         )
     )
+    if reply_status["sent"]:
+        await asyncio.to_thread(coordinator.finish, attempt, result)
+    return result
+
+
+async def _finish_stale_interaction_delivery(
+    *, coordinator: FeishuTextDeliveryCoordinator, attempt: FeishuDeliveryAttempt,
+    event_type: Optional[str], user_id: str,
+) -> Dict[str, Any]:
+    message_id = attempt.state.get("progress_message_id")
+    if message_id:
+        try:
+            service = FeishuMessageService()
+            await service.update_interactive_message(
+                message_id=message_id,
+                card=_build_plain_response_card(
+                    text="这条确认已经处理或状态已更新，无需再次回复，请以最新回复为准。",
+                    run_status=AgentRunStatus.DEGRADED,
+                ),
+            )
+        except Exception as exc:
+            # Never send another notification for an obsolete interaction.
+            logger.warning(
+                "Could not retire obsolete Feishu progress card: error_type=%s",
+                type(exc).__name__,
+            )
+    result = _text_event_ack(event_type=event_type, user_id=user_id)
+    await asyncio.to_thread(coordinator.finish, attempt, result)
+    return result
 
 
 # 处理 response 相关逻辑。
@@ -274,14 +392,12 @@ def _resolve_runtime_thread_id(
     )
 
 
-async def _dispatch_agent_message(
+async def _replay_agent_message(
     runtime: Any,
-    message: str,
     user_id: str,
-    conversation_scope: Optional[str],
     thread_id: str,
     request_id: Optional[str],
-) -> AgentRunResponse:
+) -> Optional[AgentRunResponse]:
     if request_id:
         replay_request = getattr(runtime, "replay_request", None)
         if callable(replay_request):
@@ -295,6 +411,43 @@ async def _dispatch_agent_message(
             )
             if replayed is not None:
                 return replayed
+    return None
+
+
+async def _is_stale_interaction_reply(
+    *, runtime: Any, response: AgentRunResponse, thread_id: str, user_id: str,
+) -> bool:
+    if response.status != AgentRunStatus.WAITING_FOR_INPUT:
+        return False
+    try:
+        current = _coerce_agent_response(
+            await runtime.get_state(thread_id=thread_id, user_id=user_id, source="feishu")
+        )
+    except AgentThreadNotFound:
+        return True
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Current interaction could not be checked; the event can be retried.",
+        ) from exc
+    return (
+        current is None
+        or current.status != AgentRunStatus.WAITING_FOR_INPUT
+        or current.run_id != response.run_id
+        or current.interaction is None
+        or response.interaction is None
+        or current.interaction.id != response.interaction.id
+    )
+
+
+async def _dispatch_agent_message(
+    runtime: Any,
+    message: str,
+    user_id: str,
+    conversation_scope: Optional[str],
+    thread_id: str,
+    request_id: Optional[str],
+) -> AgentRunResponse:
 
     try:
         stored_response = await runtime.get_state(
@@ -1199,16 +1352,39 @@ def _handle_bitable_record_event(
             result.application_id or result.record_id or "unknown"
             for result in synced_results
         )
+        deleted_results = [
+            result
+            for result in synced_results
+            if result.status in {"deleted", "already_deleted", "unmapped_deleted"}
+        ]
+        message = f"多维表格记录已回写数据库：{application_ids}"
+        if deleted_results:
+            deleted_ids = ", ".join(
+                result.application_id or result.record_id or "unknown"
+                for result in deleted_results
+            )
+            updated_ids = ", ".join(
+                result.application_id or result.record_id or "unknown"
+                for result in synced_results
+                if result.status in {"created", "updated"}
+            )
+            message = f"多维表格记录已同步删除：{deleted_ids}"
+            if updated_ids:
+                message = (
+                    f"多维表格记录已回写数据库：{updated_ids}；"
+                    f"已同步删除：{deleted_ids}"
+                )
         logger.info(
-            "Feishu bitable event synced: event_type=%s records=%s applications=%s",
+            "Feishu bitable event synced: event_type=%s records=%s applications=%s deleted=%s",
             event_type,
             len(synced_results),
             application_ids,
+            len(deleted_results),
         )
         return FeishuEventProcessResponse(
             handled=True,
             event_type=event_type,
-            message=f"多维表格记录已回写数据库：{application_ids}",
+            message=message,
         )
 
     if failed_results:

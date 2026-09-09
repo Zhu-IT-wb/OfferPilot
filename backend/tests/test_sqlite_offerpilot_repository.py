@@ -10,6 +10,68 @@ from app.tools.tool_names import AgentActionName
 from app.tools.offerpilot_tools import build_offerpilot_tool_registry
 
 
+def test_sqlite_repository_migrates_soft_deletion_and_retains_history_on_reopen(tmp_path) -> None:
+    db_path = tmp_path / "offerpilot.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE applications (
+                id TEXT PRIMARY KEY,
+                company TEXT NOT NULL,
+                role TEXT NOT NULL,
+                status TEXT NOT NULL,
+                interview_time TEXT,
+                round TEXT,
+                jd_keywords TEXT NOT NULL DEFAULT '[]'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO applications (id, company, role, status)
+            VALUES ('app_2', 'Acme', 'Engineer', 'submitted')
+            """
+        )
+
+    repository = SQLiteOfferPilotRepository(str(db_path))
+    assert [item.id for item in repository.list_applications()] == ["app_2"]
+    assert repository.is_application_deleted("app_2") is False
+    schedule = repository.create_interview_schedule("Acme", "First", application_id="app_2")
+    repository.update_interview_schedule_calendar_event(schedule.id, "event_1")
+    assert repository.delete_application("app_2") is True
+    with sqlite3.connect(db_path) as connection:
+        deleted_at = connection.execute("SELECT deleted_at FROM applications WHERE id = 'app_2'").fetchone()[0]
+    assert deleted_at is not None
+
+    reopened = SQLiteOfferPilotRepository(str(db_path))
+    assert reopened.delete_application("app_2") is True
+    assert reopened.is_application_deleted("app_2") is True
+    assert reopened.find_application_owner_id("app_2") == "local_user"
+    assert reopened.list_applications() == []
+    assert reopened.list_interview_schedules() == []
+    receipt_update = reopened.update_interview_schedule_calendar_event(
+        schedule.id, "event_after_deletion"
+    )
+    assert receipt_update is not None
+    assert receipt_update.calendar_event_id == "event_after_deletion"
+    assert SQLiteOfferPilotRepository(str(db_path)).list_interview_schedules() == []
+    assert reopened.update_application_by_id("app_2", company="Changed") is None
+    created = reopened.create_application("Acme", "Engineer")
+    assert created.id == "app_3"
+
+    with sqlite3.connect(db_path) as connection:
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(applications)")]
+        historical = connection.execute(
+            "SELECT company, role, status, deleted_at FROM applications WHERE id = 'app_2'"
+        ).fetchone()
+        receipt = connection.execute(
+            "SELECT calendar_event_id FROM interview_schedules WHERE id = ?", (schedule.id,)
+        ).fetchone()
+    assert columns.count("deleted_at") == 1
+    assert historical == ("Acme", "Engineer", "submitted", deleted_at)
+    assert receipt == ("event_after_deletion",)
+
+
 def test_sqlite_repository_seeds_default_tasks(tmp_path) -> None:
     repository = SQLiteOfferPilotRepository(str(tmp_path / "offerpilot.db"))
 

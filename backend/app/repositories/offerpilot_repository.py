@@ -53,6 +53,21 @@ class OfferPilotRepository(Protocol):
     ) -> List[Application]:
         ...
 
+    def delete_application(
+        self,
+        application_id: str,
+        owner_id: str = "local_user",
+    ) -> bool:
+        """Soft-delete an owned application; repeated deletion remains successful."""
+        ...
+
+    def is_application_deleted(
+        self,
+        application_id: str,
+        owner_id: str = "local_user",
+    ) -> bool:
+        ...
+
     # 更新投递进度，并按需同步日历和多维表格。
     def update_application(
         self,
@@ -285,6 +300,7 @@ class InMemoryOfferPilotRepository:
     study_preferences: dict[str, StudyPreferences] = field(default_factory=dict)
     study_plans: List[StudyPlan] = field(default_factory=list)
     study_sessions: List[StudySession] = field(default_factory=list)
+    _deleted_application_ids: set[str] = field(default_factory=set, init=False, repr=False)
 
     # 获取 runtime setting。
     def get_runtime_setting(self, key: str) -> Optional[str]:
@@ -326,8 +342,16 @@ class InMemoryOfferPilotRepository:
         jd_keywords: Optional[List[str]] = None,
         owner_id: str = "local_user",
     ) -> Application:
+        next_id = max(
+            (
+                int(application.id[4:])
+                for application in self.applications
+                if application.id.startswith("app_") and application.id[4:].isdigit()
+            ),
+            default=0,
+        ) + 1
         application = Application(
-            id=f"app_{len(self.applications) + 1}",
+            id=f"app_{next_id}",
             company=company,
             role=role,
             base_location=base_location,
@@ -354,6 +378,7 @@ class InMemoryOfferPilotRepository:
             application
             for application in self.applications
             if application.owner_id == owner_id
+            and application.id not in self._deleted_application_ids
         ]
         if not company:
             return list(applications)
@@ -364,6 +389,26 @@ class InMemoryOfferPilotRepository:
             for application in applications
             if normalized_company in self._normalize(application.company)
         ]
+
+    def delete_application(
+        self,
+        application_id: str,
+        owner_id: str = "local_user",
+    ) -> bool:
+        if self.find_application_owner_id(application_id) != owner_id:
+            return False
+        self._deleted_application_ids.add(application_id)
+        return True
+
+    def is_application_deleted(
+        self,
+        application_id: str,
+        owner_id: str = "local_user",
+    ) -> bool:
+        return (
+            application_id in self._deleted_application_ids
+            and self.find_application_owner_id(application_id) == owner_id
+        )
 
     # 更新投递进度，并按需同步日历和多维表格。
     def update_application(
@@ -467,7 +512,7 @@ class InMemoryOfferPilotRepository:
                 continue
             application_id = key[len(setting_prefix) :]
             owner_id = self.find_application_owner_id(application_id)
-            if owner_id:
+            if owner_id and not self.is_application_deleted(application_id, owner_id):
                 return application_id, owner_id
         return None
 
@@ -484,9 +529,9 @@ class InMemoryOfferPilotRepository:
         raw_message: str = "",
         owner_id: str = "local_user",
     ) -> InterviewSchedule:
-        if application_id is not None and not any(
-            application.id == application_id and application.owner_id == owner_id
-            for application in self.applications
+        if (
+            application_id is not None
+            and self._find_application_by_id(application_id, owner_id=owner_id) is None
         ):
             raise ValueError(
                 "Interview schedule application does not belong to the current owner."
@@ -516,6 +561,7 @@ class InMemoryOfferPilotRepository:
             schedule
             for schedule in self.interview_schedules
             if schedule.owner_id == owner_id
+            and schedule.application_id not in self._deleted_application_ids
         ]
         if not company:
             return list(schedules)
@@ -550,7 +596,7 @@ class InMemoryOfferPilotRepository:
         reminder_minutes: Optional[int] = None,
         owner_id: str = "local_user",
     ) -> Optional[InterviewSchedule]:
-        for schedule in self.interview_schedules:
+        for schedule in self.list_interview_schedules(owner_id=owner_id):
             if schedule.id != schedule_id or schedule.owner_id != owner_id:
                 continue
             if start_time is not None:
@@ -571,7 +617,7 @@ class InMemoryOfferPilotRepository:
         schedule_id: str,
         owner_id: str = "local_user",
     ) -> Optional[InterviewSchedule]:
-        for schedule in self.interview_schedules:
+        for schedule in self.list_interview_schedules(owner_id=owner_id):
             if schedule.id == schedule_id and schedule.owner_id == owner_id:
                 schedule.status = InterviewScheduleStatus.CANCELLED
                 return schedule
@@ -794,6 +840,8 @@ class InMemoryOfferPilotRepository:
         application_id: str,
         owner_id: str = "local_user",
     ) -> Optional[Application]:
+        if application_id in self._deleted_application_ids:
+            return None
         for application in self.applications:
             if application.id == application_id and application.owner_id == owner_id:
                 return application

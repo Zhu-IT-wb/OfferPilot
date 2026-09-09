@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 
 from app.services.feishu_service import (
@@ -279,13 +280,61 @@ def test_feishu_service_updates_interactive_message(monkeypatch) -> None:
 
 
 def test_feishu_service_raises_for_feishu_error_code() -> None:
-    with pytest.raises(FeishuRequestError):
+    with pytest.raises(FeishuRequestError) as raised:
         FeishuMessageService._raise_for_feishu_code(
             {
                 "code": 999,
                 "msg": "bad request",
             }
         )
+    assert raised.value.code == 999
+    assert str(raised.value) == "Feishu OpenAPI returned code 999: bad request"
+
+
+def test_feishu_service_preserves_record_not_found_code() -> None:
+    with pytest.raises(FeishuRequestError) as raised:
+        FeishuMessageService._raise_for_feishu_code(
+            {"code": 1254043, "msg": "RecordIdNotFound"}
+        )
+
+    assert raised.value.code == 1254043
+
+
+def test_feishu_request_error_message_constructor_does_not_infer_code() -> None:
+    error = FeishuRequestError("Feishu OpenAPI returned HTTP 404: RecordIdNotFound 1254043")
+
+    assert error.code is None
+    assert str(error) == "Feishu OpenAPI returned HTTP 404: RecordIdNotFound 1254043"
+
+
+@pytest.mark.parametrize("method", ["get", "put"])
+@pytest.mark.parametrize(
+    ("status_code", "body", "expected_code"),
+    [
+        (400, b'{"code":1254043,"msg":"RecordIdNotFound"}', 1254043),
+        (403, b'{"code":99991672,"msg":"permission denied"}', 99991672),
+        (404, b'{"msg":"not found"}', None),
+        (404, b'{"code":"1254043"}', None),
+        (404, b'{"code":true}', None),
+        (404, b"RecordIdNotFound 1254043", None),
+    ],
+)
+def test_feishu_http_record_error_preserves_only_structured_numeric_code(
+    monkeypatch, method, status_code, body, expected_code
+) -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(status_code, content=body))
+    client_type = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: client_type(transport=transport, **kwargs))
+    service = FeishuMessageService(app_id="test_app", app_secret="test_secret")
+
+    with pytest.raises(FeishuRequestError) as raised:
+        if method == "get":
+            service._get_json_sync("/record")
+        else:
+            service._put_json_sync("/record", payload={})
+
+    assert raised.value.code == expected_code
+    assert f"HTTP {status_code}" in str(raised.value)
 
 
 def test_parse_chinese_datetime_for_relative_interview_time() -> None:

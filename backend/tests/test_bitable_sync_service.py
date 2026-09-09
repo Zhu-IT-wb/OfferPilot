@@ -2,9 +2,18 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
+import pytest
+
 from app.repositories.offerpilot_repository import InMemoryOfferPilotRepository
-from app.services.bitable_sync_service import sync_bitable_record_to_repository
-from app.services.feishu_service import FeishuBitableRecordResult
+from app.repositories.sqlite_offerpilot_repository import SQLiteOfferPilotRepository
+from app.services.bitable_sync_service import (
+    remember_bitable_record_mapping,
+    remember_bitable_table_owner,
+    sync_bitable_record_fields_to_repository,
+    sync_bitable_record_to_repository,
+    sync_deleted_bitable_record_to_repository,
+)
+from app.services.feishu_service import FeishuBitableRecordResult, FeishuRequestError
 
 
 class FakeBitableRecordService:
@@ -331,4 +340,188 @@ def test_bitable_record_sync_does_not_duplicate_concurrent_manual_record() -> No
         "application_id": applications[0].id,
         "owner_id": "feishu:ou_test",
     }
+
+
+DELETE_APP_TOKEN = "base_deleted"
+DELETE_TABLE = "tbl_deleted"
+DELETE_OWNER = "feishu:ou_delete_owner"
+
+
+def _mapped_application(repository, record_id="rec_deleted"):
+    application = repository.create_application("Example", "Engineer", owner_id=DELETE_OWNER)
+    remember_bitable_table_owner(repository, DELETE_APP_TOKEN, DELETE_TABLE, DELETE_OWNER)
+    remember_bitable_record_mapping(
+        repository, DELETE_APP_TOKEN, DELETE_TABLE, record_id, application.id, DELETE_OWNER
+    )
+    return application
+
+
+class FailedRecordRead:
+    def __init__(self, error):
+        self.error = error
+
+    def get_record(self, **kwargs):
+        raise self.error
+
+
+def _sync_failed_read(repository, error, **overrides):
+    arguments = dict(
+        repository=repository,
+        bitable_service=FailedRecordRead(error),
+        record_id="rec_deleted",
+        app_token=DELETE_APP_TOKEN,
+        table_id=DELETE_TABLE,
+        fallback_owner_id=DELETE_OWNER,
+        allow_default_local_owner=False,
+    )
+    arguments.update(overrides)
+    return sync_bitable_record_to_repository(**arguments)
+
+
+def test_deleted_remote_record_is_hidden_and_late_edit_cannot_recreate_it():
+    repository = InMemoryOfferPilotRepository()
+    application = _mapped_application(repository)
+    repository.create_interview_schedule(
+        "Example", "First", application_id=application.id, owner_id=DELETE_OWNER
+    )
+    error = FeishuRequestError("RecordIdNotFound", code=1254043)
+
+    assert _sync_failed_read(repository, error).status == "deleted"
+    assert _sync_failed_read(repository, error).status == "already_deleted"
+    assert repository.list_applications(owner_id=DELETE_OWNER) == []
+    assert repository.list_interview_schedules(owner_id=DELETE_OWNER) == []
+    assert repository.get_runtime_setting(
+        f"feishu.offerpilot_bitable_record_id.{DELETE_TABLE}.{application.id}"
+    ) == ""
+
+    late_result = sync_bitable_record_fields_to_repository(
+        repository, "rec_deleted", {"公司": "Example", "岗位": "Engineer"},
+        DELETE_APP_TOKEN, DELETE_TABLE, fallback_owner_id=DELETE_OWNER,
+    )
+    assert late_result.status == "already_deleted"
+    assert repository.list_applications(owner_id=DELETE_OWNER) == []
+    new_application = repository.create_application("New", "Engineer", owner_id=DELETE_OWNER)
+    assert new_application.id != application.id
+    assert [item.id for item in repository.list_applications(owner_id=DELETE_OWNER)] == [new_application.id]
+
+
+@pytest.mark.parametrize("error", [
+    FeishuRequestError("Forbidden", code=1254302),
+    FeishuRequestError("TableNotFound", code=1254041),
+    FeishuRequestError("Network timeout"),
+    FeishuRequestError("HTTP 404"),
+    FeishuRequestError("Feishu OpenAPI returned code 1254043: unstructured message"),
+])
+def test_failed_remote_read_is_not_treated_as_deletion(error):
+    repository = InMemoryOfferPilotRepository()
+    application = _mapped_application(repository)
+    result = _sync_failed_read(repository, error)
+    assert result.status == "failed"
+    assert not repository.is_application_deleted(application.id, DELETE_OWNER)
+    assert repository.get_runtime_setting(
+        f"feishu.offerpilot_bitable_record_id.{DELETE_TABLE}.{application.id}"
+    ) == "rec_deleted"
+
+
+@pytest.mark.parametrize("overrides", [
+    {"fallback_owner_id": "feishu:ou_someone_else"},
+    {"app_token": "base_foreign"},
+    {"table_id": "tbl_foreign"},
+])
+def test_deleted_record_does_not_cross_owner_or_resource_boundaries(overrides):
+    repository = InMemoryOfferPilotRepository()
+    application = _mapped_application(repository)
+    _sync_failed_read(repository, FeishuRequestError("RecordIdNotFound", code=1254043), **overrides)
+    assert not repository.is_application_deleted(application.id, DELETE_OWNER)
+
+
+def test_old_deleted_record_cannot_delete_application_mapped_to_replacement():
+    repository = InMemoryOfferPilotRepository()
+    application = _mapped_application(repository)
+    remember_bitable_record_mapping(
+        repository, DELETE_APP_TOKEN, DELETE_TABLE, "rec_replacement", application.id, DELETE_OWNER
+    )
+    result = _sync_failed_read(repository, FeishuRequestError("RecordIdNotFound", code=1254043))
+    assert result.status == "ignored_replaced_record"
+    assert not repository.is_application_deleted(application.id, DELETE_OWNER)
+    assert repository.get_runtime_setting(
+        f"feishu.offerpilot_bitable_record_id.{DELETE_TABLE}.{application.id}"
+    ) == "rec_replacement"
+
+
+def test_unmapped_deleted_record_blocks_delayed_first_import():
+    repository = InMemoryOfferPilotRepository()
+    remember_bitable_table_owner(repository, DELETE_APP_TOKEN, DELETE_TABLE, DELETE_OWNER)
+    result = sync_deleted_bitable_record_to_repository(
+        repository, "rec_deleted", DELETE_APP_TOKEN, DELETE_TABLE, DELETE_OWNER
+    )
+    assert result.status == "unmapped_deleted"
+    late_result = sync_bitable_record_fields_to_repository(
+        repository, "rec_deleted", {"公司": "Example", "岗位": "Engineer"},
+        DELETE_APP_TOKEN, DELETE_TABLE, fallback_owner_id=DELETE_OWNER,
+    )
+    assert late_result.status == "already_deleted"
+    assert repository.list_applications(owner_id=DELETE_OWNER) == []
+
+
+def test_deleted_legacy_mapping_is_retained_as_receipt_after_restart(tmp_path):
+    path = str(tmp_path / "applications.db")
+    repository = SQLiteOfferPilotRepository(path)
+    application = repository.create_application("Example", "Engineer", owner_id=DELETE_OWNER)
+    remember_bitable_table_owner(repository, DELETE_APP_TOKEN, DELETE_TABLE, DELETE_OWNER)
+    repository.set_runtime_setting(
+        f"feishu.offerpilot_bitable_record_id.{DELETE_TABLE}.{application.id}", "rec_deleted"
+    )
+    assert _sync_failed_read(repository, FeishuRequestError("RecordIdNotFound", code=1254043)).status == "deleted"
+
+    reopened = SQLiteOfferPilotRepository(path)
+    assert reopened.list_applications(owner_id=DELETE_OWNER) == []
+    assert _sync_failed_read(reopened, FeishuRequestError("RecordIdNotFound", code=1254043)).status == "already_deleted"
+    assert reopened.create_application("New", "Engineer", owner_id=DELETE_OWNER).id != application.id
+
+
+def test_reverse_mapping_cannot_assert_a_different_application_owner():
+    repository = InMemoryOfferPilotRepository()
+    application = repository.create_application("Other", "Engineer", owner_id="feishu:ou_other")
+    remember_bitable_table_owner(repository, DELETE_APP_TOKEN, DELETE_TABLE, DELETE_OWNER)
+    remember_bitable_record_mapping(
+        repository, DELETE_APP_TOKEN, DELETE_TABLE, "rec_deleted", application.id, DELETE_OWNER
+    )
+    result = _sync_failed_read(repository, FeishuRequestError("RecordIdNotFound", code=1254043))
+    assert result.status == "owner_conflict"
+    assert not repository.is_application_deleted(application.id, "feishu:ou_other")
+
+
+def test_legacy_deletion_interrupted_after_soft_delete_does_not_resurrect(tmp_path, monkeypatch):
+    path = str(tmp_path / "interrupted.db")
+    repository = SQLiteOfferPilotRepository(path)
+    application = repository.create_application("Original", "Engineer", owner_id=DELETE_OWNER)
+    remember_bitable_table_owner(repository, DELETE_APP_TOKEN, DELETE_TABLE, DELETE_OWNER)
+    repository.set_runtime_setting(
+        f"feishu.offerpilot_bitable_record_id.{DELETE_TABLE}.{application.id}", "rec_deleted"
+    )
+    original_delete = repository.delete_application
+
+    def interrupt_after_delete(*args, **kwargs):
+        original_delete(*args, **kwargs)
+        raise RuntimeError("Simulated process interruption")
+
+    monkeypatch.setattr(repository, "delete_application", interrupt_after_delete)
+    with pytest.raises(RuntimeError, match="Simulated"):
+        sync_deleted_bitable_record_to_repository(
+            repository, "rec_deleted", DELETE_APP_TOKEN, DELETE_TABLE, DELETE_OWNER
+        )
+
+    reopened = SQLiteOfferPilotRepository(path)
+    result = sync_bitable_record_fields_to_repository(
+        reopened, "rec_deleted", {"公司": "Original", "岗位": "Engineer"},
+        DELETE_APP_TOKEN, DELETE_TABLE, fallback_owner_id=DELETE_OWNER,
+    )
+    assert result.status == "already_deleted"
+    assert reopened.list_applications(owner_id=DELETE_OWNER) == []
+    replay = _sync_failed_read(reopened, FeishuRequestError("RecordIdNotFound", code=1254043))
+    assert replay.status == "already_deleted"
+    assert reopened.get_runtime_setting(
+        f"feishu.offerpilot_bitable_record_id.{DELETE_TABLE}.{application.id}"
+    ) == ""
 
