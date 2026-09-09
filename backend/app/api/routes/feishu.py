@@ -3,7 +3,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from hmac import compare_digest
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -430,14 +430,21 @@ async def _is_stale_interaction_reply(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Current interaction could not be checked; the event can be retried.",
         ) from exc
-    return (
+    if (
         current is None
         or current.status != AgentRunStatus.WAITING_FOR_INPUT
         or current.run_id != response.run_id
         or current.interaction is None
         or response.interaction is None
         or current.interaction.id != response.interaction.id
-    )
+    ):
+        return True
+    expires_at = current.interaction.expires_at
+    if expires_at is None:
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at <= datetime.now(timezone.utc)
 
 
 async def _dispatch_agent_message(

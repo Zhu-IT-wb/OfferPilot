@@ -80,6 +80,7 @@ class AgentRuntimeState(TypedDict, total=False):
     pending_interaction: Optional[Dict[str, Any]]
     resume_input: Optional[Dict[str, Any]]
     interpreted_resume: Optional[Dict[str, Any]]
+    expired_turn: Optional[Dict[str, Any]]
     interaction_route: str
     approval_granted: List[str]
     gate_route: str
@@ -425,25 +426,9 @@ scheduling, and request separate approval before sync_study_plan_to_calendar.
             pending_value = values.get("pending_interaction")
             if (
                 isinstance(pending_value, dict)
-                and pending_value.get("type") == "approval"
                 and self._interaction_expired(pending_value)
             ):
-                values = dict(
-                    await self.graph.ainvoke(
-                        Command(
-                            resume={
-                                "interaction_id": pending_value.get("id"),
-                                "decision": "revise",
-                                "value": None,
-                                "text": (
-                                    "The approval expired. Re-read volatile state and re-plan; "
-                                    "do not execute the expired write."
-                                ),
-                            }
-                        ),
-                        config=config,
-                    )
-                )
+                values = await self._retire_expired_interaction(config, values)
             if values.get("pending_interaction"):
                 raise AgentRuntimeConflict(
                     "This conversation has an interrupted run. Resume or cancel it first."
@@ -457,83 +442,141 @@ scheduling, and request separate approval before sync_study_plan_to_calendar.
                     thread_id=thread_id,
                     run_id=run_id,
                 )
-            direct = await self._direct_command(
-                normalized_message,
-                thread_id,
-                user_id,
-                source,
-                request_id,
-                run_id=run_id,
+            return await self._execute_new_turn(
+                config=config, previous=values, message=normalized_message,
+                thread_id=thread_id, run_id=run_id, user_id=user_id,
+                source=source, request_id=request_id, receipt_scope=receipt_scope,
             )
-            if direct is not None:
-                await self._persist_direct_response(
-                    config=config,
-                    previous=values,
-                    response=direct,
-                    message=normalized_message,
-                    user_id=user_id,
-                    source=source,
-                    request_id=request_id,
-                )
-                await self._save_receipt(receipt_scope, request_id, direct)
-                return direct
 
-            actor = self._actor(user_id, source)
-            initial: AgentRuntimeState = {
-                "schema_version": STATE_SCHEMA_VERSION,
-                "thread_id": thread_id,
-                "run_id": run_id,
-                "request_id": request_id,
-                "actor": actor,
-                "actor_fingerprint": self._actor_fingerprint(actor),
-                "current_user_message": normalized_message,
-                "messages": [
-                    *list(values.get("messages") or []),
-                    {"role": "user", "content": normalized_message},
-                ],
-                "conversation_summary": values.get("conversation_summary"),
-                "plan": None,
-                "pending_calls": [],
-                "validated_calls": [],
-                "pending_interaction": None,
-                "resume_input": None,
-                "interpreted_resume": None,
-                "interaction_route": "resolve",
-                "approval_granted": [],
-                "final_draft": "",
-                "final_reply": "",
-                "status": "completed",
-                "tool_executions": [],
-                "artifacts": [],
-                "warnings": [],
-                "model_calls": 0,
-                "tool_calls": 0,
-                "verifier_calls": 0,
-                "verifier_feedback": None,
-                "verifier_verdict": None,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "no_progress_count": 0,
-                "progress_fingerprints": [],
-                "pending_progress_fingerprint": None,
-                "had_error": False,
-                "had_write": False,
-                "force_summary": False,
-                "summary_attempted": False,
-                "turn_started_at": self._now().isoformat(),
-                "timezone": self.timezone_name,
-            }
-            await self._record_event(
-                event_id=self._ingress_event_id(receipt_scope, request_id, run_id),
-                thread_id=thread_id,
-                run_id=run_id,
-                event_type="user_message",
-                payload={"content": normalized_message, "source": source},
+    async def _execute_new_turn(
+        self, *, config: Dict[str, Any], previous: Dict[str, Any], message: str,
+        thread_id: str, run_id: str, user_id: str, source: str,
+        request_id: Optional[str], receipt_scope: str,
+    ) -> AgentRunResponse:
+        """Start a fresh run after the caller claims its receipt under the thread lock."""
+        direct = await self._direct_command(
+            message, thread_id, user_id, source, request_id, run_id=run_id,
+        )
+        if direct is not None:
+            await self._persist_direct_response(
+                config=config, previous=previous, response=direct, message=message,
+                user_id=user_id, source=source, request_id=request_id,
             )
-            result = await self.graph.ainvoke(initial, config=config)
-            response = self._response_from_state(thread_id, result)
-            await self._save_receipt(receipt_scope, request_id, response)
-            return response
+            await self._save_receipt(receipt_scope, request_id, direct)
+            return direct
+
+        actor = self._actor(user_id, source)
+        initial: AgentRuntimeState = {
+            "schema_version": STATE_SCHEMA_VERSION,
+            "thread_id": thread_id,
+            "run_id": run_id,
+            "request_id": request_id,
+            "actor": actor,
+            "actor_fingerprint": self._actor_fingerprint(actor),
+            "current_user_message": message,
+            "messages": [
+                *list(previous.get("messages") or []),
+                {"role": "user", "content": message},
+            ],
+            "conversation_summary": previous.get("conversation_summary"),
+            "plan": None,
+            "pending_calls": [],
+            "validated_calls": [],
+            "pending_interaction": None,
+            "resume_input": None,
+            "interpreted_resume": None,
+            "expired_turn": None,
+            "interaction_route": "resolve",
+            "approval_granted": [],
+            "final_draft": "",
+            "final_reply": "",
+            "status": "completed",
+            "tool_executions": [],
+            "artifacts": [],
+            "warnings": [],
+            "model_calls": 0,
+            "tool_calls": 0,
+            "verifier_calls": 0,
+            "verifier_feedback": None,
+            "verifier_verdict": None,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "no_progress_count": 0,
+            "progress_fingerprints": [],
+            "pending_progress_fingerprint": None,
+            "had_error": False,
+            "had_write": False,
+            "force_summary": False,
+            "summary_attempted": False,
+            "turn_started_at": self._now().isoformat(),
+            "timezone": self.timezone_name,
+        }
+        await self._record_event(
+            event_id=self._ingress_event_id(receipt_scope, request_id, run_id),
+            thread_id=thread_id, run_id=run_id, event_type="user_message",
+            payload={"content": message, "source": source},
+        )
+        result = await self.graph.ainvoke(initial, config=config)
+        response = self._response_from_state(thread_id, result)
+        await self._save_receipt(receipt_scope, request_id, response)
+        return response
+
+    async def _retire_expired_interaction(
+        self, config: Dict[str, Any], state: Dict[str, Any],
+        next_turn: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        pending = dict(state.get("pending_interaction") or {})
+        if not pending or not self._interaction_expired(pending):
+            raise AgentInteractionError("The interaction has not expired.")
+        resume_input = state.get("resume_input") or {}
+        if resume_input and resume_input.get("mode") != "expiration":
+            raise AgentRuntimeConflict("This interaction reply is already being resolved.")
+        # An interrupted expiry cleanup may already have consumed interrupt().
+        # Continue its checkpoint instead of submitting a second resume value.
+        resume_command = None if resume_input else Command(resume={
+            "interaction_id": pending.get("id"),
+            "mode": "expiration",
+            "request_id": state.get("request_id"),
+            "expired_turn": next_turn,
+        })
+        result = dict(await self.graph.ainvoke(
+            resume_command,
+            config=config,
+        ))
+        if result.get("pending_interaction"):
+            raise AgentRuntimeConflict("The expired interaction could not be retired.")
+        return result
+
+    async def _continue_expired_turn(
+        self, *, config: Dict[str, Any], state: Dict[str, Any],
+        thread_id: str, user_id: str, source: str, request_id: Optional[str],
+        receipt_scope: str, fingerprint: str,
+    ) -> AgentRunResponse:
+        transition = dict(state.get("expired_turn") or {})
+        if (
+            state.get("pending_interaction")
+            or transition.get("request_id") != request_id
+            or transition.get("fingerprint") != fingerprint
+            or not transition.get("run_id")
+            or not transition.get("message")
+        ):
+            raise AgentRuntimeConflict("The expired interaction transition does not match this request.")
+        receipt = await self._processing_receipt(
+            receipt_scope, request_id, fingerprint, thread_id,
+        )
+        run_id = str(transition["run_id"])
+        if receipt is None:
+            await self._begin_receipt(
+                receipt_scope, request_id, fingerprint=fingerprint,
+                thread_id=thread_id, run_id=run_id,
+            )
+        elif receipt.run_id != run_id:
+            raise AgentRuntimeConflict("The transition receipt belongs to a different run.")
+        return await self._execute_new_turn(
+            config=config, previous=state, message=str(transition["message"]),
+            thread_id=thread_id, run_id=run_id, user_id=user_id,
+            source=source, request_id=request_id, receipt_scope=receipt_scope,
+        )
 
     async def resume(
         self,
@@ -662,6 +705,13 @@ scheduling, and request separate approval before sync_study_plan_to_calendar.
                 raise AgentRuntimeConflict(
                     "The processing request checkpoint belongs to a different thread."
                 )
+            transition = state.get("expired_turn") or {}
+            if transition.get("request_id") == request_id:
+                return await self._continue_expired_turn(
+                    config=config, state=state, thread_id=receipt_thread_id,
+                    user_id=user_id, source=source, request_id=request_id,
+                    receipt_scope=receipt_scope, fingerprint=record.fingerprint,
+                )
             if record.run_id and state.get("run_id") != record.run_id:
                 raise AgentRuntimeConflict(
                     "The processing request checkpoint belongs to a different run."
@@ -750,7 +800,20 @@ scheduling, and request separate approval before sync_study_plan_to_calendar.
                 )
                 if recovered is not None:
                     return recovered
-            if state.get("resume_input"):
+            transition = state.get("expired_turn") or {}
+            if (
+                mode == "natural_language"
+                and transition.get("fingerprint") == receipt_fingerprint
+            ):
+                return await self._continue_expired_turn(
+                    config=config, state=state, thread_id=thread_id,
+                    user_id=user_id, source=source, request_id=request_id,
+                    receipt_scope=receipt_scope, fingerprint=receipt_fingerprint,
+                )
+            if (
+                state.get("resume_input")
+                and state["resume_input"].get("mode") != "expiration"
+            ):
                 raise AgentRuntimeConflict(
                     "This interaction reply is already being resolved."
                 )
@@ -759,19 +822,25 @@ scheduling, and request separate approval before sync_study_plan_to_calendar.
                 raise AgentInteractionError("This thread has no pending interaction.")
             if pending.get("id") != interaction_id:
                 raise AgentInteractionError("The interaction id is stale or does not match.")
+            if self._interaction_expired(pending) and mode == "natural_language":
+                state = await self._retire_expired_interaction(
+                    config, state, next_turn={
+                        "request_id": request_id,
+                        "run_id": f"run_{uuid.uuid4().hex}",
+                        "fingerprint": receipt_fingerprint,
+                        "message": str(text or ""),
+                    },
+                )
+                return await self._continue_expired_turn(
+                    config=config, state=state, thread_id=thread_id,
+                    user_id=user_id, source=source, request_id=request_id,
+                    receipt_scope=receipt_scope, fingerprint=receipt_fingerprint,
+                )
             if self._interaction_expired(pending) and not (
                 mode == "explicit" and decision_text == "cancel"
             ):
-                if pending.get("type") != "approval":
-                    raise AgentInteractionError(
-                        "The interaction has expired; cancel or start a fresh plan."
-                    )
-                mode = "explicit"
-                decision_text = "revise"
-                value = None
-                text = (
-                    "The approval expired. Re-read volatile state and re-plan; "
-                    "do not execute the expired write."
+                raise AgentInteractionError(
+                    "The interaction has expired; cancel or send a new message."
                 )
             if mode == "explicit":
                 allowed_actions = set(pending.get("allowed_actions") or [])
@@ -1364,6 +1433,11 @@ scheduling, and request separate approval before sync_study_plan_to_calendar.
         pending = dict(state.get("pending_interaction") or {})
         resume = dict(state.get("resume_input") or {})
         mode = str(resume.get("mode") or "explicit")
+        if mode == "expiration" and self._interaction_expired(pending):
+            return {
+                "interpreted_resume": {"action": "expire", "source": "runtime"},
+                "interaction_route": "resolve",
+            }
         if mode == "explicit":
             action = str(resume.get("decision") or "").lower()
             if action not in set(pending.get("allowed_actions") or []):
@@ -1542,7 +1616,11 @@ scheduling, and request separate approval before sync_study_plan_to_calendar.
         resume = dict(state.get("resume_input") or {})
         interpretation = dict(state.get("interpreted_resume") or {})
         decision = str(interpretation.get("action") or "").lower()
-        if decision not in set(pending.get("allowed_actions") or []):
+        expiring = (
+            decision == "expire" and resume.get("mode") == "expiration"
+            and self._interaction_expired(pending)
+        )
+        if not expiring and decision not in set(pending.get("allowed_actions") or []):
             return {
                 **self._interaction_reprompt(
                     state,
@@ -1568,10 +1646,15 @@ scheduling, and request separate approval before sync_study_plan_to_calendar.
                 "request_id": resumed_request_id,
                 "gate_route": "execute",
             }
-        if decision == "cancel":
+        if decision == "cancel" or expiring:
             result = self._error_result(
-                "cancelled_by_user",
-                "The user cancelled the pending operation.",
+                "interaction_expired" if expiring else "cancelled_by_user",
+                (
+                    "The interaction expired. Pending operations were abandoned without "
+                    "further execution. The old task is no longer active; only continue it "
+                    "if the latest user message asks to. Any write needs fresh approval."
+                    if expiring else "The user cancelled the pending operation."
+                ),
                 ToolOutcomeStatus.REJECTED,
             )
             tool_messages = [
@@ -1595,8 +1678,14 @@ scheduling, and request separate approval before sync_study_plan_to_calendar.
                 "interpreted_resume": None,
                 "pending_calls": [],
                 "validated_calls": [],
+                "approval_granted": [],
+                # Persist the next ingress before claiming its receipt or invoking a new run.
+                "expired_turn": resume.get("expired_turn") if expiring else None,
                 "request_id": resumed_request_id,
-                "final_draft": "当前任务已取消，没有继续执行待处理操作。",
+                "final_draft": (
+                    "之前的待回复事项已过期，没有继续执行待处理操作。"
+                    if expiring else "当前任务已取消，没有继续执行待处理操作。"
+                ),
                 "status": "partial",
                 "tool_executions": executions,
                 "tool_calls": int(state.get("tool_calls", 0))
@@ -3372,6 +3461,7 @@ scheduling, and request separate approval before sync_study_plan_to_calendar.
             ],
             "conversation_summary": previous.get("conversation_summary"),
             "plan": response_value.get("plan"),
+            "expired_turn": None,
             "pending_calls": [],
             "validated_calls": [],
             "pending_interaction": None,
